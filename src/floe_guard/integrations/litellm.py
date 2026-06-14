@@ -35,7 +35,12 @@ def _require_litellm() -> Any:
 def _model_from(kwargs: dict[str, Any], response: Any) -> str:
     model = kwargs.get("model")
     if not model:
-        model = getattr(response, "model", None)
+        # LiteLLM returns either a ModelResponse object or a plain dict; read the
+        # model from whichever shape it is so a dict response is still recorded.
+        if isinstance(response, dict):
+            model = response.get("model")
+        else:
+            model = getattr(response, "model", None)
     return str(model or "")
 
 

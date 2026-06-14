@@ -29,6 +29,9 @@ from .errors import (
 )
 from .pricing import ManualPrice, price_tokens, resolve_price
 
+# Tolerance for float rounding in the running spend total (well below $0.000001).
+_EPS = 1e-12
+
 
 class BudgetGuard:
     """Hard-stop an agent before its next LLM call crosses a USD ceiling.
@@ -79,7 +82,9 @@ class BudgetGuard:
         """
         estimate = self._last_cost if estimated_next_cost is None else max(0.0, estimated_next_cost)
         projected = self.spent_usd + estimate
-        if self.spent_usd >= self.limit_usd or projected > self.limit_usd:
+        # Compare with an epsilon so float rounding in the running total doesn't
+        # block a call early or let one slip past the ceiling.
+        if self.spent_usd > self.limit_usd - _EPS or projected > self.limit_usd + _EPS:
             self._on_block(self.spent_usd, self.limit_usd)
             raise BudgetExceeded(self.spent_usd, self.limit_usd)
 
@@ -117,6 +122,10 @@ class BudgetGuard:
 
         cost = price_tokens(priced, prompt_tokens, completion_tokens)
         self.spent_usd += cost
+        # Clamp a sub-epsilon float overshoot back to the limit so the running
+        # total never reports as having crossed the ceiling by a rounding artifact.
+        if 0.0 < self.spent_usd - self.limit_usd < _EPS:
+            self.spent_usd = self.limit_usd
         self._last_cost = cost
         return cost
 

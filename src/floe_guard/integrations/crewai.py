@@ -44,7 +44,13 @@ def guard_crew(guard: BudgetGuard) -> None:
     before each call and accrues spend after. Call once before ``kickoff()``.
     Idempotent for the same guard — re-registering will not double-count.
     """
-    import litellm
+    try:
+        import litellm
+    except ImportError as e:
+        raise ImportError(
+            "guard_crew requires litellm (CrewAI runs on LiteLLM). "
+            "Install: pip install floe-guard[crewai]"
+        ) from e
 
     callback = budget_guard_callback(guard)
     existing = list(getattr(litellm, "callbacks", None) or [])

@@ -26,8 +26,8 @@ BUDGET EXCEEDED — call blocked
   The next call would cross your budget; floe-guard stopped your agent before it ran.
 ```
 
-![stop the loop](docs/stop-the-loop.gif)
-<!-- TODO: record docs/stop-the-loop.gif — a screen capture of `python examples/runaway_loop.py` stopping the loop. -->
+_Animated demo coming — run `python examples/runaway_loop.py` to watch it stop a loop live._
+<!-- TODO: record docs/stop-the-loop.gif and restore the embed: ![stop the loop](docs/stop-the-loop.gif) -->
 
 ## See it stop a loop (no API key needed)
 
