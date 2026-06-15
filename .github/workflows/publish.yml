@@ -1,0 +1,76 @@
+name: Publish to PyPI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+
+      - name: Upgrade pip and install build
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+
+      - name: Install project with dev extras
+        if: hashFiles('tests/**') != ''
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        if: hashFiles('tests/**') != ''
+        run: pytest
+
+      - name: Read package metadata
+        id: meta
+        run: |
+          PKG_NAME=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
+          PKG_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "name=$PKG_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if version is already published
+        id: check
+        run: |
+          PKG_NAME="${{ steps.meta.outputs.name }}"
+          PKG_VERSION="${{ steps.meta.outputs.version }}"
+          HTTP_CODE=$(curl -sS --connect-timeout 10 --max-time 20 -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/$PKG_NAME/$PKG_VERSION/json")
+          case "$HTTP_CODE" in
+            200)
+              echo "$PKG_NAME==$PKG_VERSION already published on PyPI, skipping."
+              echo "should_publish=false" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "$PKG_NAME==$PKG_VERSION not found on PyPI, will publish."
+              echo "should_publish=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unexpected PyPI response (HTTP $HTTP_CODE). Failing to avoid incorrect publish."
+              exit 1
+              ;;
+          esac
+
+      - name: Build distribution
+        if: steps.check.outputs.should_publish == 'true'
+        run: python -m build
+
+      - name: Publish to PyPI
+        if: steps.check.outputs.should_publish == 'true'
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
