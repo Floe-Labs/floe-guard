@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "floe-guard"
+version = "0.1.0"
+description = "Local budget guardrail for AI agents — hard-stops a runaway loop before its next LLM call crosses a spend ceiling. No account, no network."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Floe Labs" }]
+keywords = ["llm", "agents", "budget", "guardrail", "crewai", "litellm", "cost", "openai", "anthropic"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = []
+
+[project.optional-dependencies]
+litellm = ["litellm>=1.0"]
+crewai = ["crewai>=0.30", "litellm>=1.0"]
+dev = ["pytest>=7.0", "ruff>=0.4"]
+
+[project.urls]
+Homepage = "https://floelabs.xyz"
+Dashboard = "https://dev-dashboard.floelabs.xyz"
+Source = "https://github.com/Floe-Labs/floe-guard"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/floe_guard"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/floe_guard/cost_map.json" = "floe_guard/cost_map.json"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "examples"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error::floe_guard.errors.UnpriceableModelWarning"]
