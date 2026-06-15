@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from floe_guard import BudgetGuard
+from floe_guard import BudgetGuard, UnpriceableModelError, UnpriceableModelWarning
 from floe_guard.integrations.litellm import _model_from, _record_response, _usage_from
 
 
@@ -55,3 +55,30 @@ def test_record_response_accrues_dict_response() -> None:
     resp = {"model": "gpt-4o", "usage": {"prompt_tokens": 1_000, "completion_tokens": 1_000}}
     _record_response(guard, {}, resp)
     assert guard.spent_usd == pytest.approx(0.0125)
+
+
+def test_usage_present_but_model_missing_fails_closed() -> None:
+    # The Major fix: tokens were spent but the model id is missing. This MUST go
+    # through record() (fail-closed → raise), not be silently skipped unmetered.
+    guard = BudgetGuard(limit_usd=1.0)  # fail_closed defaults to True
+    resp = {"usage": {"prompt_tokens": 1_000, "completion_tokens": 1_000}}
+    with pytest.warns(UnpriceableModelWarning):
+        with pytest.raises(UnpriceableModelError):
+            _record_response(guard, {}, resp)
+    assert guard.spent_usd == 0.0
+
+
+def test_usage_present_but_model_missing_fail_open_warns_and_skips() -> None:
+    guard = BudgetGuard(limit_usd=1.0, fail_closed=False)
+    resp = {"usage": {"prompt_tokens": 1_000, "completion_tokens": 1_000}}
+    with pytest.warns(UnpriceableModelWarning):
+        _record_response(guard, {}, resp)
+    assert guard.spent_usd == 0.0
+
+
+def test_no_usage_response_is_a_noop() -> None:
+    # A genuinely empty (no-usage) response: nothing spent, so no record/raise.
+    guard = BudgetGuard(limit_usd=1.0)
+    _record_response(guard, {}, {})  # no model, no usage
+    _record_response(guard, {}, {"usage": {"prompt_tokens": 0, "completion_tokens": 0}})
+    assert guard.spent_usd == 0.0

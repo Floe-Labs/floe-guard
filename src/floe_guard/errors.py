@@ -44,4 +44,9 @@ class UnpriceableModelError(FloeGuardError):
 
 
 class UnpriceableModelWarning(UserWarning):
-    """Warned (loudly) when an unpriceable model is seen in non-fail-closed mode."""
+    """Warned (loudly) whenever an unpriceable model is seen.
+
+    Always emitted regardless of ``fail_closed``. In fail-closed mode an
+    :class:`UnpriceableModelError` is additionally raised; in fail-open mode the
+    warning is emitted and the call's spend is skipped.
+    """

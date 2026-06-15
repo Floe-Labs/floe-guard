@@ -58,8 +58,14 @@ def _usage_from(response: Any) -> tuple[int, int]:
 def _record_response(guard: BudgetGuard, kwargs: dict[str, Any], response: Any) -> None:
     model = _model_from(kwargs, response)
     prompt_tokens, completion_tokens = _usage_from(response)
-    if model:
-        guard.record(model, prompt_tokens, completion_tokens)
+    if prompt_tokens <= 0 and completion_tokens <= 0:
+        # No tokens were spent (e.g. a usage-less event) — nothing to meter.
+        return
+    # There IS spend to account for. Route it through record() even when the
+    # model id is missing, so the guard's configured policy applies (fail-closed
+    # → warn + raise; fail-open → warn + skip). Silently skipping here would let
+    # a real, completed call go unmetered and skew the next check().
+    guard.record(model, prompt_tokens, completion_tokens)
 
 
 def guarded_completion(guard: BudgetGuard, **kwargs: Any) -> Any:
