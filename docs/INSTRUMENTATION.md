@@ -5,8 +5,9 @@ How we measure floe-guard's adoption — and the one thing we deliberately *don'
 ## No runtime telemetry (deliberate)
 
 floe-guard does **not** phone home. It sends no usage events, no install pings, no
-identifiers — nothing leaves your process at runtime except the calls *you* make
-(e.g. `hosted_remaining_usd()`, only when you set `FLOE_API_KEY`).
+identifiers — nothing leaves your process at runtime except hosted-budget reads
+you explicitly opt into by setting `FLOE_API_KEY` (the *Upgrade to hosted Floe*
+path) — never otherwise.
 
 This is a choice, not an oversight. A guardrail's whole value is trust: a library
 that silently exfiltrates usage from people's agents is the opposite of a tool you
@@ -24,7 +25,7 @@ for this project.
 | Install velocity (`pip install`) | PyPI download counts (day/week/month) | `scripts/metrics.py` → pypistats.org |
 | README reach | repo views & unique clones | `scripts/metrics.py` (needs `GITHUB_TOKEN`) |
 | README → site click-through | UTM params on outbound links | Floe web analytics |
-| Install → hosted signup | UTM `source=floe-guard` lands in the signup funnel | Floe web analytics |
+| Install → hosted signup | UTM `utm_source=floe-guard` lands in the signup funnel | Floe web analytics |
 | "Built with floe-guard" usage | badge backlinks | GitHub code/badge search |
 
 ### Snapshot script

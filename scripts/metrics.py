@@ -24,7 +24,9 @@ REPO = "Floe-Labs/floe-guard"
 PACKAGE = "floe-guard"
 
 
-def _get(url: str, headers: dict[str, str] | None = None, timeout: float = 15.0):
+def _get(
+    url: str, headers: dict[str, str] | None = None, timeout: float = 15.0
+) -> dict[str, object]:
     req = urllib.request.Request(url, headers=headers or {})
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (trusted hosts)
         return json.loads(resp.read().decode())
