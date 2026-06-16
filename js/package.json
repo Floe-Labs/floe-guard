@@ -1,0 +1,51 @@
+{
+  "name": "floe-guard",
+  "version": "0.1.0",
+  "description": "A local budget guardrail for AI agents — hard-stops your agent before its next LLM call crosses a USD ceiling. Vercel AI SDK middleware.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "ai",
+    "vercel-ai-sdk",
+    "budget",
+    "guardrail",
+    "llm",
+    "cost",
+    "middleware",
+    "floe"
+  ],
+  "homepage": "https://floelabs.xyz",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/floe-labs/floe-guard.git",
+    "directory": "js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src/cost_map.json"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "ai": ">=4.0.0 <5.0.0"
+  },
+  "devDependencies": {
+    "ai": "^4.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0"
+  }
+}

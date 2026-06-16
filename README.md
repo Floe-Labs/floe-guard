@@ -133,10 +133,30 @@ llm.invoke("hello")            # checks budget before the call, records spend af
 The handler checks the budget on LLM start (raising `BudgetExceeded` aborts the
 call before it runs) and records token usage on LLM end.
 
-### Coming next
+### Vercel AI SDK
 
-The Vercel AI SDK (TypeScript middleware) is next. Open an issue if you want one
-sooner.
+The Vercel AI SDK is TypeScript-only, so it ships as a separate npm package that
+lives in [`js/`](js/).
+
+```bash
+npm i floe-guard ai@4 @ai-sdk/openai
+```
+
+```ts
+import { wrapLanguageModel } from "ai";
+import { openai } from "@ai-sdk/openai";
+import { BudgetGuard, budgetGuardMiddleware } from "floe-guard";
+
+const guard = new BudgetGuard(5.0);                   // your ceiling, in USD
+const model = wrapLanguageModel({
+  model: openai("gpt-4o"),
+  middleware: budgetGuardMiddleware(guard),           // throws before crossing
+});
+```
+
+The middleware `check()`s before each call (throwing `BudgetExceeded` to halt the
+run) and `record()`s priced usage after — same semantics as the Python guard. See
+[`js/README.md`](js/README.md).
 
 ## Honest about what this is
 
