@@ -33,13 +33,16 @@ const ROUTABLE_PROVIDERS = new Set(["openai", "anthropic"]);
  * finite). An excluded model is simply absent.
  */
 function isUsable(v) {
+  // Number.isFinite (not typeof === "number") so a NaN, or a huge upstream value
+  // that JSON.parse turns into Infinity, is treated as unpriceable and dropped —
+  // matching the fail-closed pricing paths.
   return (
     !!v &&
-    typeof v.input_cost_per_token === "number" &&
+    Number.isFinite(v.input_cost_per_token) &&
     v.litellm_provider !== undefined &&
     ROUTABLE_PROVIDERS.has(v.litellm_provider) &&
     (v.mode === "embedding" ||
-      (v.mode === "chat" && typeof v.output_cost_per_token === "number"))
+      (v.mode === "chat" && Number.isFinite(v.output_cost_per_token)))
   );
 }
 
@@ -51,9 +54,11 @@ const raw = await res.json();
 
 const entries = Object.entries(raw)
   .filter(([, v]) => isUsable(v))
-  .sort(([a], [b]) => (a < b ? -1 : 1));
+  .sort(([a], [b]) => a.localeCompare(b));
 
-const out = {};
+// null-prototype: model keys come from remote JSON, so a "__proto__" (or similar)
+// key is stored as plain data instead of mutating the object's prototype.
+const out = Object.create(null);
 for (const [k, v] of entries) {
   out[k] = {
     input_cost_per_token: v.input_cost_per_token,
