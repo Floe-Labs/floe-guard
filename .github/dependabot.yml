@@ -6,10 +6,11 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     ignore:
-      # The Vercel AI SDK middleware targets the v4 LanguageModelV1 interface.
-      # ai v5/v6 are breaking API changes (LanguageModelV2Middleware, renamed
-      # usage fields) — supporting them is a deliberate migration, not an auto-
-      # bump. Major bumps repeatedly broke main, so pin to v4 majors here.
-      # (Honored by Dependabot security updates too.)
-      - dependency-name: "ai"
+      # Major bumps of the JS dev tooling are breaking changes that need a
+      # deliberate migration, not an auto-bump — they have repeatedly broken the
+      # build: ai v5 removed LanguageModelV1Middleware; TypeScript 6 turns the
+      # baseUrl deprecation into a hard error (TS5101) in the tsup dts build.
+      # Defer ALL majors to a human; patch/minor (incl. security fixes within a
+      # major) still flow. (Honored by Dependabot security updates too.)
+      - dependency-name: "*"
         update-types: ["version-update:semver-major"]
