@@ -28,6 +28,24 @@ jobs:
       - name: Ruff
         run: ruff check .
 
+  cost-map-sync:
+    # The LiteLLM cost map is vendored in two places — the Python package
+    # (src/floe_guard/cost_map.json) and the JS package (js/src/cost_map.json).
+    # They must stay byte-identical; fail loudly if they drift so any refresh
+    # updates both.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Python and JS cost maps must match
+        # -q keeps the failure concise (the map is ~700 lines); the message says
+        # what to do rather than dumping the whole diff.
+        run: |
+          diff -q src/floe_guard/cost_map.json js/src/cost_map.json \
+            || { echo "::error::cost_map.json drifted between src/floe_guard/ and js/src/ — re-sync the two copies."; exit 1; }
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
