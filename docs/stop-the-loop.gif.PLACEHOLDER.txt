@@ -1,6 +1,0 @@
-TODO: record this GIF.
-
-This is a placeholder for docs/stop-the-loop.gif — a short screen recording of
-`python examples/runaway_loop.py` running and the guard printing
-`BUDGET EXCEEDED — call blocked`. Replace this file with the recorded .gif
-(keep the filename so the README reference resolves).
