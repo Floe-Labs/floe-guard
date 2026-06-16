@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Floe Labs" }]
-keywords = ["llm", "agents", "budget", "guardrail", "crewai", "litellm", "cost", "openai", "anthropic"]
+keywords = ["llm", "agents", "budget", "guardrail", "crewai", "litellm", "langchain", "cost", "openai", "anthropic"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -26,6 +26,7 @@ dependencies = []
 [project.optional-dependencies]
 litellm = ["litellm>=1.0"]
 crewai = ["crewai>=0.30", "litellm>=1.0"]
+langchain = ["langchain-core>=0.3"]
 dev = ["pytest>=7.0", "ruff>=0.4"]
 
 [project.urls]

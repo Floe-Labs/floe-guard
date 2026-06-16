@@ -108,10 +108,29 @@ response = guarded_completion(guard, model="gpt-4o", messages=[...])
 Prefer the LiteLLM-native callback? Register `budget_guard_callback(guard)` on
 `litellm.callbacks`.
 
+### LangChain
+
+```bash
+pip install floe-guard[langchain]
+```
+
+```python
+from langchain_openai import ChatOpenAI
+from floe_guard import BudgetGuard
+from floe_guard.integrations.langchain import budget_guard_callback_handler
+
+guard = BudgetGuard(limit_usd=1.00)
+llm = ChatOpenAI(model="gpt-4o", callbacks=[budget_guard_callback_handler(guard)])
+llm.invoke("hello")            # checks budget before the call, records spend after
+```
+
+The handler checks the budget on LLM start (raising `BudgetExceeded` aborts the
+call before it runs) and records token usage on LLM end.
+
 ### Coming next
 
-LangChain (callback) and the Vercel AI SDK (TypeScript middleware) are next. Open
-an issue if you want one sooner.
+The Vercel AI SDK (TypeScript middleware) is next. Open an issue if you want one
+sooner.
 
 ## Honest about what this is
 
