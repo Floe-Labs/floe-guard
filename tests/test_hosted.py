@@ -98,6 +98,35 @@ def test_base_url_override_is_used() -> None:
     assert request.full_url == "https://staging.example.com/v1/agents/credit-remaining"
 
 
+@pytest.mark.parametrize(
+    "bad_base",
+    [
+        "http://credit-api.floelabs.xyz",  # non-https — would leak the bearer token
+        "file:///etc/passwd",
+        "ftp://example.com",
+        "not-a-url",
+        "https://",  # scheme but no host
+    ],
+)
+def test_unsafe_base_url_refuses_to_send_key(bad_base: str) -> None:
+    # The agent key is sent as a bearer token; a non-https/malformed base URL must
+    # be rejected BEFORE any request is made.
+    with mock.patch("urllib.request.urlopen") as urlopen:
+        with pytest.raises(HostedEnforcementError, match="https"):
+            hosted_remaining_usd(api_key="floe_abc", base_url=bad_base)
+    urlopen.assert_not_called()
+
+
+def test_whitespace_base_url_falls_back_to_default() -> None:
+    payload = {"headroomToAutoBorrow": "1000000", "sessionSpendRemaining": None}
+    with mock.patch(
+        "urllib.request.urlopen", return_value=_ok_response(payload)
+    ) as urlopen:
+        hosted_remaining_usd(api_key="floe_abc", base_url="   ")
+    request = urlopen.call_args.args[0]
+    assert request.full_url == "https://credit-api.floelabs.xyz/v1/agents/credit-remaining"
+
+
 # ── errors ──────────────────────────────────────────────────────────────────
 
 

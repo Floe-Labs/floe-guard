@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .errors import HostedEnforcementError
@@ -78,7 +79,16 @@ def hosted_remaining_usd(
             f"No Floe API key: pass api_key= or set {FLOE_API_KEY_ENV}."
         )
 
-    base = (base_url or os.environ.get(FLOE_API_BASE_URL_ENV, "") or DEFAULT_BASE_URL).rstrip("/")
+    env_base = os.environ.get(FLOE_API_BASE_URL_ENV, "").strip()
+    base = ((base_url or "").strip() or env_base or DEFAULT_BASE_URL).rstrip("/")
+    parsed = urllib.parse.urlparse(base)
+    if parsed.scheme != "https" or not parsed.netloc:
+        # The request carries the Floe agent key as a bearer token — never send it
+        # over a non-https or malformed URL where it could leak to an arbitrary host.
+        raise HostedEnforcementError(
+            f"Refusing to send the Floe API key to {base!r}: "
+            "the base URL must be an https:// URL with a host."
+        )
     url = f"{base}{CREDIT_REMAINING_PATH}"
 
     request = urllib.request.Request(
@@ -92,7 +102,7 @@ def hosted_remaining_usd(
             body = response.read()
     except urllib.error.HTTPError as exc:
         raise HostedEnforcementError(_describe_http_error(exc)) from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         raise HostedEnforcementError(
             f"Could not reach hosted Floe at {url}: {exc}"
         ) from exc
