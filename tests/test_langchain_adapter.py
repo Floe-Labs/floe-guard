@@ -3,9 +3,11 @@
 The parsing helpers (``_model_from_result``/``_usage_from_result``/
 ``_record_result``) are duck-typed over an ``LLMResult`` and need no langchain
 install, so they run in CI without the optional extra. The two handler tests
-exercise the real callback through the factory and prove the hard-stop: a call
-under budget is allowed and accrued, and a call that would cross the ceiling
-raises ``BudgetExceeded`` in ``on_llm_start`` — before the call runs.
+call the factory, which hard-imports ``langchain_core`` — they are skipped
+unless that extra is installed. When available they exercise the real callback
+and prove the hard-stop: a call under budget is allowed and accrued, and a call
+that would cross the ceiling raises ``BudgetExceeded`` in ``on_llm_start`` —
+before the call runs.
 """
 
 from __future__ import annotations
@@ -108,6 +110,7 @@ def test_no_usage_response_is_a_noop() -> None:
 
 
 def test_handler_allows_under_budget_and_records() -> None:
+    pytest.importorskip("langchain_core")
     guard = BudgetGuard(limit_usd=1.0)
     handler = budget_guard_callback_handler(guard)
 
@@ -117,6 +120,7 @@ def test_handler_allows_under_budget_and_records() -> None:
 
 
 def test_handler_blocks_before_crossing() -> None:
+    pytest.importorskip("langchain_core")
     # First call costs 0.0125 and primes _last_cost; the next call's projection
     # (0.025) crosses the 0.02 ceiling, so on_llm_start raises BEFORE it runs.
     guard = BudgetGuard(limit_usd=0.02)

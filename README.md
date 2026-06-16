@@ -111,7 +111,7 @@ Prefer the LiteLLM-native callback? Register `budget_guard_callback(guard)` on
 ### LangChain
 
 ```bash
-pip install floe-guard[langchain]
+pip install floe-guard[langchain] langchain-openai   # langchain-openai only for the ChatOpenAI example below
 ```
 
 ```python
