@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /js
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      # The Vercel AI SDK middleware targets the v4 LanguageModelV1 interface.
+      # ai v5/v6 are breaking API changes (LanguageModelV2Middleware, renamed
+      # usage fields) — supporting them is a deliberate migration, not an auto-
+      # bump. Major bumps repeatedly broke main, so pin to v4 majors here.
+      # (Honored by Dependabot security updates too.)
+      - dependency-name: "ai"
+        update-types: ["version-update:semver-major"]
