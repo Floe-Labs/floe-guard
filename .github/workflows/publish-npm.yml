@@ -1,0 +1,70 @@
+name: Publish to npm
+
+on:
+  push:
+    branches: [main]
+    # The npm package lives in js/; only publish when it (or this workflow) changes.
+    paths:
+      - 'js/**'
+      - '.github/workflows/publish-npm.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: publish-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test --if-present
+
+      - name: Check if version is already published
+        id: check
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "name=$PKG_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          if npm view "$PKG_NAME@$PKG_VERSION" version > /dev/null 2>npm_view.err; then
+            echo "$PKG_NAME@$PKG_VERSION already published on npm, skipping."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          elif grep -q 'E404' npm_view.err; then
+            echo "$PKG_NAME@$PKG_VERSION not found on npm, will publish."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "npm view failed unexpectedly; aborting publish check." >&2
+            cat npm_view.err >&2
+            exit 1
+          fi
+
+      - name: Publish
+        if: steps.check.outputs.should_publish == 'true'
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
