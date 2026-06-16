@@ -108,10 +108,34 @@ response = guarded_completion(guard, model="gpt-4o", messages=[...])
 Prefer the LiteLLM-native callback? Register `budget_guard_callback(guard)` on
 `litellm.callbacks`.
 
+### Vercel AI SDK
+
+The Vercel AI SDK is TypeScript-only, so it ships as a separate npm package that
+lives in [`js/`](js/).
+
+```bash
+npm i floe-guard ai
+```
+
+```ts
+import { wrapLanguageModel } from "ai";
+import { openai } from "@ai-sdk/openai";
+import { BudgetGuard, budgetGuardMiddleware } from "floe-guard";
+
+const guard = new BudgetGuard(5.0);                   // your ceiling, in USD
+const model = wrapLanguageModel({
+  model: openai("gpt-4o"),
+  middleware: budgetGuardMiddleware(guard),           // throws before crossing
+});
+```
+
+The middleware `check()`s before each call (throwing `BudgetExceeded` to halt the
+run) and `record()`s priced usage after — same semantics as the Python guard. See
+[`js/README.md`](js/README.md).
+
 ### Coming next
 
-LangChain (callback) and the Vercel AI SDK (TypeScript middleware) are next. Open
-an issue if you want one sooner.
+LangChain (callback) is next. Open an issue if you want one sooner.
 
 ## Honest about what this is
 
