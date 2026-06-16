@@ -153,9 +153,32 @@ Floe moves enforcement server-side against a real credit line:
 - **Cross-vendor** — one budget over LLM tokens *and* paid (x402) tool calls.
 - **Team budgets + analytics** — shared ceilings, per-agent isolation, spend history.
 
-Set `FLOE_API_KEY` and floe-guard exposes a hook to delegate enforcement to
-hosted Floe (see [`src/floe_guard/hosted.py`](src/floe_guard/hosted.py) — wiring
-the live endpoint is in progress; the local guard is fully functional today).
+Set `FLOE_API_KEY` (your agent key, `floe_<hex>`) and floe-guard can read your
+agent's **server-side remaining budget** from the live Floe endpoint:
+
+```python
+from floe_guard import hosted_enforcement_available, hosted_remaining_usd
+
+if hosted_enforcement_available():       # True when FLOE_API_KEY is set
+    remaining = hosted_remaining_usd()   # USD left, read from Floe's server
+```
+
+`hosted_remaining_usd()` GETs `/v1/agents/credit-remaining` and returns the USD
+remaining — the minimum of your auto-borrow headroom and your session spend
+remaining. It raises `HostedEnforcementError` on a bad/missing key (401), a
+closed or suspended agent (403), an unprovisioned agent (404), or a network
+failure.
+
+Env vars:
+
+- `FLOE_API_KEY` — your agent key. Required for the read.
+- `FLOE_API_BASE_URL` — override the API host (defaults to
+  `https://credit-api.floelabs.xyz`).
+
+Honest scope: this call only **reads** the remaining budget. The un-bypassable,
+cross-vendor *enforcement* is the hosted Floe product running server-side — not
+this client. Use the number to inform a local ceiling; the server stays the
+source of truth.
 
 → **[dev-dashboard.floelabs.xyz](https://dev-dashboard.floelabs.xyz)** ·
 **[floelabs.xyz](https://floelabs.xyz)**
