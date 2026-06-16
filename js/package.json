@@ -34,6 +34,9 @@
     "dist",
     "src/cost_map.json"
   ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
@@ -46,6 +49,6 @@
     "ai": "^4.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",
-    "vitest": "^2.0.0"
+    "vitest": "^4.1.9"
   }
 }
