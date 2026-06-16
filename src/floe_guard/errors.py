@@ -43,6 +43,16 @@ class UnpriceableModelError(FloeGuardError):
         )
 
 
+class HostedEnforcementError(FloeGuardError):
+    """Raised when a read against the hosted Floe budget endpoint fails.
+
+    Covers a missing API key, a non-200 response (401 bad/missing key, 403 agent
+    closed/suspended, 404 agent not provisioned), a network/timeout failure, or a
+    malformed response body. The message states plainly what went wrong — this
+    client only *reads* server-side remaining budget; it does not enforce.
+    """
+
+
 class UnpriceableModelWarning(UserWarning):
     """Warned (loudly) whenever an unpriceable model is seen.
 
