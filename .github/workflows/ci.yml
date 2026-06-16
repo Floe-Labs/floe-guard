@@ -40,7 +40,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Python and JS cost maps must match
-        run: diff src/floe_guard/cost_map.json js/src/cost_map.json
+        # -q keeps the failure concise (the map is ~700 lines); the message says
+        # what to do rather than dumping the whole diff.
+        run: |
+          diff -q src/floe_guard/cost_map.json js/src/cost_map.json \
+            || { echo "::error::cost_map.json drifted between src/floe_guard/ and js/src/ — re-sync the two copies."; exit 1; }
 
   test:
     runs-on: ubuntu-latest
