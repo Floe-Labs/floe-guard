@@ -16,10 +16,12 @@ from __future__ import annotations
 from .errors import (
     BudgetExceeded,
     FloeGuardError,
+    HostedEnforcementError,
     UnpriceableModelError,
     UnpriceableModelWarning,
 )
 from .guard import BudgetGuard
+from .hosted import hosted_enforcement_available, hosted_remaining_usd
 from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
 
 __version__ = "0.1.0"
@@ -28,10 +30,13 @@ __all__ = [
     "BudgetGuard",
     "BudgetExceeded",
     "FloeGuardError",
+    "HostedEnforcementError",
     "UnpriceableModelError",
     "UnpriceableModelWarning",
     "ManualPrice",
     "PricedModel",
     "price_tokens",
     "resolve_price",
+    "hosted_enforcement_available",
+    "hosted_remaining_usd",
 ]
