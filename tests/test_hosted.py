@@ -117,7 +117,8 @@ def test_unsafe_base_url_refuses_to_send_key(bad_base: str) -> None:
     urlopen.assert_not_called()
 
 
-def test_whitespace_base_url_falls_back_to_default() -> None:
+def test_whitespace_base_url_falls_back_to_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FLOE_API_BASE_URL", raising=False)
     payload = {"headroomToAutoBorrow": "1000000", "sessionSpendRemaining": None}
     with mock.patch(
         "urllib.request.urlopen", return_value=_ok_response(payload)
