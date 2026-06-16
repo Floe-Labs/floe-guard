@@ -1,5 +1,10 @@
 # floe-guard
 
+[![PyPI version](https://img.shields.io/pypi/v/floe-guard.svg)](https://pypi.org/project/floe-guard/)
+[![Downloads](https://static.pepy.tech/badge/floe-guard/month)](https://pepy.tech/project/floe-guard)
+[![Python versions](https://img.shields.io/pypi/pyversions/floe-guard.svg)](https://pypi.org/project/floe-guard/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 **A local budget guardrail for AI agents.** It hard-stops your agent *before its
 next LLM call* when it would cross a spend ceiling — so a runaway loop dies at
 $0.10 instead of $4,000. No account, no signup, no network. Runs in your process.
@@ -26,8 +31,9 @@ BUDGET EXCEEDED — call blocked
   The next call would cross your budget; floe-guard stopped your agent before it ran.
 ```
 
-_Animated demo coming — run `python examples/runaway_loop.py` to watch it stop a loop live._
-<!-- TODO: record docs/stop-the-loop.gif and restore the embed: ![stop the loop](docs/stop-the-loop.gif) -->
+![floe-guard hard-stopping a runaway loop before it crosses a $0.10 ceiling](docs/stop-the-loop.gif)
+
+_Run it yourself: `python examples/runaway_loop.py` — no API key, no account, no network._
 
 ## See it stop a loop (no API key needed)
 
@@ -180,8 +186,18 @@ cross-vendor *enforcement* is the hosted Floe product running server-side — no
 this client. Use the number to inform a local ceiling; the server stays the
 source of truth.
 
-→ **[dev-dashboard.floelabs.xyz](https://dev-dashboard.floelabs.xyz)** ·
-**[floelabs.xyz](https://floelabs.xyz)**
+→ **[dev-dashboard.floelabs.xyz](https://dev-dashboard.floelabs.xyz/?utm_source=floe-guard&utm_medium=readme&utm_campaign=oss)** ·
+**[floelabs.xyz](https://floelabs.xyz/?utm_source=floe-guard&utm_medium=readme&utm_campaign=oss)**
+
+## Built with floe-guard
+
+Using floe-guard in your project? Add the badge so others find it:
+
+[![guarded by floe-guard](https://img.shields.io/badge/guarded%20by-floe--guard-2f81f7.svg)](https://github.com/Floe-Labs/floe-guard)
+
+```markdown
+[![guarded by floe-guard](https://img.shields.io/badge/guarded%20by-floe--guard-2f81f7.svg)](https://github.com/Floe-Labs/floe-guard)
+```
 
 ## Development
 
