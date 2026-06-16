@@ -6,7 +6,7 @@ call* when it would cross a USD spend ceiling. No account, no signup, no network
 Runs in your process.
 
 ```bash
-npm i floe-guard ai
+npm i floe-guard ai@4 @ai-sdk/openai
 ```
 
 ```ts

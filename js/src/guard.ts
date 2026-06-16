@@ -54,8 +54,12 @@ export class BudgetGuard {
    * @param limitUsd the spend ceiling, in USD. `0` blocks the very first call.
    */
   constructor(limitUsd: number, options: BudgetGuardOptions = {}) {
-    if (limitUsd < 0) {
-      throw new RangeError(`limitUsd must not be negative, got ${limitUsd}`);
+    if (!Number.isFinite(limitUsd) || limitUsd < 0) {
+      // NaN/Infinity would make every check() comparison fail-open, silently
+      // disabling the guard — reject them up front.
+      throw new RangeError(
+        `limitUsd must be a finite, non-negative number, got ${limitUsd}`,
+      );
     }
     this.limitUsd = limitUsd;
     this.priceOverrides = options.priceOverrides;

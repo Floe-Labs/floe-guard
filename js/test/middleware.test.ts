@@ -137,3 +137,17 @@ describe("BudgetExceeded message parity with the Python guard", () => {
     );
   });
 });
+
+describe("BudgetGuard constructor validation", () => {
+  it("rejects a non-finite limit so the guard can't fail open", () => {
+    // NaN/Infinity would make check() never trigger — a silently disabled guard.
+    expect(() => new BudgetGuard(NaN)).toThrow(RangeError);
+    expect(() => new BudgetGuard(Infinity)).toThrow(RangeError);
+    expect(() => new BudgetGuard(-1)).toThrow(RangeError);
+  });
+
+  it("accepts a finite, non-negative limit (including 0)", () => {
+    expect(new BudgetGuard(0).limitUsd).toBe(0);
+    expect(new BudgetGuard(5).limitUsd).toBe(5);
+  });
+});

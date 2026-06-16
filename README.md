@@ -114,7 +114,7 @@ The Vercel AI SDK is TypeScript-only, so it ships as a separate npm package that
 lives in [`js/`](js/).
 
 ```bash
-npm i floe-guard ai
+npm i floe-guard ai@4 @ai-sdk/openai
 ```
 
 ```ts
