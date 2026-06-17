@@ -38,6 +38,36 @@ export interface BudgetGuardOptions {
    * `BUDGET EXCEEDED — call blocked` banner to stderr.
    */
   onBlock?: (spentUsd: number, limitUsd: number) => void;
+  /**
+   * Utilization (basis points, 0..10000) at which {@link BudgetGuard.advisory}
+   * flags `nearLimit` so an agent can taper before the hard-stop. Default 8000.
+   */
+  nearLimitBps?: number;
+}
+
+/**
+ * A context-aware spend signal for the single local budget.
+ *
+ * Mirrors the core fields of hosted Floe's `X-Floe-Budget-Advisory` header, so
+ * agent logic that reads it (taper as you approach the cap, stop at it) ports
+ * unchanged to the hosted path. Hosted adds what a local, single-budget guard
+ * cannot know: which of several caps is tightest (`scope` across
+ * `credit_line | session | task | api | vendor`), cross-vendor reasoning,
+ * server-truth balances, and rolling-window reset timing.
+ *
+ * This is a **soft** signal — the model may ignore it. The hard-stop
+ * ({@link BudgetGuard.check}) is what enforces the ceiling; the advisory is
+ * upside (let the agent finish on budget rather than be cut off).
+ */
+export interface BudgetAdvisory {
+  nearLimit: boolean;
+  /** Utilization in basis points, 0..10000 (8500 = 85%). */
+  usedBps: number;
+  remainingUsd: number;
+  limitUsd: number;
+  spentUsd: number;
+  /** Hosted reports the tightest cap across all scopes; local is always "local". */
+  scope: "local";
 }
 
 export class BudgetGuard {
@@ -45,6 +75,7 @@ export class BudgetGuard {
   spentUsd = 0;
   priceOverrides?: Record<string, ManualPrice>;
   failClosed: boolean;
+  nearLimitBps: number;
 
   private readonly onBlock: (spentUsd: number, limitUsd: number) => void;
   /** Cost of the most recent priced call, used to predict the next one. */
@@ -61,10 +92,19 @@ export class BudgetGuard {
         `limitUsd must be a finite, non-negative number, got ${limitUsd}`,
       );
     }
+    // `=== undefined` (not `??`) so an explicit null is rejected by validation
+    // rather than silently defaulting — matches Python, which rejects None.
+    const nearLimitBps = options.nearLimitBps === undefined ? 8000 : options.nearLimitBps;
+    if (!Number.isInteger(nearLimitBps) || nearLimitBps < 0 || nearLimitBps > 10000) {
+      throw new RangeError(
+        `nearLimitBps must be an integer in 0..10000, got ${nearLimitBps}`,
+      );
+    }
     this.limitUsd = limitUsd;
     this.priceOverrides = options.priceOverrides;
     this.failClosed = options.failClosed ?? true;
     this.onBlock = options.onBlock ?? defaultOnBlock;
+    this.nearLimitBps = nearLimitBps;
   }
 
   /**
@@ -137,6 +177,31 @@ export class BudgetGuard {
   /** USD left before the ceiling (never negative). */
   get remainingUsd(): number {
     return Math.max(0, this.limitUsd - this.spentUsd);
+  }
+
+  /**
+   * Context-aware spend advisory for this budget — see {@link BudgetAdvisory}.
+   *
+   * `nearLimit` flips once utilization reaches `nearLimitBps` (default 80%), so an
+   * agent can taper *before* the hard-stop. Advisory only: read it to adapt;
+   * {@link BudgetGuard.check} is what enforces the ceiling.
+   */
+  advisory(): BudgetAdvisory {
+    // Floor (not round) so usedBps never over-reports utilization and nearLimit
+    // flips exactly when the threshold is reached; the epsilon absorbs float noise
+    // and Math.floor matches Python's int() exactly (round() would diverge).
+    const usedBps =
+      this.limitUsd <= 0
+        ? 10000
+        : Math.max(0, Math.min(10000, Math.floor((this.spentUsd / this.limitUsd) * 10000 + 1e-9)));
+    return {
+      nearLimit: usedBps >= this.nearLimitBps,
+      usedBps,
+      remainingUsd: Math.max(0, this.limitUsd - this.spentUsd),
+      limitUsd: this.limitUsd,
+      spentUsd: this.spentUsd,
+      scope: "local",
+    };
   }
 }
 

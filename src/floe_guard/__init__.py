@@ -20,7 +20,7 @@ from .errors import (
     UnpriceableModelError,
     UnpriceableModelWarning,
 )
-from .guard import BudgetGuard
+from .guard import BudgetAdvisory, BudgetGuard
 from .hosted import hosted_enforcement_available, hosted_remaining_usd
 from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
 
@@ -28,6 +28,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "BudgetGuard",
+    "BudgetAdvisory",
     "BudgetExceeded",
     "FloeGuardError",
     "HostedEnforcementError",
