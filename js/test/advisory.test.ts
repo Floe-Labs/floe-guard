@@ -42,8 +42,17 @@ describe("BudgetGuard.advisory", () => {
     expect(a.nearLimit).toBe(true);
   });
 
-  it("rejects an out-of-range nearLimitBps", () => {
+  it("floors usedBps rather than rounding (no early nearLimit, Python parity)", () => {
+    const g = new BudgetGuard(1.0, { nearLimitBps: 8000 });
+    g.spentUsd = 0.79999; // 79.999%
+    const a = g.advisory();
+    expect(a.usedBps).toBe(7999); // floored, not rounded up to 8000
+    expect(a.nearLimit).toBe(false); // 80% not actually reached yet
+  });
+
+  it("rejects an out-of-range or non-integer nearLimitBps", () => {
     expect(() => new BudgetGuard(1.0, { nearLimitBps: -1 })).toThrow(RangeError);
     expect(() => new BudgetGuard(1.0, { nearLimitBps: 10001 })).toThrow(RangeError);
+    expect(() => new BudgetGuard(1.0, { nearLimitBps: 8000.5 })).toThrow(RangeError);
   });
 });

@@ -185,10 +185,13 @@ export class BudgetGuard {
    * {@link BudgetGuard.check} is what enforces the ceiling.
    */
   advisory(): BudgetAdvisory {
+    // Floor (not round) so usedBps never over-reports utilization and nearLimit
+    // flips exactly when the threshold is reached; the epsilon absorbs float noise
+    // and Math.floor matches Python's int() exactly (round() would diverge).
     const usedBps =
       this.limitUsd <= 0
         ? 10000
-        : Math.max(0, Math.min(10000, Math.round((this.spentUsd / this.limitUsd) * 10000)));
+        : Math.max(0, Math.min(10000, Math.floor((this.spentUsd / this.limitUsd) * 10000 + 1e-9)));
     return {
       nearLimit: usedBps >= this.nearLimitBps,
       usedBps,

@@ -89,8 +89,14 @@ class BudgetGuard:
     ) -> None:
         if limit_usd < 0:
             raise ValueError(f"limit_usd must not be negative, got {limit_usd!r}")
-        if not 0 <= near_limit_bps <= 10000:
-            raise ValueError(f"near_limit_bps must be in 0..10000, got {near_limit_bps!r}")
+        # Require a real int (bool is an int subclass in Python — exclude it) in
+        # 0..10000, matching the TS Number.isInteger check for cross-language parity.
+        if (
+            isinstance(near_limit_bps, bool)
+            or not isinstance(near_limit_bps, int)
+            or not 0 <= near_limit_bps <= 10000
+        ):
+            raise ValueError(f"near_limit_bps must be an int in 0..10000, got {near_limit_bps!r}")
         self.limit_usd = float(limit_usd)
         self.price_overrides = price_overrides
         self.fail_closed = fail_closed
@@ -176,7 +182,12 @@ class BudgetGuard:
         if self.limit_usd <= 0.0:
             used_bps = 10000
         else:
-            used_bps = max(0, min(10000, round(self.spent_usd / self.limit_usd * 10000)))
+            # Floor (not round) so used_bps never over-reports utilization and
+            # near_limit flips exactly when the threshold is reached, not a hair
+            # early. The tiny epsilon absorbs float noise (0.7*10000 = 6999.9999…),
+            # and floor matches JS Math.floor exactly — round() would diverge
+            # (Python banker's rounding vs JS ties-up).
+            used_bps = max(0, min(10000, int(self.spent_usd / self.limit_usd * 10000 + 1e-9)))
         return BudgetAdvisory(
             near_limit=used_bps >= self.near_limit_bps,
             used_bps=used_bps,

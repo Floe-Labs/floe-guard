@@ -46,8 +46,26 @@ def test_zero_limit_reads_fully_used() -> None:
     assert a.near_limit is True
 
 
+def test_used_bps_floors_not_rounds() -> None:
+    # 79.999% used: floors to 7999 (not rounded up to 8000), so near_limit does
+    # NOT flip before 80% is actually reached. Also keeps Python/JS parity.
+    g = BudgetGuard(limit_usd=1.00, near_limit_bps=8000)
+    g.spent_usd = 0.79999
+    a = g.advisory()
+    assert a.used_bps == 7999
+    assert a.near_limit is False
+
+
 def test_invalid_near_limit_bps_rejected() -> None:
     with pytest.raises(ValueError):
         BudgetGuard(limit_usd=1.00, near_limit_bps=-1)
     with pytest.raises(ValueError):
         BudgetGuard(limit_usd=1.00, near_limit_bps=10001)
+
+
+def test_non_int_near_limit_bps_rejected() -> None:
+    # Floats and bools (bool is an int subclass) are rejected, matching JS.
+    with pytest.raises(ValueError):
+        BudgetGuard(limit_usd=1.00, near_limit_bps=8000.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        BudgetGuard(limit_usd=1.00, near_limit_bps=True)  # type: ignore[arg-type]
