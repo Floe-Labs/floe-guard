@@ -76,6 +76,36 @@ guard = BudgetGuard(
 # or, set fail_closed=False to warn-and-skip for models you accept un-metered.
 ```
 
+## Context-aware budgeting
+
+The hard-stop is the guarantee; `advisory()` is the *upside*. Read it before a
+step to let your agent **adapt** as it nears the cap — taper to a cheaper model,
+shrink the task, or wrap up — instead of getting cut off mid-run.
+
+```python
+guard = BudgetGuard(limit_usd=0.10, near_limit_bps=7000)   # flag at 70% used
+
+adv = guard.advisory()
+# BudgetAdvisory(near_limit=False, used_bps=125, remaining_usd=0.0987, ...)
+model = "gpt-4o-mini" if adv.near_limit else "gpt-4o"        # downshift near the cap
+
+guard.check()                  # still the hard line — taper or not, this holds
+response = call_your_llm(model)
+guard.record(model, response.usage.prompt_tokens, response.usage.completion_tokens)
+```
+
+`advisory()` returns `near_limit`, `used_bps` (utilization in basis points),
+`remaining_usd`, and the budget totals. It's a **soft** signal — the model may
+ignore it; `check()` is what enforces the ceiling. See
+[`examples/budget_aware.py`](examples/budget_aware.py) for a runnable taper demo
+(no API key).
+
+This is the **same advisory shape** hosted Floe returns on every proxied call
+(the `X-Floe-Budget-Advisory` header), so the logic you write here ports
+unchanged — hosted just answers across *every* vendor and cap with server-truth
+balances and rolling-window reset timing, which a single local budget can't know.
+The TS package exposes the identical `guard.advisory()`.
+
 ## Framework adapters (optional extras)
 
 ### CrewAI

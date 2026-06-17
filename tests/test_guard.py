@@ -131,3 +131,12 @@ def test_remaining_usd() -> None:
     guard = BudgetGuard(limit_usd=1.00)
     guard.record(MODEL, 1_000, 1_000)
     assert guard.remaining_usd == pytest.approx(1.00 - 0.0125)
+
+
+def test_non_finite_limit_rejected() -> None:
+    # NaN/inf would make every check() comparison False and silently disable the
+    # guard — must be rejected (parity with the JS Number.isFinite contract).
+    with pytest.raises(ValueError):
+        BudgetGuard(limit_usd=float("nan"))
+    with pytest.raises(ValueError):
+        BudgetGuard(limit_usd=float("inf"))

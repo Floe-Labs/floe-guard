@@ -6,7 +6,11 @@
  * package `floe-guard` (pip) carries the LiteLLM / CrewAI / LangChain adapters.
  */
 
-export { BudgetGuard, type BudgetGuardOptions } from "./guard.js";
+export {
+  BudgetGuard,
+  type BudgetGuardOptions,
+  type BudgetAdvisory,
+} from "./guard.js";
 export {
   FloeGuardError,
   BudgetExceeded,
