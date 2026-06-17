@@ -9,6 +9,16 @@
  * 2. Call {@link BudgetGuard.record} AFTER every response, with the token usage.
  *    It prices the tokens offline and accrues the USD into a running total.
  *
+ * **Concurrency.** `check()` then `record()` is a check-then-act with an `await`
+ * in between. Fire several model calls at once (e.g. `Promise.all`) and they all
+ * `check()` against the same under-limit total before any `record()` lands, so
+ * the ceiling is blown (see issue #18). {@link BudgetGuard.reserve} /
+ * {@link BudgetGuard.settle} close that gap: `reserve()` holds the estimated cost
+ * in flight (synchronously, before the await), so parallel callers each take
+ * their own slice of the ceiling. JS is single-threaded, so an in-flight counter
+ * is enough — no lock needed. The middleware uses it; `check`/`record` are
+ * unchanged.
+ *
  * This is a faithful port of `src/floe_guard/guard.py` — same prediction logic,
  * same epsilon handling, same fail-closed default.
  */
@@ -49,6 +59,8 @@ export class BudgetGuard {
   private readonly onBlock: (spentUsd: number, limitUsd: number) => void;
   /** Cost of the most recent priced call, used to predict the next one. */
   private lastCost = 0;
+  /** USD held for in-flight calls (reserved, not yet settled). Counts toward the ceiling. */
+  private reserved = 0;
 
   /**
    * @param limitUsd the spend ceiling, in USD. `0` blocks the very first call.
@@ -72,39 +84,60 @@ export class BudgetGuard {
    *
    * Call this immediately before each LLM request. The "next call" is estimated
    * from the last recorded call's cost (override with `estimatedNextCost`); the
-   * first call is always allowed unless the ceiling is already met. A check on
-   * the running total catches an overshoot if the estimate was too low.
+   * first call is always allowed unless the ceiling is already met. In-flight
+   * reservations count toward the total, so this stays correct alongside
+   * {@link BudgetGuard.reserve}.
+   *
+   * Note: `check` is a non-binding peek. For parallel calls, use `reserve()` /
+   * `settle()`, which hold the estimate across the await.
    */
   check(estimatedNextCost?: number): void {
     const estimate =
       estimatedNextCost === undefined
         ? this.lastCost
         : Math.max(0, estimatedNextCost);
-    const projected = this.spentUsd + estimate;
-    // Compare with an epsilon so float rounding in the running total doesn't
-    // block a call early or let one slip past the ceiling.
-    if (
-      this.spentUsd > this.limitUsd - EPS ||
-      projected > this.limitUsd + EPS
-    ) {
+    const committed = this.spentUsd + this.reserved;
+    if (committed > this.limitUsd - EPS || committed + estimate > this.limitUsd + EPS) {
       this.onBlock(this.spentUsd, this.limitUsd);
       throw new BudgetExceeded(this.spentUsd, this.limitUsd);
     }
   }
 
   /**
-   * Price one response's tokens offline and add the cost to the total.
+   * Atomically check the ceiling AND hold the estimated cost in flight.
    *
-   * Returns the USD cost of this call. If the model is unpriceable and no `price`
-   * is given, behaviour depends on `failClosed`: warn + throw (default), or
-   * warn + skip accrual.
+   * The concurrency-safe enforcement path: call before the request and hold the
+   * returned reservation across the await, so parallel callers can't all clear
+   * the same stale total. Throws {@link BudgetExceeded} (without reserving) if
+   * the reservation would cross the ceiling. Returns the reservation handle to
+   * pass to {@link BudgetGuard.settle} (or {@link BudgetGuard.release} on error).
+   * `estimatedCost` defaults to the last call's cost.
    */
-  record(
+  reserve(estimatedCost?: number): number {
+    const estimate =
+      estimatedCost === undefined ? this.lastCost : Math.max(0, estimatedCost);
+    const committed = this.spentUsd + this.reserved;
+    if (committed > this.limitUsd - EPS || committed + estimate > this.limitUsd + EPS) {
+      this.onBlock(this.spentUsd, this.limitUsd);
+      throw new BudgetExceeded(this.spentUsd, this.limitUsd);
+    }
+    this.reserved += estimate;
+    return estimate;
+  }
+
+  /**
+   * Release a reservation and record the actual cost. `record` is `settle` with
+   * no reservation. Returns the USD cost of this call; unpriceable-model handling
+   * matches {@link BudgetGuard.record}, and any held reservation is released even
+   * on the warn-and-skip path.
+   */
+  settle(
     model: string,
     promptTokens: number,
     completionTokens: number,
-    options: { price?: ManualPrice } = {},
+    options: { reserved?: number; price?: ManualPrice } = {},
   ): number {
+    const reserved = options.reserved ?? 0;
     let overrides = this.priceOverrides;
     if (options.price !== undefined) {
       overrides = { ...(overrides ?? {}), [model]: options.price };
@@ -120,10 +153,15 @@ export class BudgetGuard {
       if (this.failClosed) {
         throw new UnpriceableModelError(model);
       }
+      // Opted into un-metered spend for this model: free the hold, accrue $0.
+      this.release(reserved);
       return 0;
     }
 
     const cost = priceTokens(priced, promptTokens, completionTokens);
+    if (reserved) {
+      this.reserved = Math.max(0, this.reserved - reserved);
+    }
     this.spentUsd += cost;
     // Clamp a sub-epsilon float overshoot back to the limit so the running total
     // never reports as having crossed the ceiling by a rounding artifact.
@@ -134,9 +172,37 @@ export class BudgetGuard {
     return cost;
   }
 
-  /** USD left before the ceiling (never negative). */
+  /**
+   * Price one response's tokens offline and add the cost to the total.
+   *
+   * Returns the USD cost of this call. If the model is unpriceable and no `price`
+   * is given, behaviour depends on `failClosed`: warn + throw (default), or
+   * warn + skip accrual.
+   */
+  record(
+    model: string,
+    promptTokens: number,
+    completionTokens: number,
+    options: { price?: ManualPrice } = {},
+  ): number {
+    return this.settle(model, promptTokens, completionTokens, {
+      reserved: 0,
+      price: options.price,
+    });
+  }
+
+  /**
+   * Drop an in-flight reservation without recording spend (e.g. the call failed
+   * before producing usage). Safe to call with `0`.
+   */
+  release(reserved: number): void {
+    if (!reserved) return;
+    this.reserved = Math.max(0, this.reserved - reserved);
+  }
+
+  /** USD left before the ceiling, net of in-flight reservations (never negative). */
   get remainingUsd(): number {
-    return Math.max(0, this.limitUsd - this.spentUsd);
+    return Math.max(0, this.limitUsd - this.spentUsd - this.reserved);
   }
 }
 

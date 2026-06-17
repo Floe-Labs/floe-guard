@@ -5,10 +5,16 @@
  * is TypeScript-only, so it ships as its own npm package.
  *
  * Verified against `ai@4.3.19` (`LanguageModelV1Middleware`):
- *   - `wrapGenerate({ doGenerate, model })` — we `check()` (throws to hard-stop)
- *     BEFORE calling `doGenerate()`, then `record()` from `result.usage`.
- *   - `wrapStream({ doStream, model })` — we `check()` BEFORE `doStream()`, then
- *     read `usage` from the `finish` part as the stream drains.
+ *   - `wrapGenerate({ doGenerate, model })` — we `reserve()` (throws to hard-stop)
+ *     BEFORE calling `doGenerate()`, hold the reservation across the await, then
+ *     `settle()` from `result.usage`.
+ *   - `wrapStream({ doStream, model })` — we `reserve()` BEFORE `doStream()`, then
+ *     `settle()` from the `finish` part as the stream drains.
+ *
+ * Reserving before the await is what makes parallel calls (`Promise.all` over
+ * several generations) honour the ceiling: each holds its slice instead of all
+ * reading the same stale total (issue #18). The reservation is released if the
+ * call throws, or if a stream ends without reporting usage.
  *
  * The model id used for pricing comes from `model.modelId`.
  */
@@ -46,31 +52,52 @@ export function budgetGuardMiddleware(
 ): LanguageModelV1Middleware {
   return {
     async wrapGenerate({ doGenerate, model }) {
-      guard.check(); // throws BudgetExceeded before the call runs
-      const result = await doGenerate();
-      guard.record(
+      const reserved = guard.reserve(); // throws BudgetExceeded before the call runs
+      let result: Awaited<ReturnType<typeof doGenerate>>;
+      try {
+        result = await doGenerate();
+      } catch (err) {
+        guard.release(reserved); // call failed — give the budget back
+        throw err;
+      }
+      guard.settle(
         model.modelId,
         result.usage.promptTokens,
         result.usage.completionTokens,
+        { reserved },
       );
       return result;
     },
 
     async wrapStream({ doStream, model }) {
-      guard.check(); // throws BudgetExceeded before the stream starts
-      const { stream, ...rest } = await doStream();
+      const reserved = guard.reserve(); // throws BudgetExceeded before the stream starts
+      let started: Awaited<ReturnType<typeof doStream>>;
+      try {
+        started = await doStream();
+      } catch (err) {
+        guard.release(reserved);
+        throw err;
+      }
+      const { stream, ...rest } = started;
 
+      let settled = false;
       const guarded = stream.pipeThrough(
         new TransformStream<StreamPart, StreamPart>({
           transform(chunk, controller) {
             if (chunk.type === "finish") {
-              guard.record(
+              guard.settle(
                 model.modelId,
                 chunk.usage.promptTokens,
                 chunk.usage.completionTokens,
+                { reserved },
               );
+              settled = true;
             }
             controller.enqueue(chunk);
+          },
+          flush() {
+            // Stream ended without a finish/usage part — free the held budget.
+            if (!settled) guard.release(reserved);
           },
         }),
       );
