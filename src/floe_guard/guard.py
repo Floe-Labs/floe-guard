@@ -155,10 +155,12 @@ class BudgetGuard:
                 UnpriceableModelWarning,
                 stacklevel=2,
             )
+            # Release any held reservation on BOTH paths. Fail-closed must not
+            # leak the in-flight hold, or _reserved grows permanently and
+            # remaining_usd shrinks until reserve() starts blocking everything.
+            self.release(reserved)
             if self.fail_closed:
                 raise UnpriceableModelError(model)
-            # Opted into un-metered spend for this model: free the hold, accrue $0.
-            self.release(reserved)
             return 0.0
 
         cost = price_tokens(priced, prompt_tokens, completion_tokens)

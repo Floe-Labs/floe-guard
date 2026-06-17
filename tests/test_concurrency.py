@@ -12,7 +12,14 @@ from __future__ import annotations
 import threading
 import time
 
-from floe_guard import BudgetExceeded, BudgetGuard
+import pytest
+
+from floe_guard import (
+    BudgetExceeded,
+    BudgetGuard,
+    UnpriceableModelError,
+    UnpriceableModelWarning,
+)
 
 MODEL = "gpt-4o"  # 1k in + 1k out = $0.0125 / call
 
@@ -69,3 +76,18 @@ def test_release_frees_inflight_budget() -> None:
     before = guard.remaining_usd
     guard.release(reserved)  # call failed, give the budget back
     assert guard.remaining_usd >= before
+
+
+def test_unpriceable_fail_closed_releases_the_reservation() -> None:
+    # Regression for the #19 review: settle() on an unpriceable model under
+    # fail_closed must release the in-flight reservation before it raises, or
+    # _reserved leaks and remaining_usd shrinks permanently until reserve() blocks.
+    guard = BudgetGuard(limit_usd=0.10, on_block=lambda *_: None)
+    guard.record(MODEL, 1_000, 1_000)
+    base = guard.remaining_usd
+    reserved = guard.reserve()
+    assert guard.remaining_usd < base  # hold is in flight
+    with pytest.warns(UnpriceableModelWarning):
+        with pytest.raises(UnpriceableModelError):
+            guard.settle("totally-made-up-model-x", 100, 100, reserved=reserved)
+    assert guard.remaining_usd == base  # released, not leaked

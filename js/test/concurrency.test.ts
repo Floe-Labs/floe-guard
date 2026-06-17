@@ -9,7 +9,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { BudgetExceeded, BudgetGuard, budgetGuardMiddleware } from "../src/index.js";
+import { BudgetExceeded, BudgetGuard, UnpriceableModelError, budgetGuardMiddleware } from "../src/index.js";
 
 function fakeModel(modelId: string) {
   return { modelId } as never;
@@ -78,5 +78,18 @@ describe("BudgetGuard — concurrency (issue #18)", () => {
     const before = guard.remainingUsd;
     guard.release(reserved);
     expect(guard.remainingUsd).toBeGreaterThanOrEqual(before);
+  });
+
+  it("releases the reservation when settle() hits an unpriceable model (fail-closed)", () => {
+    // Regression for the #19 review: fail-closed must not leak the in-flight hold.
+    const guard = new BudgetGuard(0.1, { onBlock: () => {} });
+    guard.record("gpt-4o", 1000, 1000);
+    const base = guard.remainingUsd;
+    const reserved = guard.reserve();
+    expect(guard.remainingUsd).toBeLessThan(base);
+    expect(() => guard.settle("totally-made-up-model-x", 100, 100, { reserved })).toThrow(
+      UnpriceableModelError,
+    );
+    expect(guard.remainingUsd).toBe(base); // released, not leaked
   });
 });

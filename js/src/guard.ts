@@ -150,11 +150,13 @@ export class BudgetGuard {
           `manual price given. The budget guard cannot enforce a ceiling on ` +
           `spend it cannot measure — pass { price } or set it in priceOverrides.`,
       );
+      // Release any held reservation on BOTH paths. Fail-closed must not leak
+      // the in-flight hold, or reserved grows permanently and remainingUsd
+      // shrinks until reserve() starts blocking everything.
+      this.release(reserved);
       if (this.failClosed) {
         throw new UnpriceableModelError(model);
       }
-      // Opted into un-metered spend for this model: free the hold, accrue $0.
-      this.release(reserved);
       return 0;
     }
 
