@@ -44,6 +44,20 @@ const guard = new BudgetGuard(5.0, {
 });
 ```
 
+## Context-aware budgeting
+
+`guard.advisory()` returns a soft signal you can act on before a call — `nearLimit`,
+`usedBps`, `remainingUsd` — so the agent can taper near the cap instead of being
+cut off. The hard-stop (`check`) is still the guarantee. This is the same shape
+the Python package exposes and that hosted Floe returns on every proxied call
+(`X-Floe-Budget-Advisory`), so the logic ports unchanged to the hosted path.
+
+```ts
+const guard = new BudgetGuard(0.1, { nearLimitBps: 7000 }); // flag at 70% used
+const adv = guard.advisory();
+const model = adv.nearLimit ? openai("gpt-4o-mini") : openai("gpt-4o");
+```
+
 ## Verified against
 
 `ai@4` (`LanguageModelV1Middleware` via `wrapLanguageModel` /
