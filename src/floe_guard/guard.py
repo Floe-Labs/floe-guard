@@ -18,6 +18,7 @@ upgrade (see the README).
 
 from __future__ import annotations
 
+import math
 import sys
 import warnings
 from collections.abc import Callable
@@ -87,8 +88,11 @@ class BudgetGuard:
         on_block: Callable[[float, float], None] | None = None,
         near_limit_bps: int = 8000,
     ) -> None:
-        if limit_usd < 0:
-            raise ValueError(f"limit_usd must not be negative, got {limit_usd!r}")
+        if not math.isfinite(limit_usd) or limit_usd < 0:
+            # NaN/inf would make every check() comparison evaluate False and
+            # silently disable the guard — reject them (matches the JS
+            # Number.isFinite contract).
+            raise ValueError(f"limit_usd must be a finite, non-negative number, got {limit_usd!r}")
         # Require a real int (bool is an int subclass in Python — exclude it) in
         # 0..10000, matching the TS Number.isInteger check for cross-language parity.
         if (

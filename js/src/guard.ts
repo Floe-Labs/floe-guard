@@ -92,7 +92,9 @@ export class BudgetGuard {
         `limitUsd must be a finite, non-negative number, got ${limitUsd}`,
       );
     }
-    const nearLimitBps = options.nearLimitBps ?? 8000;
+    // `=== undefined` (not `??`) so an explicit null is rejected by validation
+    // rather than silently defaulting — matches Python, which rejects None.
+    const nearLimitBps = options.nearLimitBps === undefined ? 8000 : options.nearLimitBps;
     if (!Number.isInteger(nearLimitBps) || nearLimitBps < 0 || nearLimitBps > 10000) {
       throw new RangeError(
         `nearLimitBps must be an integer in 0..10000, got ${nearLimitBps}`,

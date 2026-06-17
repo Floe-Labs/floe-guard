@@ -55,4 +55,13 @@ describe("BudgetGuard.advisory", () => {
     expect(() => new BudgetGuard(1.0, { nearLimitBps: 10001 })).toThrow(RangeError);
     expect(() => new BudgetGuard(1.0, { nearLimitBps: 8000.5 })).toThrow(RangeError);
   });
+
+  it("rejects an explicit null nearLimitBps instead of silently defaulting", () => {
+    // undefined → default 8000; null is an explicit bad value → reject (matches
+    // Python rejecting None).
+    expect(new BudgetGuard(1.0, { nearLimitBps: undefined }).nearLimitBps).toBe(8000);
+    expect(
+      () => new BudgetGuard(1.0, { nearLimitBps: null as unknown as number }),
+    ).toThrow(RangeError);
+  });
 });
