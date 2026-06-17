@@ -53,56 +53,53 @@ export function budgetGuardMiddleware(
   return {
     async wrapGenerate({ doGenerate, model }) {
       const reserved = guard.reserve(); // throws BudgetExceeded before the call runs
-      let result: Awaited<ReturnType<typeof doGenerate>>;
       try {
-        result = await doGenerate();
+        const result = await doGenerate();
+        guard.settle(
+          model.modelId,
+          result.usage.promptTokens,
+          result.usage.completionTokens,
+          { reserved },
+        );
+        return result;
       } catch (err) {
-        guard.release(reserved); // call failed — give the budget back
+        guard.release(reserved); // call (or pricing) failed — give the budget back
         throw err;
       }
-      guard.settle(
-        model.modelId,
-        result.usage.promptTokens,
-        result.usage.completionTokens,
-        { reserved },
-      );
-      return result;
     },
 
     async wrapStream({ doStream, model }) {
       const reserved = guard.reserve(); // throws BudgetExceeded before the stream starts
-      let started: Awaited<ReturnType<typeof doStream>>;
       try {
-        started = await doStream();
+        const { stream, ...rest } = await doStream();
+
+        let settled = false;
+        const guarded = stream.pipeThrough(
+          new TransformStream<StreamPart, StreamPart>({
+            transform(chunk, controller) {
+              if (chunk.type === "finish") {
+                guard.settle(
+                  model.modelId,
+                  chunk.usage.promptTokens,
+                  chunk.usage.completionTokens,
+                  { reserved },
+                );
+                settled = true;
+              }
+              controller.enqueue(chunk);
+            },
+            flush() {
+              // Stream ended without a finish/usage part — free the held budget.
+              if (!settled) guard.release(reserved);
+            },
+          }),
+        );
+
+        return { stream: guarded, ...rest };
       } catch (err) {
         guard.release(reserved);
         throw err;
       }
-      const { stream, ...rest } = started;
-
-      let settled = false;
-      const guarded = stream.pipeThrough(
-        new TransformStream<StreamPart, StreamPart>({
-          transform(chunk, controller) {
-            if (chunk.type === "finish") {
-              guard.settle(
-                model.modelId,
-                chunk.usage.promptTokens,
-                chunk.usage.completionTokens,
-                { reserved },
-              );
-              settled = true;
-            }
-            controller.enqueue(chunk);
-          },
-          flush() {
-            // Stream ended without a finish/usage part — free the held budget.
-            if (!settled) guard.release(reserved);
-          },
-        }),
-      );
-
-      return { stream: guarded, ...rest };
     },
   };
 }
