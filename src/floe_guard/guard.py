@@ -19,6 +19,7 @@ upgrade (see the README).
 from __future__ import annotations
 
 import sys
+import threading
 import warnings
 from collections.abc import Callable
 
@@ -68,6 +69,9 @@ class BudgetGuard:
         # Cost of the most recent priced call, used to predict the next one so we
         # can block BEFORE the crossing call runs (not one call too late).
         self._last_cost = 0.0
+        # Lock to make check()/record() atomic under concurrent calls (e.g. parallel
+        # CrewAI agents, async tasks, parallel tool calls sharing one guard).
+        self._lock = threading.Lock()
 
     # ── enforcement ───────────────────────────────────────────────────────────
 
@@ -80,13 +84,14 @@ class BudgetGuard:
         ceiling is already met. A belt-and-suspenders check on the running total
         catches an overshoot if the estimate was too low.
         """
-        estimate = self._last_cost if estimated_next_cost is None else max(0.0, estimated_next_cost)
-        projected = self.spent_usd + estimate
-        # Compare with an epsilon so float rounding in the running total doesn't
-        # block a call early or let one slip past the ceiling.
-        if self.spent_usd > self.limit_usd - _EPS or projected > self.limit_usd + _EPS:
-            self._on_block(self.spent_usd, self.limit_usd)
-            raise BudgetExceeded(self.spent_usd, self.limit_usd)
+        with self._lock:
+            estimate = self._last_cost if estimated_next_cost is None else max(0.0, estimated_next_cost)
+            projected = self.spent_usd + estimate
+            # Compare with an epsilon so float rounding in the running total doesn't
+            # block a call early or let one slip past the ceiling.
+            if self.spent_usd > self.limit_usd - _EPS or projected > self.limit_usd + _EPS:
+                self._on_block(self.spent_usd, self.limit_usd)
+                raise BudgetExceeded(self.spent_usd, self.limit_usd)
 
     def record(
         self,
@@ -102,32 +107,33 @@ class BudgetGuard:
         ``price`` is given, behaviour depends on ``fail_closed`` (see the class
         docstring): warn + raise (default), or warn + skip accrual.
         """
-        overrides = self.price_overrides
-        if price is not None:
-            overrides = {**(overrides or {}), model: price}
+        with self._lock:
+            overrides = self.price_overrides
+            if price is not None:
+                overrides = {**(overrides or {}), model: price}
 
-        priced = resolve_price(model, overrides)
-        if priced is None:
-            warnings.warn(
-                f"Cannot price model {model!r}: not in the bundled cost map and no "
-                f"manual price given. The budget guard cannot enforce a ceiling on "
-                f"spend it cannot measure — pass price=ManualPrice(...) or set it in "
-                f"price_overrides.",
-                UnpriceableModelWarning,
-                stacklevel=2,
-            )
-            if self.fail_closed:
-                raise UnpriceableModelError(model)
-            return 0.0
+            priced = resolve_price(model, overrides)
+            if priced is None:
+                warnings.warn(
+                    f"Cannot price model {model!r}: not in the bundled cost map and no "
+                    f"manual price given. The budget guard cannot enforce a ceiling on "
+                    f"spend it cannot measure — pass price=ManualPrice(...) or set it in "
+                    f"price_overrides.",
+                    UnpriceableModelWarning,
+                    stacklevel=2,
+                )
+                if self.fail_closed:
+                    raise UnpriceableModelError(model)
+                return 0.0
 
-        cost = price_tokens(priced, prompt_tokens, completion_tokens)
-        self.spent_usd += cost
-        # Clamp a sub-epsilon float overshoot back to the limit so the running
-        # total never reports as having crossed the ceiling by a rounding artifact.
-        if 0.0 < self.spent_usd - self.limit_usd < _EPS:
-            self.spent_usd = self.limit_usd
-        self._last_cost = cost
-        return cost
+            cost = price_tokens(priced, prompt_tokens, completion_tokens)
+            self.spent_usd += cost
+            # Clamp a sub-epsilon float overshoot back to the limit so the running
+            # total never reports as having crossed the ceiling by a rounding artifact.
+            if 0.0 < self.spent_usd - self.limit_usd < _EPS:
+                self.spent_usd = self.limit_usd
+            self._last_cost = cost
+            return cost
 
     @property
     def remaining_usd(self) -> float:
