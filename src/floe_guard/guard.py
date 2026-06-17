@@ -207,7 +207,9 @@ class BudgetGuard:
 
     def _would_cross(self, estimated_next_cost: float | None) -> bool:
         with self._lock:
-            estimate = self._last_cost if estimated_next_cost is None else max(0.0, estimated_next_cost)
+            estimate = (
+                self._last_cost if estimated_next_cost is None else max(0.0, estimated_next_cost)
+            )
             committed = self.spent_usd + self._reserved
             return committed > self.limit_usd - _EPS or committed + estimate > self.limit_usd + _EPS
 
