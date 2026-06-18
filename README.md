@@ -196,6 +196,11 @@ vendored cost map *inside your process*:
 - The cost map can drift as vendors change prices — refresh it like any snapshot.
 - It only sees the vendors you instrument.
 - A determined agent or a bug could route around an in-process check.
+- Under heavy or cold-start concurrency it bounds steady-state spend, not the
+  first parallel wave. Reservations size from the last call's cost (`0` until the
+  first `record()`), so the opening fan-out has nothing to estimate from. Pass a
+  known per-call max to `reserve()` to bound it, or use hosted Floe for a hard cap
+  under arbitrary concurrency.
 
 It's genuinely useful on its own, and it's honest about its limits. No inflated
 metrics, no "zero defaults" claims — it's a free local stop, not a vault.

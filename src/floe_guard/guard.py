@@ -11,6 +11,15 @@ Why a call-path wrapper and not an event listener: a passive event-bus listener
 is notified *after* the fact and cannot halt the run. To actually stop spend, the
 guard has to sit in front of the next call. That is the whole point.
 
+**Concurrency.** ``check()`` then ``record()`` is two non-atomic steps. When calls
+run in parallel — the default for a CrewAI crew (async tasks,
+``kickoff_for_each_async``, hierarchical tool calls) — several can read the same
+under-limit total, all clear ``check()``, then all run, and the ceiling is blown
+(see issue #18). :meth:`reserve` / :meth:`settle` close that gap: ``reserve``
+atomically checks the ceiling *and* holds the estimated cost in-flight, so N
+parallel callers can't all clear a stale total. The framework adapters use it;
+the sequential ``check`` / ``record`` API is unchanged.
+
 This is **estimate-based**: it prices tokens from a vendored cost map, it does
 not reconcile against a wallet. Hosted Floe is the un-bypassable, cross-vendor
 upgrade (see the README).
@@ -20,6 +29,7 @@ from __future__ import annotations
 
 import math
 import sys
+import threading
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -77,6 +87,10 @@ class BudgetGuard:
         near_limit_bps: utilization (basis points, 0..10000) at which
             :meth:`advisory` flags ``near_limit`` so an agent can taper before the
             hard-stop. Defaults to ``8000`` (80%).
+
+    Thread-safe: the running total and in-flight reservations are guarded by a
+    lock, so the guard can back a parallel crew (use :meth:`reserve` /
+    :meth:`settle`).
     """
 
     def __init__(
@@ -110,6 +124,10 @@ class BudgetGuard:
         # Cost of the most recent priced call, used to predict the next one so we
         # can block BEFORE the crossing call runs (not one call too late).
         self._last_cost = 0.0
+        # USD held for calls that are in flight (reserved but not yet settled).
+        # Counted against the ceiling so concurrent callers can't overshoot.
+        self._reserved = 0.0
+        self._lock = threading.Lock()
 
     # ── enforcement ───────────────────────────────────────────────────────────
 
@@ -120,15 +138,98 @@ class BudgetGuard:
         estimated from the last recorded call's cost (override with
         ``estimated_next_cost``); the first call is always allowed unless the
         ceiling is already met. A belt-and-suspenders check on the running total
-        catches an overshoot if the estimate was too low.
+        catches an overshoot if the estimate was too low. In-flight reservations
+        count toward the total, so this stays correct alongside :meth:`reserve`.
+
+        Note: ``check`` is a non-binding peek. For parallel calls, use
+        :meth:`reserve` / :meth:`settle`, which hold the estimate atomically.
         """
-        estimate = self._last_cost if estimated_next_cost is None else max(0.0, estimated_next_cost)
-        projected = self.spent_usd + estimate
-        # Compare with an epsilon so float rounding in the running total doesn't
-        # block a call early or let one slip past the ceiling.
-        if self.spent_usd > self.limit_usd - _EPS or projected > self.limit_usd + _EPS:
-            self._on_block(self.spent_usd, self.limit_usd)
-            raise BudgetExceeded(self.spent_usd, self.limit_usd)
+        self._validate_estimate(estimated_next_cost)
+        if self._would_cross(estimated_next_cost):
+            self._block()
+
+    def reserve(self, estimated_cost: float | None = None) -> float:
+        """Atomically check the ceiling AND hold the estimated cost in-flight.
+
+        This is the concurrency-safe enforcement path. Each parallel caller
+        reserves before its call, so N callers can't all clear the same stale
+        total and overshoot. Raises :class:`BudgetExceeded` (without reserving)
+        if the reservation would cross the ceiling.
+
+        Returns a reservation handle (the USD amount held) to pass to
+        :meth:`settle` after the response, or to :meth:`release` if the call
+        fails. ``estimated_cost`` defaults to the last call's cost.
+        """
+        self._validate_estimate(estimated_cost)
+        with self._lock:
+            estimate = self._last_cost if estimated_cost is None else max(0.0, estimated_cost)
+            committed = self.spent_usd + self._reserved
+            if committed > self.limit_usd - _EPS or committed + estimate > self.limit_usd + _EPS:
+                spent, limit = self.spent_usd, self.limit_usd
+            else:
+                self._reserved += estimate
+                return estimate
+        # Blocked — notify and raise outside the lock.
+        self._on_block(spent, limit)
+        raise BudgetExceeded(spent, limit)
+
+    def settle(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        *,
+        reserved: float = 0.0,
+        price: ManualPrice | None = None,
+    ) -> float:
+        """Release a reservation and record the actual cost. Concurrency-safe.
+
+        ``record`` is ``settle`` with no reservation. Returns the USD cost of
+        this call. Unpriceable-model handling matches :meth:`record` (warn +
+        raise when ``fail_closed``, else warn + skip), and any held reservation
+        is released even on the skip path.
+        """
+        # A bad reserved handle would corrupt _reserved and break the ceiling for
+        # OTHER in-flight calls (negative → phantom hold; inf → clears all holds).
+        if not math.isfinite(reserved) or reserved < 0:
+            raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
+        priced = self._resolve(model, price)
+        if priced is None:
+            warnings.warn(
+                f"Cannot price model {model!r}: not in the bundled cost map and no "
+                f"manual price given. The budget guard cannot enforce a ceiling on "
+                f"spend it cannot measure — pass price=ManualPrice(...) or set it in "
+                f"price_overrides.",
+                UnpriceableModelWarning,
+                stacklevel=2,
+            )
+            # Release any held reservation on BOTH paths. Fail-closed must not
+            # leak the in-flight hold, or _reserved grows permanently and
+            # remaining_usd shrinks until reserve() starts blocking everything.
+            self.release(reserved)
+            if self.fail_closed:
+                raise UnpriceableModelError(model)
+            return 0.0
+
+        try:
+            cost = price_tokens(priced, prompt_tokens, completion_tokens)
+        except Exception:
+            # price_tokens can raise (e.g. non-finite token counts). Release the
+            # in-flight hold before propagating so _reserved doesn't leak and
+            # shrink remaining_usd permanently — same fail-safe as the unpriceable
+            # path above.
+            self.release(reserved)
+            raise
+        with self._lock:
+            if reserved:
+                self._reserved = max(0.0, self._reserved - reserved)
+            self.spent_usd += cost
+            # Clamp a sub-epsilon float overshoot back to the limit so the running
+            # total never reports as having crossed the ceiling by a rounding artifact.
+            if 0.0 < self.spent_usd - self.limit_usd < _EPS:
+                self.spent_usd = self.limit_usd
+            self._last_cost = cost
+        return cost
 
     def record(
         self,
@@ -144,37 +245,26 @@ class BudgetGuard:
         ``price`` is given, behaviour depends on ``fail_closed`` (see the class
         docstring): warn + raise (default), or warn + skip accrual.
         """
-        overrides = self.price_overrides
-        if price is not None:
-            overrides = {**(overrides or {}), model: price}
+        return self.settle(model, prompt_tokens, completion_tokens, reserved=0.0, price=price)
 
-        priced = resolve_price(model, overrides)
-        if priced is None:
-            warnings.warn(
-                f"Cannot price model {model!r}: not in the bundled cost map and no "
-                f"manual price given. The budget guard cannot enforce a ceiling on "
-                f"spend it cannot measure — pass price=ManualPrice(...) or set it in "
-                f"price_overrides.",
-                UnpriceableModelWarning,
-                stacklevel=2,
-            )
-            if self.fail_closed:
-                raise UnpriceableModelError(model)
-            return 0.0
-
-        cost = price_tokens(priced, prompt_tokens, completion_tokens)
-        self.spent_usd += cost
-        # Clamp a sub-epsilon float overshoot back to the limit so the running
-        # total never reports as having crossed the ceiling by a rounding artifact.
-        if 0.0 < self.spent_usd - self.limit_usd < _EPS:
-            self.spent_usd = self.limit_usd
-        self._last_cost = cost
-        return cost
+    def release(self, reserved: float) -> None:
+        """Drop an in-flight reservation without recording spend (e.g. the call
+        failed before producing usage). Safe to call with ``0``."""
+        # Validate before the zero-check so a NaN handle raises instead of being
+        # silently dropped (which would leak the hold). A bad handle here corrupts
+        # _reserved for other in-flight calls.
+        if not math.isfinite(reserved) or reserved < 0:
+            raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
+        if not reserved:
+            return
+        with self._lock:
+            self._reserved = max(0.0, self._reserved - reserved)
 
     @property
     def remaining_usd(self) -> float:
-        """USD left before the ceiling (never negative)."""
-        return max(0.0, self.limit_usd - self.spent_usd)
+        """USD left before the ceiling, net of in-flight reservations (never negative)."""
+        with self._lock:
+            return max(0.0, self.limit_usd - self.spent_usd - self._reserved)
 
     def advisory(self) -> BudgetAdvisory:
         """Context-aware spend advisory for this budget — see :class:`BudgetAdvisory`.
@@ -195,10 +285,42 @@ class BudgetGuard:
         return BudgetAdvisory(
             near_limit=used_bps >= self.near_limit_bps,
             used_bps=used_bps,
+            # Settled budget: limit minus accrued spend, deliberately NOT net of
+            # in-flight reservations. This differs from the remaining_usd property
+            # (which subtracts _reserved): the advisory is a soft utilization signal
+            # about money already spent, while the property reports what a new call
+            # can still claim.
             remaining_usd=max(0.0, self.limit_usd - self.spent_usd),
             limit_usd=self.limit_usd,
             spent_usd=self.spent_usd,
         )
+
+    # ── internals ──────────────────────────────────────────────────────────────
+
+    def _validate_estimate(self, estimated: float | None) -> None:
+        # NaN/inf would poison the ceiling comparisons and fail-open (or poison
+        # _reserved) — reject a non-finite caller-supplied estimate up front,
+        # matching the constructor's math.isfinite guard and the TS Number.isFinite.
+        if estimated is not None and not math.isfinite(estimated):
+            raise ValueError(f"estimated cost must be a finite number, got {estimated!r}")
+
+    def _would_cross(self, estimated_next_cost: float | None) -> bool:
+        with self._lock:
+            estimate = (
+                self._last_cost if estimated_next_cost is None else max(0.0, estimated_next_cost)
+            )
+            committed = self.spent_usd + self._reserved
+            return committed > self.limit_usd - _EPS or committed + estimate > self.limit_usd + _EPS
+
+    def _block(self) -> None:
+        self._on_block(self.spent_usd, self.limit_usd)
+        raise BudgetExceeded(self.spent_usd, self.limit_usd)
+
+    def _resolve(self, model: str, price: ManualPrice | None):
+        overrides = self.price_overrides
+        if price is not None:
+            overrides = {**(overrides or {}), model: price}
+        return resolve_price(model, overrides)
 
 
 def _default_on_block(spent_usd: float, limit_usd: float) -> None:

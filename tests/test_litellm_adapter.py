@@ -82,3 +82,25 @@ def test_no_usage_response_is_a_noop() -> None:
     _record_response(guard, {}, {})  # no model, no usage
     _record_response(guard, {}, {"usage": {"prompt_tokens": 0, "completion_tokens": 0}})
     assert guard.spent_usd == 0.0
+
+
+def test_usageless_response_releases_the_reservation() -> None:
+    # A usage-less response must free the in-flight reservation, or the callback
+    # path leaks _reserved and remaining_usd shrinks permanently.
+    guard = BudgetGuard(limit_usd=1.0)
+    base = guard.remaining_usd
+    reserved = guard.reserve(0.01)  # explicit estimate (fresh guard has no last cost)
+    assert guard.remaining_usd < base  # hold counted against the ceiling
+    _record_response(guard, {}, {}, reserved=reserved)  # no usage -> release
+    assert guard.spent_usd == 0.0
+    assert guard.remaining_usd == pytest.approx(base, abs=1e-9)
+    assert guard._reserved == pytest.approx(0.0, abs=1e-9)
+
+
+def test_record_response_tolerates_non_dict_kwargs() -> None:
+    # LiteLLM hooks pass kwargs as Any; a None/non-dict must not crash the
+    # metering callback on .get(). The model resolves from the response instead.
+    guard = BudgetGuard(limit_usd=1.0)
+    resp = {"model": "gpt-4o", "usage": {"prompt_tokens": 1_000, "completion_tokens": 1_000}}
+    _record_response(guard, None, resp)  # type: ignore[arg-type]
+    assert guard.spent_usd > 0
