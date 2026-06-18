@@ -76,10 +76,12 @@ describe("BudgetGuard — concurrency (issue #18)", () => {
   it("release() returns in-flight budget when a call fails", () => {
     const guard = new BudgetGuard(0.1, { onBlock: () => {} });
     guard.record("gpt-4o", 1000, 1000);
+    const before = guard.remainingUsd; // baseline BEFORE the hold
     const reserved = guard.reserve();
-    const before = guard.remainingUsd;
+    expect(guard.remainingUsd).toBeLessThan(before); // the hold actually moved the needle
     guard.release(reserved);
-    expect(guard.remainingUsd).toBeGreaterThanOrEqual(before);
+    expect(guard.remainingUsd).toBeCloseTo(before, 9); // fully restored, not just >=
+    expect((guard as unknown as { reserved: number }).reserved).toBeCloseTo(0, 9); // no hold left
   });
 
   it("releases the reservation when settle() hits an unpriceable model (fail-closed)", () => {

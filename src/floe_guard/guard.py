@@ -274,6 +274,11 @@ class BudgetGuard:
         return BudgetAdvisory(
             near_limit=used_bps >= self.near_limit_bps,
             used_bps=used_bps,
+            # Settled budget: limit minus accrued spend, deliberately NOT net of
+            # in-flight reservations. This differs from the remaining_usd property
+            # (which subtracts _reserved): the advisory is a soft utilization signal
+            # about money already spent, while the property reports what a new call
+            # can still claim.
             remaining_usd=max(0.0, self.limit_usd - self.spent_usd),
             limit_usd=self.limit_usd,
             spent_usd=self.spent_usd,

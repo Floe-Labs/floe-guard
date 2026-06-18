@@ -274,6 +274,10 @@ export class BudgetGuard {
     return {
       nearLimit: usedBps >= this.nearLimitBps,
       usedBps,
+      // Settled budget: limit minus accrued spend, deliberately NOT net of
+      // in-flight reservations. Unlike the remainingUsd getter (which subtracts
+      // `reserved`), the advisory is a soft utilization signal about money already
+      // spent, while the getter reports what a new call can still claim.
       remainingUsd: Math.max(0, this.limitUsd - this.spentUsd),
       limitUsd: this.limitUsd,
       spentUsd: this.spentUsd,

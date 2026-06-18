@@ -53,61 +53,85 @@ export function budgetGuardMiddleware(
   return {
     async wrapGenerate({ doGenerate, model }) {
       const reserved = guard.reserve(); // throws BudgetExceeded before the call runs
+      let result: Awaited<ReturnType<typeof doGenerate>>;
       try {
-        const result = await doGenerate();
-        guard.settle(
-          model.modelId,
-          result.usage.promptTokens,
-          result.usage.completionTokens,
-          { reserved },
-        );
+        result = await doGenerate();
+      } catch (err) {
+        guard.release(reserved); // the call failed before settle() took ownership
+        throw err;
+      }
+      // From here settle() OWNS the reservation: it releases the hold on its own
+      // throw (unpriceable / non-finite cost) and consumes it on success. Releasing
+      // again would double-subtract and clear a concurrent call's in-flight hold.
+      let handled = false;
+      try {
+        const { promptTokens, completionTokens } = result.usage;
+        handled = true;
+        guard.settle(model.modelId, promptTokens, completionTokens, { reserved });
         return result;
       } catch (err) {
-        guard.release(reserved); // call (or pricing) failed — give the budget back
+        if (!handled) guard.release(reserved); // failed reading usage, before settle()
         throw err;
       }
     },
 
     async wrapStream({ doStream, model }) {
       const reserved = guard.reserve(); // throws BudgetExceeded before the stream starts
+      let streamResult: Awaited<ReturnType<typeof doStream>>;
       try {
-        const { stream, ...rest } = await doStream();
-
-        let settled = false;
-        const guarded = stream.pipeThrough(
-          new TransformStream<StreamPart, StreamPart>({
-            transform(chunk, controller) {
-              if (chunk.type === "finish") {
-                try {
-                  guard.settle(
-                    model.modelId,
-                    chunk.usage.promptTokens,
-                    chunk.usage.completionTokens,
-                    { reserved },
-                  );
-                } catch (err) {
-                  // settle()/usage access can throw (e.g. non-finite usage). A
-                  // transform error means flush() won't run, so release the held
-                  // budget here to avoid leaking it, then surface the error.
-                  guard.release(reserved);
-                  throw err;
-                }
-                settled = true;
-              }
-              controller.enqueue(chunk);
-            },
-            flush() {
-              // Stream ended without a finish/usage part — free the held budget.
-              if (!settled) guard.release(reserved);
-            },
-          }),
-        );
-
-        return { stream: guarded, ...rest };
+        streamResult = await doStream();
       } catch (err) {
-        guard.release(reserved);
+        guard.release(reserved); // the call failed before settle() took ownership
         throw err;
       }
+      const { stream, ...rest } = streamResult;
+
+      // `handled` flips once the reservation is disposed — settled on the finish
+      // part, or released exactly once if the stream produced no usage (flush) or
+      // ended early via error/cancellation (cancel). settle() owns disposal once
+      // called, so nothing else may release after `handled` is set, or we'd
+      // double-subtract and clear a concurrent call's hold.
+      let handled = false;
+      const guarded = stream.pipeThrough(
+        new TransformStream<StreamPart, StreamPart>({
+          transform(chunk, controller) {
+            if (chunk.type === "finish" && !handled) {
+              try {
+                const { promptTokens, completionTokens } = chunk.usage;
+                handled = true;
+                guard.settle(model.modelId, promptTokens, completionTokens, { reserved });
+              } catch (err) {
+                // Release only if we never reached settle() (e.g. usage missing).
+                // If settle() itself threw, it already released its own hold.
+                if (!handled) {
+                  handled = true;
+                  guard.release(reserved);
+                }
+                throw err;
+              }
+            }
+            controller.enqueue(chunk);
+          },
+          flush() {
+            // Clean close with no finish/usage part — free the held budget.
+            if (!handled) {
+              handled = true;
+              guard.release(reserved);
+            }
+          },
+          cancel() {
+            // Upstream error or consumer cancellation: flush() does not run here
+            // (Web Streams: flush and cancel are mutually exclusive), so release
+            // the still-held reservation.
+            if (!handled) {
+              handled = true;
+              guard.release(reserved);
+            }
+          },
+        }),
+      );
+
+      return { stream: guarded, ...rest };
     },
   };
 }
