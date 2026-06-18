@@ -144,6 +144,7 @@ class BudgetGuard:
         Note: ``check`` is a non-binding peek. For parallel calls, use
         :meth:`reserve` / :meth:`settle`, which hold the estimate atomically.
         """
+        self._validate_estimate(estimated_next_cost)
         if self._would_cross(estimated_next_cost):
             self._block()
 
@@ -159,6 +160,7 @@ class BudgetGuard:
         :meth:`settle` after the response, or to :meth:`release` if the call
         fails. ``estimated_cost`` defaults to the last call's cost.
         """
+        self._validate_estimate(estimated_cost)
         with self._lock:
             estimate = self._last_cost if estimated_cost is None else max(0.0, estimated_cost)
             committed = self.spent_usd + self._reserved
@@ -285,6 +287,13 @@ class BudgetGuard:
         )
 
     # ── internals ──────────────────────────────────────────────────────────────
+
+    def _validate_estimate(self, estimated: float | None) -> None:
+        # NaN/inf would poison the ceiling comparisons and fail-open (or poison
+        # _reserved) — reject a non-finite caller-supplied estimate up front,
+        # matching the constructor's math.isfinite guard and the TS Number.isFinite.
+        if estimated is not None and not math.isfinite(estimated):
+            raise ValueError(f"estimated cost must be a finite number, got {estimated!r}")
 
     def _would_cross(self, estimated_next_cost: float | None) -> bool:
         with self._lock:

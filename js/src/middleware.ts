@@ -128,7 +128,9 @@ export function budgetGuardMiddleware(
               guard.release(reserved);
             }
           },
-        }),
+          // `cancel` is valid per the Streams spec and supported in Node 18+, but
+          // TS's Transformer lib type lags and omits it — cast to keep the type check.
+        } as Transformer<StreamPart, StreamPart>),
       );
 
       return { stream: guarded, ...rest };

@@ -132,10 +132,16 @@ export class BudgetGuard {
    * `settle()`, which hold the estimate across the await.
    */
   check(estimatedNextCost?: number): void {
-    const estimate =
-      estimatedNextCost === undefined
-        ? this.lastCost
-        : Math.max(0, estimatedNextCost);
+    const rawEstimate =
+      estimatedNextCost === undefined ? this.lastCost : estimatedNextCost;
+    if (!Number.isFinite(rawEstimate)) {
+      // NaN/Infinity would poison the comparisons and fail-open — reject it
+      // (parity with the constructor's Number.isFinite guard).
+      throw new RangeError(
+        `estimatedNextCost must be a finite number, got ${rawEstimate}`,
+      );
+    }
+    const estimate = Math.max(0, rawEstimate);
     const committed = this.spentUsd + this.reserved;
     if (committed > this.limitUsd - EPS || committed + estimate > this.limitUsd + EPS) {
       this.onBlock(this.spentUsd, this.limitUsd);
@@ -154,8 +160,14 @@ export class BudgetGuard {
    * `estimatedCost` defaults to the last call's cost.
    */
   reserve(estimatedCost?: number): number {
-    const estimate =
-      estimatedCost === undefined ? this.lastCost : Math.max(0, estimatedCost);
+    const rawEstimate = estimatedCost === undefined ? this.lastCost : estimatedCost;
+    if (!Number.isFinite(rawEstimate)) {
+      // NaN would poison this.reserved and fail-open the ceiling — reject it.
+      throw new RangeError(
+        `estimatedCost must be a finite number, got ${rawEstimate}`,
+      );
+    }
+    const estimate = Math.max(0, rawEstimate);
     const committed = this.spentUsd + this.reserved;
     if (committed > this.limitUsd - EPS || committed + estimate > this.limitUsd + EPS) {
       this.onBlock(this.spentUsd, this.limitUsd);

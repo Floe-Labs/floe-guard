@@ -73,10 +73,24 @@ def test_legacy_check_record_path_is_unchanged() -> None:
 def test_release_frees_inflight_budget() -> None:
     guard = BudgetGuard(limit_usd=0.10, on_block=lambda *_: None)
     guard.record(MODEL, 1_000, 1_000)
+    base = guard.remaining_usd
     reserved = guard.reserve()
-    before = guard.remaining_usd
+    assert guard.remaining_usd < base  # the hold is counted against the ceiling
     guard.release(reserved)  # call failed, give the budget back
-    assert guard.remaining_usd >= before
+    # Full restoration — a no-op release would leave remaining < base and fail here.
+    assert guard.remaining_usd == pytest.approx(base, abs=1e-9)
+    assert guard._reserved == pytest.approx(0.0, abs=1e-9)
+
+
+def test_check_and_reserve_reject_non_finite_estimate() -> None:
+    # NaN/inf estimates must not fail-open the ceiling or poison _reserved.
+    guard = BudgetGuard(limit_usd=0.10, on_block=lambda *_: None)
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            guard.check(bad)
+        with pytest.raises(ValueError):
+            guard.reserve(bad)
+    assert guard._reserved == pytest.approx(0.0, abs=1e-9)  # nothing leaked
 
 
 def test_unpriceable_fail_closed_releases_the_reservation() -> None:

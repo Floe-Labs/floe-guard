@@ -96,4 +96,13 @@ describe("BudgetGuard — concurrency (issue #18)", () => {
     );
     expect(guard.remainingUsd).toBe(base); // released, not leaked
   });
+
+  it("check()/reserve() reject a non-finite estimate (no fail-open / poisoned reserve)", () => {
+    const guard = new BudgetGuard(0.1, { onBlock: () => {} });
+    for (const bad of [NaN, Infinity]) {
+      expect(() => guard.check(bad)).toThrow(RangeError);
+      expect(() => guard.reserve(bad)).toThrow(RangeError);
+    }
+    expect((guard as unknown as { reserved: number }).reserved).toBeCloseTo(0, 9); // nothing leaked
+  });
 });
