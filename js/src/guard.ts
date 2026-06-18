@@ -200,7 +200,16 @@ export class BudgetGuard {
       return 0;
     }
 
-    const cost = priceTokens(priced, promptTokens, completionTokens);
+    let cost: number;
+    try {
+      cost = priceTokens(priced, promptTokens, completionTokens);
+    } catch (err) {
+      // priceTokens can throw (e.g. non-finite costs). Release the in-flight
+      // hold before re-throwing so `reserved` doesn't leak and shrink
+      // remainingUsd permanently — same fail-safe as the unpriceable path above.
+      this.release(reserved);
+      throw err;
+    }
     if (reserved) {
       this.reserved = Math.max(0, this.reserved - reserved);
     }

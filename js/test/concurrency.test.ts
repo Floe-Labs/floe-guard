@@ -42,7 +42,9 @@ describe("BudgetGuard — concurrency (issue #18)", () => {
 
     expect(guard.spentUsd).toBeLessThanOrEqual(0.1 + 1e-9); // ceiling held
     expect(blocked).toBeGreaterThan(0); // excess was actually stopped
-    expect(guard.remainingUsd).toBeGreaterThanOrEqual(0); // no leaked reservation
+    // no leaked reservation: the in-flight tally is back to zero (remainingUsd is
+    // clamped >= 0, so asserting only that would always pass — a tautology).
+    expect((guard as unknown as { reserved: number }).reserved).toBeCloseTo(0, 9);
   });
 
   it("wrapGenerate honours the ceiling across Promise.all", async () => {

@@ -205,7 +205,15 @@ class BudgetGuard:
                 raise UnpriceableModelError(model)
             return 0.0
 
-        cost = price_tokens(priced, prompt_tokens, completion_tokens)
+        try:
+            cost = price_tokens(priced, prompt_tokens, completion_tokens)
+        except Exception:
+            # price_tokens can raise (e.g. non-finite token counts). Release the
+            # in-flight hold before propagating so _reserved doesn't leak and
+            # shrink remaining_usd permanently — same fail-safe as the unpriceable
+            # path above.
+            self.release(reserved)
+            raise
         with self._lock:
             if reserved:
                 self._reserved = max(0.0, self._reserved - reserved)

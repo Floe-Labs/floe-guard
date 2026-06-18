@@ -78,12 +78,20 @@ export function budgetGuardMiddleware(
           new TransformStream<StreamPart, StreamPart>({
             transform(chunk, controller) {
               if (chunk.type === "finish") {
-                guard.settle(
-                  model.modelId,
-                  chunk.usage.promptTokens,
-                  chunk.usage.completionTokens,
-                  { reserved },
-                );
+                try {
+                  guard.settle(
+                    model.modelId,
+                    chunk.usage.promptTokens,
+                    chunk.usage.completionTokens,
+                    { reserved },
+                  );
+                } catch (err) {
+                  // settle()/usage access can throw (e.g. non-finite usage). A
+                  // transform error means flush() won't run, so release the held
+                  // budget here to avoid leaking it, then surface the error.
+                  guard.release(reserved);
+                  throw err;
+                }
                 settled = true;
               }
               controller.enqueue(chunk);

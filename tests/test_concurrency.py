@@ -50,8 +50,9 @@ def test_reserve_settle_holds_ceiling_under_parallel_calls() -> None:
     assert guard.spent_usd <= guard.limit_usd + 1e-9
     # ...and the excess was actually stopped, not silently allowed.
     assert blocked
-    # No reservations leaked.
-    assert guard.remaining_usd >= 0.0
+    # No reservations leaked: the in-flight tally is back to zero. (remaining_usd
+    # is clamped >= 0, so asserting only that would always pass — a tautology.)
+    assert guard._reserved == pytest.approx(0.0, abs=1e-9)
 
 
 def test_legacy_check_record_path_is_unchanged() -> None:
