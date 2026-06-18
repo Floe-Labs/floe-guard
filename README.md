@@ -45,6 +45,25 @@ This rigs a loop against a **stub LLM** — no real API key, no account, no netw
 It prices each fake `gpt-4o` call offline and the guard halts the loop after a few
 iterations. This is the reproducible "stop the loop" demo.
 
+## Why floe-guard?
+
+You can already *see* what your agent spends — the problem is seeing it too late.
+floe-guard is the part that **stops the call**, not the part that reports the damage.
+
+- **`max_tokens` / `max_rpm`** cap size and rate, not **dollars** — a cheap model
+  stuck in a loop still drains the budget.
+- **Usage logs and provider dashboards** tell you what you spent *after* it's gone.
+  floe-guard refuses the call *before* it crosses your ceiling.
+- **A cost callback that just logs** is notified after the fact and can't halt the
+  run — enforcement has to stand in front of the next call. That's where it lives.
+- **A hand-rolled `spent += cost` counter races under parallel agents** (CrewAI
+  fan-out, `asyncio`, `Promise.all`): N calls read the same under-limit total and
+  all fire. floe-guard reserves atomically (`reserve()`/`settle()`), so the ceiling
+  holds under concurrency.
+
+The whole job: a hard stop **before** the next call, that **holds under fan-out** —
+no account, no network, no crypto.
+
 ## How it works
 
 The guard sits **in the call path**, not on an event bus. A passive listener is
