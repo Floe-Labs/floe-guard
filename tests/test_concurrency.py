@@ -106,3 +106,15 @@ def test_unpriceable_fail_closed_releases_the_reservation() -> None:
         with pytest.raises(UnpriceableModelError):
             guard.settle("totally-made-up-model-x", 100, 100, reserved=reserved)
     assert guard.remaining_usd == base  # released, not leaked
+
+
+def test_settle_and_release_reject_bad_reserved_handle() -> None:
+    # A bad reserved handle would corrupt _reserved and break the ceiling for
+    # OTHER in-flight calls (negative phantom hold; inf clears all holds).
+    guard = BudgetGuard(limit_usd=0.10, on_block=lambda *_: None)
+    for bad in (-0.01, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            guard.release(bad)
+        with pytest.raises(ValueError):
+            guard.settle(MODEL, 1_000, 1_000, reserved=bad)
+    assert guard._reserved == pytest.approx(0.0, abs=1e-9)  # nothing corrupted

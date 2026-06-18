@@ -105,4 +105,13 @@ describe("BudgetGuard — concurrency (issue #18)", () => {
     }
     expect((guard as unknown as { reserved: number }).reserved).toBeCloseTo(0, 9); // nothing leaked
   });
+
+  it("settle()/release() reject a bad reserved handle (no corruption of the in-flight tally)", () => {
+    const guard = new BudgetGuard(0.1, { onBlock: () => {} });
+    for (const bad of [-0.01, NaN, Infinity]) {
+      expect(() => guard.release(bad)).toThrow(RangeError);
+      expect(() => guard.settle("gpt-4o", 1000, 1000, { reserved: bad })).toThrow(RangeError);
+    }
+    expect((guard as unknown as { reserved: number }).reserved).toBeCloseTo(0, 9); // uncorrupted
+  });
 });

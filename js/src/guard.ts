@@ -190,6 +190,11 @@ export class BudgetGuard {
     options: { reserved?: number; price?: ManualPrice } = {},
   ): number {
     const reserved = options.reserved ?? 0;
+    // A bad reserved handle would corrupt this.reserved and break the ceiling for
+    // OTHER in-flight calls (negative → phantom hold; Infinity → clears all holds).
+    if (!Number.isFinite(reserved) || reserved < 0) {
+      throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
+    }
     let overrides = this.priceOverrides;
     if (options.price !== undefined) {
       overrides = { ...(overrides ?? {}), [model]: options.price };
@@ -259,6 +264,11 @@ export class BudgetGuard {
    * before producing usage). Safe to call with `0`.
    */
   release(reserved: number): void {
+    // Validate before the zero-check so a NaN handle throws instead of being
+    // silently dropped (a leak); a bad handle corrupts the in-flight tally.
+    if (!Number.isFinite(reserved) || reserved < 0) {
+      throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
+    }
     if (!reserved) return;
     this.reserved = Math.max(0, this.reserved - reserved);
   }

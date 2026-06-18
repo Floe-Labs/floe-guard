@@ -189,6 +189,10 @@ class BudgetGuard:
         raise when ``fail_closed``, else warn + skip), and any held reservation
         is released even on the skip path.
         """
+        # A bad reserved handle would corrupt _reserved and break the ceiling for
+        # OTHER in-flight calls (negative → phantom hold; inf → clears all holds).
+        if not math.isfinite(reserved) or reserved < 0:
+            raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
         priced = self._resolve(model, price)
         if priced is None:
             warnings.warn(
@@ -246,6 +250,11 @@ class BudgetGuard:
     def release(self, reserved: float) -> None:
         """Drop an in-flight reservation without recording spend (e.g. the call
         failed before producing usage). Safe to call with ``0``."""
+        # Validate before the zero-check so a NaN handle raises instead of being
+        # silently dropped (which would leak the hold). A bad handle here corrupts
+        # _reserved for other in-flight calls.
+        if not math.isfinite(reserved) or reserved < 0:
+            raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
         if not reserved:
             return
         with self._lock:

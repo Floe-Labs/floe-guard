@@ -95,3 +95,12 @@ def test_usageless_response_releases_the_reservation() -> None:
     assert guard.spent_usd == 0.0
     assert guard.remaining_usd == pytest.approx(base, abs=1e-9)
     assert guard._reserved == pytest.approx(0.0, abs=1e-9)
+
+
+def test_record_response_tolerates_non_dict_kwargs() -> None:
+    # LiteLLM hooks pass kwargs as Any; a None/non-dict must not crash the
+    # metering callback on .get(). The model resolves from the response instead.
+    guard = BudgetGuard(limit_usd=1.0)
+    resp = {"model": "gpt-4o", "usage": {"prompt_tokens": 1_000, "completion_tokens": 1_000}}
+    _record_response(guard, None, resp)  # type: ignore[arg-type]
+    assert guard.spent_usd > 0

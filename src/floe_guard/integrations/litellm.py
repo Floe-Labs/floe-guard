@@ -60,8 +60,12 @@ def _usage_from(response: Any) -> tuple[int, int]:
 
 
 def _record_response(
-    guard: BudgetGuard, kwargs: dict[str, Any], response: Any, *, reserved: float = 0.0
+    guard: BudgetGuard, kwargs: Any, response: Any, *, reserved: float = 0.0
 ) -> None:
+    # LiteLLM hooks pass kwargs as Any; normalize so a None/non-dict can't crash
+    # the metering callback on .get() (matches the _key() fallback).
+    if not isinstance(kwargs, dict):
+        kwargs = {}
     model = _model_from(kwargs, response)
     prompt_tokens, completion_tokens = _usage_from(response)
     if prompt_tokens <= 0 and completion_tokens <= 0:
