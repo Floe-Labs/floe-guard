@@ -27,6 +27,8 @@ dependencies = []
 litellm = ["litellm>=1.0"]
 crewai = ["crewai>=0.30", "litellm>=1.0"]
 langchain = ["langchain-core>=0.3"]
+openai = ["openai>=1.0"]
+anthropic = ["anthropic>=0.40"]
 dev = ["pytest>=7.0", "ruff>=0.4"]
 
 [project.urls]
