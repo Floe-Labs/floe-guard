@@ -24,11 +24,14 @@ from ..guard import BudgetGuard
 
 
 def _model_from(kwargs: dict[str, Any], response: Any) -> str:
-    model = kwargs.get("model")
+    # Prefer the model the response was actually served by — OpenAI can return a
+    # resolved/canonical id that differs from the requested alias — and fall back
+    # to the request's model= only when the response omits it.
+    model = getattr(response, "model", None)
+    if model is None and isinstance(response, dict):
+        model = response.get("model")
     if not model:
-        model = getattr(response, "model", None)
-        if model is None and isinstance(response, dict):
-            model = response.get("model")
+        model = kwargs.get("model")
     return str(model or "")
 
 
@@ -65,6 +68,16 @@ def _record_response(
     guard.settle(model, prompt_tokens, completion_tokens, reserved=reserved)
 
 
+def _reject_streaming(kwargs: dict[str, Any]) -> None:
+    if kwargs.get("stream"):
+        raise ValueError(
+            "floe-guard's OpenAI adapter does not support stream=True: a streamed "
+            "response has no final usage to meter, so the call would go unaccounted. "
+            "Use a non-streaming call, or meter the stream yourself with "
+            "guard.reserve()/guard.settle()."
+        )
+
+
 def guarded_completion(guard: BudgetGuard, client: Any, **kwargs: Any) -> Any:
     """``client.chat.completions.create`` with a budget reservation and accrual.
 
@@ -73,7 +86,12 @@ def guarded_completion(guard: BudgetGuard, client: Any, **kwargs: Any) -> Any:
 
     ``client`` is an ``openai.OpenAI`` instance; ``kwargs`` are forwarded to
     ``chat.completions.create`` (e.g. ``model=``, ``messages=``).
+
+    Streaming is not supported: a streamed response has no final ``usage`` to
+    settle from, so the call would silently go unmetered. Passing ``stream=True``
+    raises ``ValueError``.
     """
+    _reject_streaming(kwargs)
     reserved = guard.reserve()
     try:
         response = client.chat.completions.create(**kwargs)
@@ -87,8 +105,10 @@ def guarded_completion(guard: BudgetGuard, client: Any, **kwargs: Any) -> Any:
 async def guarded_acompletion(guard: BudgetGuard, client: Any, **kwargs: Any) -> Any:
     """Async counterpart of :func:`guarded_completion`.
 
-    ``client`` is an ``openai.AsyncOpenAI`` instance.
+    ``client`` is an ``openai.AsyncOpenAI`` instance. Streaming is not supported
+    (see :func:`guarded_completion`); ``stream=True`` raises ``ValueError``.
     """
+    _reject_streaming(kwargs)
     reserved = guard.reserve()
     try:
         response = await client.chat.completions.create(**kwargs)

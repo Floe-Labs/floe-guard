@@ -79,10 +79,12 @@ def test_usage_from_object_and_dict() -> None:
     assert _usage_from({"usage": {"prompt_tokens": 5, "completion_tokens": 7}}) == (5, 7)
 
 
-def test_model_from_prefers_kwargs_then_response() -> None:
-    resp = _Response("gpt-4o", _Usage(1, 1))
-    assert _model_from({"model": "gpt-4o-mini"}, resp) == "gpt-4o-mini"
-    assert _model_from({}, resp) == "gpt-4o"
+def test_model_from_prefers_response_then_kwargs() -> None:
+    # The response's served model wins over the requested alias; the kwarg is
+    # only a fallback when the response omits the model.
+    resp = _Response("gpt-4o-2024-08-06", _Usage(1, 1))
+    assert _model_from({"model": "gpt-4o"}, resp) == "gpt-4o-2024-08-06"
+    assert _model_from({"model": "gpt-4o"}, {"usage": {}}) == "gpt-4o"
 
 
 def test_record_response_accrues() -> None:
@@ -145,3 +147,24 @@ def test_unpriceable_model_fails_closed() -> None:
         with pytest.raises(UnpriceableModelError):
             _record_response(guard, {}, resp)
     assert guard.spent_usd == 0.0
+
+
+def test_streaming_is_rejected_before_the_call() -> None:
+    # A streamed response has no final usage to settle, so it would go unmetered.
+    # Reject it up front, before reserving or calling the client.
+    guard = BudgetGuard(limit_usd=1.0)
+    completions = _Completions(_Response("gpt-4o", _Usage(1, 1)))
+    client = _Client(completions)
+    with pytest.raises(ValueError, match="stream"):
+        guarded_completion(guard, client, model="gpt-4o", messages=[], stream=True)
+    assert completions.called is False
+    assert guard.spent_usd == 0.0
+
+
+def test_usageless_response_releases_the_reservation() -> None:
+    # A response that reports no usage must free the in-flight reservation, or
+    # remaining_usd would shrink permanently for later calls.
+    guard = BudgetGuard(limit_usd=1.0)
+    _record_response(guard, {}, _Response("gpt-4o", _Usage(0, 0)), reserved=0.5)
+    assert guard.spent_usd == 0.0
+    assert guard.remaining_usd == pytest.approx(1.0)

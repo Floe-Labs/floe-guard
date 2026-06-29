@@ -70,10 +70,11 @@ def test_usage_maps_input_output_to_prompt_completion() -> None:
     assert _usage_from({"usage": {"input_tokens": 5, "output_tokens": 7}}) == (5, 7)
 
 
-def test_model_from_prefers_kwargs_then_response() -> None:
+def test_model_from_prefers_response_then_kwargs() -> None:
+    # The response's served model wins; the kwarg is only a fallback.
     resp = _Response(_MODEL, _Usage(1, 1))
-    assert _model_from({"model": "claude-3-haiku-20240307"}, resp) == "claude-3-haiku-20240307"
-    assert _model_from({}, resp) == _MODEL
+    assert _model_from({"model": "claude-3-haiku-20240307"}, resp) == _MODEL
+    assert _model_from({"model": _MODEL}, {"usage": {}}) == _MODEL
 
 
 def test_record_response_accrues() -> None:
@@ -146,3 +147,20 @@ def test_unpriceable_model_fails_closed() -> None:
         with pytest.raises(UnpriceableModelError):
             _record_response(guard, {}, resp)
     assert guard.spent_usd == 0.0
+
+
+def test_streaming_is_rejected_before_the_call() -> None:
+    guard = BudgetGuard(limit_usd=10.0)
+    messages = _Messages(_Response(_MODEL, _Usage(1, 1)))
+    client = _Client(messages)
+    with pytest.raises(ValueError, match="stream"):
+        guarded_completion(guard, client, model=_MODEL, max_tokens=64, messages=[], stream=True)
+    assert messages.called is False
+    assert guard.spent_usd == 0.0
+
+
+def test_usageless_response_releases_the_reservation() -> None:
+    guard = BudgetGuard(limit_usd=1.0)
+    _record_response(guard, {}, _Response(_MODEL, _Usage(0, 0)), reserved=0.5)
+    assert guard.spent_usd == 0.0
+    assert guard.remaining_usd == pytest.approx(1.0)
