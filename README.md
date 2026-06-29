@@ -182,6 +182,46 @@ llm.invoke("hello")            # checks budget before the call, records spend af
 The handler checks the budget on LLM start (raising `BudgetExceeded` aborts the
 call before it runs) and records token usage on LLM end.
 
+### OpenAI
+
+```bash
+pip install floe-guard[openai]
+```
+
+```python
+from openai import OpenAI
+from floe_guard import BudgetGuard
+from floe_guard.integrations.openai import guarded_completion
+
+guard = BudgetGuard(limit_usd=1.00)
+client = OpenAI()
+response = guarded_completion(guard, client, model="gpt-4o", messages=[...])
+```
+
+`guarded_completion` reserves the budget before the call (raising
+`BudgetExceeded` so a blocked call never reaches OpenAI) and records spend after.
+Use `guarded_acompletion` with an `AsyncOpenAI` client for async.
+
+### Anthropic
+
+```bash
+pip install floe-guard[anthropic]
+```
+
+```python
+from anthropic import Anthropic
+from floe_guard import BudgetGuard
+from floe_guard.integrations.anthropic import guarded_completion
+
+guard = BudgetGuard(limit_usd=1.00)
+client = Anthropic()
+response = guarded_completion(guard, client, model="claude-3-7-sonnet-20250219", max_tokens=1024, messages=[...])
+```
+
+Same reserve-before / record-after contract as the OpenAI adapter; Anthropic's
+`input_tokens` / `output_tokens` are mapped onto the guard's prompt/completion
+pricing. Use `guarded_acompletion` with an `AsyncAnthropic` client for async.
+
 ### Vercel AI SDK
 
 The Vercel AI SDK is TypeScript-only, so it ships as a separate npm package that
