@@ -784,5 +784,17 @@
     "output_cost_per_token": 5.9e-07,
     "litellm_provider": "groq",
     "mode": "chat"
+  },
+  "llama-4-scout-17b-16e-instruct": {
+    "input_cost_per_token": 1.1e-07,
+    "output_cost_per_token": 3.4e-07,
+    "litellm_provider": "groq",
+    "mode": "chat"
+  },
+  "qwen3-32b": {
+    "input_cost_per_token": 2.9e-07,
+    "output_cost_per_token": 5.9e-07,
+    "litellm_provider": "groq",
+    "mode": "chat"
   }
 }
