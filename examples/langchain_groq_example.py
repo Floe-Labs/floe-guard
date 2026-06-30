@@ -1,7 +1,6 @@
 """floe-guard + LangChain + Groq example.
 
-Budget enforcement with ``ChatGroq`` — the guard hard-stops before the next
-call once spending would cross the ceiling.
+The guard hard-stops the next call once spending crosses the ceiling.
 
 Run::
 
@@ -9,9 +8,8 @@ Run::
     export GROQ_API_KEY=gsk_...
     python examples/langchain_groq_example.py
 
-ChatGroq surfaces token counts via ``usage_metadata`` (``input_tokens`` /
-``output_tokens``) rather than the ``token_usage`` block OpenAI uses — the
-adapter's existing fallback handles this with no changes needed.
+ChatGroq reports tokens via usage_metadata, not the token_usage block OpenAI
+uses — the adapter already handles this via its fallback path.
 """
 
 from __future__ import annotations
@@ -35,12 +33,13 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # A tight ceiling so the second call is blocked without spending much.
-    guard = BudgetGuard(limit_usd=0.001)
+    # Tighten the ceiling below call 1's actual cost so call 2 is always
+    # blocked, regardless of current Groq pricing.
+    guard = BudgetGuard(limit_usd=1.0)
     handler = budget_guard_callback_handler(guard)
 
     llm = ChatGroq(
-        model="llama-3.1-8b-instant",   # fast, cheap — good for demos
+        model="llama-3.1-8b-instant",
         api_key=api_key,
         callbacks=[handler],
     )
@@ -49,6 +48,8 @@ def main() -> None:
     response = llm.invoke("Reply with one word: hello")
     print(f"  response : {response.content!r}")
     print(f"  spent so far: ${guard.spent_usd:.6f}\n")
+
+    guard.limit_usd = guard.spent_usd * 0.5
 
     print("Call 2 — projected cost would cross the ceiling, should be blocked...")
     try:
