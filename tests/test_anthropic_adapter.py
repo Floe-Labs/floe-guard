@@ -16,6 +16,7 @@ from floe_guard import BudgetExceeded, BudgetGuard, UnpriceableModelError, Unpri
 from floe_guard.integrations.anthropic import (
     _model_from,
     _record_response,
+    _settle_model,
     _usage_from,
     guarded_acompletion,
     guarded_completion,
@@ -70,11 +71,36 @@ def test_usage_maps_input_output_to_prompt_completion() -> None:
     assert _usage_from({"usage": {"input_tokens": 5, "output_tokens": 7}}) == (5, 7)
 
 
+def test_usage_folds_prompt_cache_tokens() -> None:
+    # Cached calls must not be under-metered: cache write ~1.25x, read ~0.1x,
+    # folded into the prompt bucket. 100 + round(200*1.25) + round(1000*0.1).
+    usage = {
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "cache_creation_input_tokens": 200,
+        "cache_read_input_tokens": 1000,
+    }
+    assert _usage_from({"usage": usage}) == (100 + 250 + 100, 50)
+    # No cache fields → unchanged (the object path getattr-defaults to 0).
+    assert _usage_from(_Response(_MODEL, _Usage(5, 7))) == (5, 7)
+
+
 def test_model_from_prefers_response_then_kwargs() -> None:
     # The response's served model wins; the kwarg is only a fallback.
     resp = _Response(_MODEL, _Usage(1, 1))
     assert _model_from({"model": "claude-3-haiku-20240307"}, resp) == _MODEL
     assert _model_from({"model": _MODEL}, {"usage": {}}) == _MODEL
+
+
+def test_settle_model_falls_back_to_priceable_alias() -> None:
+    guard = BudgetGuard(limit_usd=10.0)
+    # Served snapshot isn't in the bundled cost map, but the requested alias is:
+    # settle on the alias so the call isn't fail-closed for a stale map.
+    unpriced_served = _Response("claude-3-7-sonnet-20260101", _Usage(1, 1))
+    assert _settle_model(guard, {"model": _MODEL}, unpriced_served) == _MODEL
+    # Served id IS priceable → it wins (source of truth).
+    priced_served = _Response(_MODEL, _Usage(1, 1))
+    assert _settle_model(guard, {"model": "claude-3-haiku-20240307"}, priced_served) == _MODEL
 
 
 def test_record_response_accrues() -> None:

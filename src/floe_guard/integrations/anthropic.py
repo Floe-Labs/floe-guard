@@ -22,6 +22,12 @@ from __future__ import annotations
 from typing import Any
 
 from ..guard import BudgetGuard
+from ..pricing import resolve_price
+
+# Anthropic prompt-cache pricing multipliers, relative to the base input rate:
+# 5-minute cache writes bill at ~1.25x, cache reads at ~0.1x. See _usage_from.
+_CACHE_WRITE_WEIGHT = 1.25
+_CACHE_READ_WEIGHT = 0.1
 
 
 def _model_from(kwargs: dict[str, Any], response: Any) -> str:
@@ -41,6 +47,15 @@ def _usage_from(response: Any) -> tuple[int, int]:
     Anthropic reports ``usage.input_tokens`` / ``usage.output_tokens``; the guard
     settles on the OpenAI-style ``(prompt_tokens, completion_tokens)`` pair, so
     input maps to prompt and output to completion.
+
+    Prompt caching: ``input_tokens`` counts only the *fresh* prompt tokens —
+    cached tokens are reported separately as ``cache_creation_input_tokens``
+    (billed ~1.25x base input) and ``cache_read_input_tokens`` (~0.1x). Dropping
+    them would under-meter a cached call, and a budget guard must never
+    under-count. Since the guard prices with a flat per-model input rate, we fold
+    the cache tokens into the prompt bucket at their *effective* weight so the
+    metered cost approximates the real spend (an estimate, not exact cache-aware
+    pricing — safe-direction).
     """
     usage = getattr(response, "usage", None)
     if usage is None and isinstance(response, dict):
@@ -48,7 +63,38 @@ def _usage_from(response: Any) -> tuple[int, int]:
     if usage is None:
         return 0, 0
     get = usage.get if isinstance(usage, dict) else lambda k, d=0: getattr(usage, k, d)
-    return int(get("input_tokens", 0) or 0), int(get("output_tokens", 0) or 0)
+    input_tokens = int(get("input_tokens", 0) or 0)
+    output_tokens = int(get("output_tokens", 0) or 0)
+    cache_write = int(get("cache_creation_input_tokens", 0) or 0)
+    cache_read = int(get("cache_read_input_tokens", 0) or 0)
+    prompt_tokens = (
+        input_tokens
+        + round(cache_write * _CACHE_WRITE_WEIGHT)
+        + round(cache_read * _CACHE_READ_WEIGHT)
+    )
+    return prompt_tokens, output_tokens
+
+
+def _settle_model(guard: BudgetGuard, kwargs: dict[str, Any], response: Any) -> str:
+    """Pick the model id to settle against.
+
+    The served model (``response.model``) is the source of truth (issue #23). But
+    if that served id can't be priced and the requested alias can, settle on the
+    alias instead, so a provider snapshot newer than the bundled cost map doesn't
+    fail-closed a call that would otherwise price cleanly. If neither prices, keep
+    the served id so the guard still fail-closes on a real id.
+    """
+    served = _model_from(kwargs, response)
+    requested = str(kwargs.get("model") or "")
+    if (
+        served
+        and requested
+        and served != requested
+        and resolve_price(served, guard.price_overrides) is None
+        and resolve_price(requested, guard.price_overrides) is not None
+    ):
+        return requested
+    return served
 
 
 def _record_response(
@@ -56,7 +102,7 @@ def _record_response(
 ) -> None:
     if not isinstance(kwargs, dict):
         kwargs = {}
-    model = _model_from(kwargs, response)
+    model = _settle_model(guard, kwargs, response)
     prompt_tokens, completion_tokens = _usage_from(response)
     if prompt_tokens <= 0 and completion_tokens <= 0:
         # No tokens spent — free the reservation.

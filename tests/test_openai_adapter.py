@@ -16,6 +16,7 @@ from floe_guard import BudgetExceeded, BudgetGuard, UnpriceableModelError, Unpri
 from floe_guard.integrations.openai import (
     _model_from,
     _record_response,
+    _settle_model,
     _usage_from,
     guarded_acompletion,
     guarded_completion,
@@ -85,6 +86,17 @@ def test_model_from_prefers_response_then_kwargs() -> None:
     resp = _Response("gpt-4o-2024-08-06", _Usage(1, 1))
     assert _model_from({"model": "gpt-4o"}, resp) == "gpt-4o-2024-08-06"
     assert _model_from({"model": "gpt-4o"}, {"usage": {}}) == "gpt-4o"
+
+
+def test_settle_model_falls_back_to_priceable_alias() -> None:
+    guard = BudgetGuard(limit_usd=10.0)
+    # Served snapshot isn't in the bundled cost map, but the requested alias is:
+    # settle on the alias so a stale map doesn't fail-closed an otherwise-priced call.
+    unpriced_served = _Response("gpt-4o-2099-01-01", _Usage(1, 1))
+    assert _settle_model(guard, {"model": "gpt-4o"}, unpriced_served) == "gpt-4o"
+    # Served id IS priceable → it wins (source of truth).
+    priced_served = _Response("gpt-4o-2024-08-06", _Usage(1, 1))
+    assert _settle_model(guard, {"model": "gpt-4o"}, priced_served) == "gpt-4o-2024-08-06"
 
 
 def test_record_response_accrues() -> None:

@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..guard import BudgetGuard
+from ..pricing import resolve_price
 
 
 def _model_from(kwargs: dict[str, Any], response: Any) -> str:
@@ -50,12 +51,35 @@ def _usage_from(response: Any) -> tuple[int, int]:
     return int(get("prompt_tokens", 0) or 0), int(get("completion_tokens", 0) or 0)
 
 
+def _settle_model(guard: BudgetGuard, kwargs: dict[str, Any], response: Any) -> str:
+    """Pick the model id to settle against.
+
+    The served model (``response.model``) is the source of truth (issue #23) —
+    it reflects OpenAI's canonical/substituted id. But if that served id can't be
+    priced and the requested alias can, settle on the alias instead, so a
+    provider snapshot newer than the bundled cost map doesn't fail-closed a call
+    that would otherwise price cleanly. If neither prices, keep the served id so
+    the guard still fail-closes on a real id.
+    """
+    served = _model_from(kwargs, response)
+    requested = str(kwargs.get("model") or "")
+    if (
+        served
+        and requested
+        and served != requested
+        and resolve_price(served, guard.price_overrides) is None
+        and resolve_price(requested, guard.price_overrides) is not None
+    ):
+        return requested
+    return served
+
+
 def _record_response(
     guard: BudgetGuard, kwargs: Any, response: Any, *, reserved: float = 0.0
 ) -> None:
     if not isinstance(kwargs, dict):
         kwargs = {}
-    model = _model_from(kwargs, response)
+    model = _settle_model(guard, kwargs, response)
     prompt_tokens, completion_tokens = _usage_from(response)
     if prompt_tokens <= 0 and completion_tokens <= 0:
         # No tokens spent (e.g. a usage-less response) — free the reservation.
