@@ -52,3 +52,34 @@ def test_price_tokens_math() -> None:
 def test_price_tokens_clamps_negative_counts() -> None:
     priced = PricedModel(input_cost_per_token=1e-6, output_cost_per_token=2e-6, source="cost_map")
     assert price_tokens(priced, -50, -50) == 0.0
+
+
+def test_price_tokens_with_prompt_caching_math() -> None:
+    priced = PricedModel(input_cost_per_token=1e-6, output_cost_per_token=2e-6, source="cost_map")
+    # Base input price: 1e-6
+    # 5-minute write (1.25x): 100 * 1e-6 * 1.25 = 0.000125
+    # 1-hour write (2.0x): 200 * 1e-6 * 2.0 = 0.0004
+    # Read (0.1x): 1000 * 1e-6 * 0.1 = 0.0001
+    # Regular prompt (0 tokens), Completion (0 tokens)
+    expected_cost = 0.000125 + 0.0004 + 0.0001
+    cost = price_tokens(
+        priced,
+        prompt_tokens=0,
+        completion_tokens=0,
+        cache_creation_input_tokens=100,
+        cache_read_input_tokens=1000,
+        cache_creation_input_tokens_1h=200,
+    )
+    assert cost == pytest.approx(expected_cost)
+
+
+def test_price_tokens_caching_constants() -> None:
+    from floe_guard.pricing import (
+        _CACHE_CREATION_1H_MULTIPLIER,
+        _CACHE_CREATION_MULTIPLIER,
+        _CACHE_READ_MULTIPLIER,
+    )
+    assert _CACHE_CREATION_MULTIPLIER == 1.25
+    assert _CACHE_CREATION_1H_MULTIPLIER == 2.00
+    assert _CACHE_READ_MULTIPLIER == 0.10
+

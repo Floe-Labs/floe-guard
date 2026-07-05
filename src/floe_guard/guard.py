@@ -182,6 +182,7 @@ class BudgetGuard:
         reserved: float = 0.0,
         price: ManualPrice | None = None,
         cache_creation_input_tokens: int = 0,
+        cache_creation_input_tokens_1h: int = 0,
         cache_read_input_tokens: int = 0,
     ) -> float:
         """Release a reservation and record the actual cost. Concurrency-safe.
@@ -215,10 +216,11 @@ class BudgetGuard:
 
         try:
             cost = price_tokens(
-                priced, 
-                prompt_tokens, 
+                priced,
+                prompt_tokens,
                 completion_tokens,
                 cache_creation_input_tokens=cache_creation_input_tokens,
+                cache_creation_input_tokens_1h=cache_creation_input_tokens_1h,
                 cache_read_input_tokens=cache_read_input_tokens,
             )
         except Exception:
@@ -247,6 +249,7 @@ class BudgetGuard:
         *,
         price: ManualPrice | None = None,
         cache_creation_input_tokens: int = 0,
+        cache_creation_input_tokens_1h: int = 0,
         cache_read_input_tokens: int = 0,
     ) -> float:
         """Price one response's tokens offline and add the cost to the total.
@@ -256,12 +259,13 @@ class BudgetGuard:
         docstring): warn + raise (default), or warn + skip accrual.
         """
         return self.settle(
-            model, 
-            prompt_tokens, 
-            completion_tokens, 
-            reserved=0.0, 
+            model,
+            prompt_tokens,
+            completion_tokens,
+            reserved=0.0,
             price=price,
             cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_creation_input_tokens_1h=cache_creation_input_tokens_1h,
             cache_read_input_tokens=cache_read_input_tokens,
         )
 

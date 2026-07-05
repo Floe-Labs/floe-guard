@@ -87,6 +87,13 @@ def resolve_price(
     )
 
 
+# Anthropic prompt-cache pricing multipliers: creation (5m) is 1.25x base input,
+# creation (1h) is 2.0x base input, read is 0.1x base input.
+_CACHE_CREATION_MULTIPLIER = 1.25
+_CACHE_CREATION_1H_MULTIPLIER = 2.00
+_CACHE_READ_MULTIPLIER = 0.10
+
+
 def _both_finite(a: Any, b: Any) -> bool:
     return (
         isinstance(a, (int, float))
@@ -97,23 +104,31 @@ def _both_finite(a: Any, b: Any) -> bool:
 
 
 def price_tokens(
-    priced: PricedModel, 
-    prompt_tokens: int, 
+    priced: PricedModel,
+    prompt_tokens: int,
     completion_tokens: int,
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
+    cache_creation_input_tokens_1h: int = 0,
 ) -> float:
     """USD cost for token usage. Negative counts are clamped to zero."""
     p = max(0, prompt_tokens)
     c = max(0, completion_tokens)
     cc = max(0, cache_creation_input_tokens)
+    cc_1h = max(0, cache_creation_input_tokens_1h)
     cr = max(0, cache_read_input_tokens)
-    
-    # Cache multipliers (Anthropic standard): creation is 1.25x base input, read is 0.1x base input
-    cache_creation_cost = cc * priced.input_cost_per_token * 1.25
-    cache_read_cost = cr * priced.input_cost_per_token * 0.10
-    
-    cost = (p * priced.input_cost_per_token) + (c * priced.output_cost_per_token) + cache_creation_cost + cache_read_cost
+
+    cache_creation_cost = cc * priced.input_cost_per_token * _CACHE_CREATION_MULTIPLIER
+    cache_creation_1h_cost = cc_1h * priced.input_cost_per_token * _CACHE_CREATION_1H_MULTIPLIER
+    cache_read_cost = cr * priced.input_cost_per_token * _CACHE_READ_MULTIPLIER
+
+    cost = (
+        (p * priced.input_cost_per_token)
+        + (c * priced.output_cost_per_token)
+        + cache_creation_cost
+        + cache_creation_1h_cost
+        + cache_read_cost
+    )
     if not math.isfinite(cost):
         # Defense-in-depth: resolve_price already guarantees finite rates.
         raise ValueError("Non-finite LLM cost — pricing entry is invalid")

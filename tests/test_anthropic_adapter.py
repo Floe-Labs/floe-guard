@@ -66,22 +66,50 @@ _MODEL = "claude-3-7-sonnet-20250219"  # present in the bundled cost map
 
 
 def test_usage_maps_input_output_to_prompt_completion() -> None:
-    # The Anthropic-specific bit: input_tokens -> prompt, output_tokens -> completion, plus cache buckets
-    assert _usage_from(_Response(_MODEL, _Usage(5, 7))) == (5, 7, 0, 0)
-    assert _usage_from({"usage": {"input_tokens": 5, "output_tokens": 7}}) == (5, 7, 0, 0)
+    # Anthropic-specific: input_tokens -> prompt, output_tokens -> completion, plus cache buckets
+    assert _usage_from(_Response(_MODEL, _Usage(5, 7))) == (5, 7, 0, 0, 0)
+    assert _usage_from({"usage": {"input_tokens": 5, "output_tokens": 7}}) == (5, 7, 0, 0, 0)
 
 
 def test_usage_extracts_prompt_cache_tokens() -> None:
-    # Cached calls must return their buckets unmodified so the core pricing engine can multiply them.
+    # Cached calls must return buckets unmodified so pricing engine can multiply them.
     usage = {
         "input_tokens": 100,
         "output_tokens": 50,
         "cache_creation_input_tokens": 200,
         "cache_read_input_tokens": 1000,
     }
-    assert _usage_from({"usage": usage}) == (100, 50, 200, 1000)
+    # Direct fallback: cache_creation is missing, so cache_creation_input_tokens defaults to 5m
+    assert _usage_from({"usage": usage}) == (100, 50, 200, 0, 1000)
+
+    # Detailed cache_creation breakdown with 5m and 1h TTLs
+    usage_with_breakdown = {
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "cache_creation_input_tokens": 300,
+        "cache_read_input_tokens": 1000,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": 100,
+            "ephemeral_1h_input_tokens": 200,
+        }
+    }
+    assert _usage_from({"usage": usage_with_breakdown}) == (100, 50, 100, 200, 1000)
+
+    # Detailed cache_creation breakdown with some leftover tokens mapped to 5m (defense-in-depth)
+    usage_with_leftover = {
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "cache_creation_input_tokens": 300,
+        "cache_read_input_tokens": 1000,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": 50,
+            "ephemeral_1h_input_tokens": 200,
+        }
+    }
+    assert _usage_from({"usage": usage_with_leftover}) == (100, 50, 100, 200, 1000)
+
     # No cache fields → unchanged (the object path getattr-defaults to 0).
-    assert _usage_from(_Response(_MODEL, _Usage(5, 7))) == (5, 7, 0, 0)
+    assert _usage_from(_Response(_MODEL, _Usage(5, 7))) == (5, 7, 0, 0, 0)
 
 
 def test_model_from_prefers_response_then_kwargs() -> None:

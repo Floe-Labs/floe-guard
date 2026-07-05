@@ -39,26 +39,45 @@ def _model_from(kwargs: dict[str, Any], response: Any) -> str:
     return str(model or "")
 
 
-def _usage_from(response: Any) -> tuple[int, int, int, int]:
+def _usage_from(response: Any) -> tuple[int, int, int, int, int]:
     """Map an Anthropic message's usage onto token buckets.
 
     Anthropic reports ``usage.input_tokens`` / ``usage.output_tokens``.
     Prompt caching tokens are reported as ``cache_creation_input_tokens``
-    and ``cache_read_input_tokens``. We return all four buckets so the 
+    and ``cache_read_input_tokens``. We return all five buckets so the
     core pricing engine can apply exact cost multipliers.
     """
     usage = getattr(response, "usage", None)
     if usage is None and isinstance(response, dict):
         usage = response.get("usage")
     if usage is None:
-        return 0, 0, 0, 0
+        return 0, 0, 0, 0, 0
     get = usage.get if isinstance(usage, dict) else lambda k, d=0: getattr(usage, k, d)
     input_tokens = int(get("input_tokens", 0) or 0)
     output_tokens = int(get("output_tokens", 0) or 0)
-    cache_write = int(get("cache_creation_input_tokens", 0) or 0)
+    cache_write_total = int(get("cache_creation_input_tokens", 0) or 0)
     cache_read = int(get("cache_read_input_tokens", 0) or 0)
-    
-    return input_tokens, output_tokens, cache_write, cache_read
+
+    # Resolve TTL buckets from `cache_creation` if present
+    cache_creation = get("cache_creation", None)
+    cache_write_5m = 0
+    cache_write_1h = 0
+    if cache_creation is not None:
+        get_cc = (
+            cache_creation.get
+            if isinstance(cache_creation, dict)
+            else lambda k, d=0: getattr(cache_creation, k, d)
+        )
+        cache_write_5m = int(get_cc("ephemeral_5m_input_tokens", 0) or 0)
+        cache_write_1h = int(get_cc("ephemeral_1h_input_tokens", 0) or 0)
+
+    # Fallback/defense-in-depth: if there are missing or future buckets,
+    # default any leftover of cache_write_total to the 5m bucket (safest default).
+    leftover = cache_write_total - (cache_write_5m + cache_write_1h)
+    if leftover > 0:
+        cache_write_5m += leftover
+
+    return input_tokens, output_tokens, cache_write_5m, cache_write_1h, cache_read
 
 
 def _settle_model(guard: BudgetGuard, kwargs: dict[str, Any], response: Any) -> str:
@@ -89,8 +108,20 @@ def _record_response(
     if not isinstance(kwargs, dict):
         kwargs = {}
     model = _settle_model(guard, kwargs, response)
-    prompt_tokens, completion_tokens, cache_creation, cache_read = _usage_from(response)
-    if prompt_tokens <= 0 and completion_tokens <= 0 and cache_creation <= 0 and cache_read <= 0:
+    (
+        prompt_tokens,
+        completion_tokens,
+        cache_creation_5m,
+        cache_creation_1h,
+        cache_read,
+    ) = _usage_from(response)
+    if (
+        prompt_tokens <= 0
+        and completion_tokens <= 0
+        and cache_creation_5m <= 0
+        and cache_creation_1h <= 0
+        and cache_read <= 0
+    ):
         # No tokens spent — free the reservation.
         guard.release(reserved)
         return
@@ -99,11 +130,12 @@ def _record_response(
     # raise; fail-open → warn + skip) rather than letting a completed call go
     # unmetered and skew the next check().
     guard.settle(
-        model, 
-        prompt_tokens, 
-        completion_tokens, 
+        model,
+        prompt_tokens,
+        completion_tokens,
         reserved=reserved,
-        cache_creation_input_tokens=cache_creation,
+        cache_creation_input_tokens=cache_creation_5m,
+        cache_creation_input_tokens_1h=cache_creation_1h,
         cache_read_input_tokens=cache_read,
     )
 
