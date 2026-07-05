@@ -96,11 +96,24 @@ def _both_finite(a: Any, b: Any) -> bool:
     )
 
 
-def price_tokens(priced: PricedModel, prompt_tokens: int, completion_tokens: int) -> float:
+def price_tokens(
+    priced: PricedModel, 
+    prompt_tokens: int, 
+    completion_tokens: int,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+) -> float:
     """USD cost for token usage. Negative counts are clamped to zero."""
     p = max(0, prompt_tokens)
     c = max(0, completion_tokens)
-    cost = p * priced.input_cost_per_token + c * priced.output_cost_per_token
+    cc = max(0, cache_creation_input_tokens)
+    cr = max(0, cache_read_input_tokens)
+    
+    # Cache multipliers (Anthropic standard): creation is 1.25x base input, read is 0.1x base input
+    cache_creation_cost = cc * priced.input_cost_per_token * 1.25
+    cache_read_cost = cr * priced.input_cost_per_token * 0.10
+    
+    cost = (p * priced.input_cost_per_token) + (c * priced.output_cost_per_token) + cache_creation_cost + cache_read_cost
     if not math.isfinite(cost):
         # Defense-in-depth: resolve_price already guarantees finite rates.
         raise ValueError("Non-finite LLM cost — pricing entry is invalid")

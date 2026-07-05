@@ -66,23 +66,22 @@ _MODEL = "claude-3-7-sonnet-20250219"  # present in the bundled cost map
 
 
 def test_usage_maps_input_output_to_prompt_completion() -> None:
-    # The Anthropic-specific bit: input_tokens -> prompt, output_tokens -> completion.
-    assert _usage_from(_Response(_MODEL, _Usage(5, 7))) == (5, 7)
-    assert _usage_from({"usage": {"input_tokens": 5, "output_tokens": 7}}) == (5, 7)
+    # The Anthropic-specific bit: input_tokens -> prompt, output_tokens -> completion, plus cache buckets
+    assert _usage_from(_Response(_MODEL, _Usage(5, 7))) == (5, 7, 0, 0)
+    assert _usage_from({"usage": {"input_tokens": 5, "output_tokens": 7}}) == (5, 7, 0, 0)
 
 
-def test_usage_folds_prompt_cache_tokens() -> None:
-    # Cached calls must not be under-metered: cache write ~1.25x, read ~0.1x,
-    # folded into the prompt bucket. 100 + round(200*1.25) + round(1000*0.1).
+def test_usage_extracts_prompt_cache_tokens() -> None:
+    # Cached calls must return their buckets unmodified so the core pricing engine can multiply them.
     usage = {
         "input_tokens": 100,
         "output_tokens": 50,
         "cache_creation_input_tokens": 200,
         "cache_read_input_tokens": 1000,
     }
-    assert _usage_from({"usage": usage}) == (100 + 250 + 100, 50)
+    assert _usage_from({"usage": usage}) == (100, 50, 200, 1000)
     # No cache fields → unchanged (the object path getattr-defaults to 0).
-    assert _usage_from(_Response(_MODEL, _Usage(5, 7))) == (5, 7)
+    assert _usage_from(_Response(_MODEL, _Usage(5, 7))) == (5, 7, 0, 0)
 
 
 def test_model_from_prefers_response_then_kwargs() -> None:
