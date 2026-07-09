@@ -16,7 +16,10 @@ export {
   BudgetExceeded,
   UnpriceableModelError,
 } from "./errors.js";
-export { budgetGuardMiddleware } from "./middleware.js";
+export {
+  budgetGuardMiddleware,
+  type BudgetGuardMiddleware,
+} from "./middleware.js";
 export {
   type ManualPrice,
   type PricedModel,
