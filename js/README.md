@@ -1,12 +1,17 @@
 # floe-guard (Vercel AI SDK)
 
+[![npm version](https://img.shields.io/npm/v/floe-guard.svg)](https://www.npmjs.com/package/floe-guard)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](../LICENSE)
+
 **A local budget guardrail for AI agents** — the TypeScript counterpart to the
 [Python `floe-guard`](../README.md). It hard-stops your agent *before its next LLM
 call* when it would cross a USD spend ceiling. No account, no signup, no network.
 Runs in your process.
 
+Works with both **AI SDK v4 and v5** (`ai@4` / `ai@5`).
+
 ```bash
-npm i floe-guard ai@4 @ai-sdk/openai
+npm i floe-guard ai @ai-sdk/openai
 ```
 
 ```ts
@@ -58,10 +63,19 @@ const adv = guard.advisory();
 const model = adv.nearLimit ? openai("gpt-4o-mini") : openai("gpt-4o");
 ```
 
-## Verified against
+## Compatibility
 
-`ai@4` (`LanguageModelV1Middleware` via `wrapLanguageModel` /
-`experimental_wrapLanguageModel`). Declared as a peer dependency.
+`ai` is declared as a peer dependency with the range `>=4.0.0 <6.0.0`:
+
+- **`ai@4`** — `LanguageModelV1Middleware` via `wrapLanguageModel` /
+  `experimental_wrapLanguageModel`; usage read from
+  `promptTokens`/`completionTokens`.
+- **`ai@5`** — `LanguageModelV2Middleware` via `wrapLanguageModel`; usage read
+  from `inputTokens`/`outputTokens`.
+
+The middleware imports nothing from `ai` at runtime or in its types, so one
+build serves both majors. If a provider reports no usable token counts, the
+call is rejected (fail-closed) rather than metered as $0.
 
 ## Development
 

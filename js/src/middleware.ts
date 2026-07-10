@@ -4,7 +4,13 @@
  * This is the TypeScript counterpart to the Python framework adapters. The AI SDK
  * is TypeScript-only, so it ships as its own npm package.
  *
- * Verified against `ai@4.3.19` (`LanguageModelV1Middleware`):
+ * Works with BOTH `ai@4` (`LanguageModelV1Middleware`) and `ai@5`
+ * (`LanguageModelV2Middleware`). The two majors renamed the middleware type and
+ * the usage fields (`promptTokens`/`completionTokens` → `inputTokens`/
+ * `outputTokens`), so this module deliberately imports nothing from `ai`: the
+ * middleware is typed structurally against the surface both majors share, and
+ * usage is read from whichever field pair the installed SDK reports.
+ *
  *   - `wrapGenerate({ doGenerate, model })` — we `reserve()` (throws to hard-stop)
  *     BEFORE calling `doGenerate()`, hold the reservation across the await, then
  *     `settle()` from `result.usage`.
@@ -19,22 +25,67 @@
  * The model id used for pricing comes from `model.modelId`.
  */
 
-import type { LanguageModelV1Middleware } from "ai";
-
 import type { BudgetGuard } from "./guard.js";
 
-// The AI SDK does not re-export `LanguageModelV1StreamPart` from the "ai" entry
-// point, so we derive the stream element type from the middleware's own return
-// type. This keeps us fully typed without importing a transitive package.
-type WrapStreamResult = Awaited<
-  ReturnType<NonNullable<LanguageModelV1Middleware["wrapStream"]>>
->;
-type StreamPart =
-  WrapStreamResult["stream"] extends ReadableStream<infer P> ? P : never;
+/**
+ * The middleware call surface shared by `ai@4` and `ai@5`. Both majors invoke
+ * `wrapGenerate`/`wrapStream` with an options object carrying these members
+ * (plus richer `model` fields we don't read). `doGenerate`/`doStream` are
+ * declared optional so every 4.x/5.x minor's options type stays assignable —
+ * the SDK always provides the one each hook actually calls.
+ */
+interface MiddlewareCallOptions {
+  doGenerate?: () => PromiseLike<any>;
+  doStream?: () => PromiseLike<any>;
+  model: { modelId: string };
+  params?: unknown;
+}
 
 /**
- * Build a `LanguageModelV1Middleware` that hard-stops the model before a call
+ * Structural stand-in for `LanguageModelV1Middleware` (ai@4) and
+ * `LanguageModelV2Middleware` (ai@5) — assignable to the `middleware` option of
+ * `wrapLanguageModel` on either major.
+ */
+export interface BudgetGuardMiddleware {
+  wrapGenerate: (options: MiddlewareCallOptions) => Promise<any>;
+  wrapStream: (options: MiddlewareCallOptions) => Promise<any>;
+}
+
+/**
+ * Read prompt/completion token counts from an ai@4 usage object
+ * (`promptTokens`/`completionTokens`) or an ai@5 one (`inputTokens`/
+ * `outputTokens`). Throws when either count is missing or non-numeric: the guard
+ * cannot meter spend it cannot see, and treating it as $0 would fail open.
+ */
+function usageTokens(
+  modelId: string,
+  usage: unknown,
+): { promptTokens: number; completionTokens: number } {
+  const u = usage as
+    | {
+        promptTokens?: unknown;
+        completionTokens?: unknown;
+        inputTokens?: unknown;
+        outputTokens?: unknown;
+      }
+    | null
+    | undefined;
+  const promptTokens = u?.promptTokens ?? u?.inputTokens;
+  const completionTokens = u?.completionTokens ?? u?.outputTokens;
+  if (typeof promptTokens !== "number" || typeof completionTokens !== "number") {
+    throw new Error(
+      `Model '${modelId}' reported no token usage — the budget guard cannot ` +
+        `meter spend it cannot see, so this call is rejected rather than ` +
+        `treated as free.`,
+    );
+  }
+  return { promptTokens, completionTokens };
+}
+
+/**
+ * Build a budget-guard middleware that hard-stops the model before a call
  * crosses the guard's USD ceiling, and records priced token usage after.
+ * Compatible with `wrapLanguageModel` from both `ai@4` and `ai@5`.
  *
  * @example
  * import { wrapLanguageModel } from "ai";
@@ -47,15 +98,13 @@ type StreamPart =
  *   middleware: budgetGuardMiddleware(guard),
  * });
  */
-export function budgetGuardMiddleware(
-  guard: BudgetGuard,
-): LanguageModelV1Middleware {
+export function budgetGuardMiddleware(guard: BudgetGuard): BudgetGuardMiddleware {
   return {
     async wrapGenerate({ doGenerate, model }) {
       const reserved = guard.reserve(); // throws BudgetExceeded before the call runs
-      let result: Awaited<ReturnType<typeof doGenerate>>;
+      let result: any;
       try {
-        result = await doGenerate();
+        result = await doGenerate!();
       } catch (err) {
         guard.release(reserved); // the call failed before settle() took ownership
         throw err;
@@ -65,7 +114,10 @@ export function budgetGuardMiddleware(
       // again would double-subtract and clear a concurrent call's in-flight hold.
       let handled = false;
       try {
-        const { promptTokens, completionTokens } = result.usage;
+        const { promptTokens, completionTokens } = usageTokens(
+          model.modelId,
+          result?.usage,
+        );
         handled = true;
         guard.settle(model.modelId, promptTokens, completionTokens, { reserved });
         return result;
@@ -77,14 +129,16 @@ export function budgetGuardMiddleware(
 
     async wrapStream({ doStream, model }) {
       const reserved = guard.reserve(); // throws BudgetExceeded before the stream starts
-      let streamResult: Awaited<ReturnType<typeof doStream>>;
+      let streamResult: any;
       try {
-        streamResult = await doStream();
+        streamResult = await doStream!();
       } catch (err) {
         guard.release(reserved); // the call failed before settle() took ownership
         throw err;
       }
-      const { stream, ...rest } = streamResult;
+      const { stream, ...rest } = streamResult as {
+        stream: ReadableStream<any>;
+      } & Record<string, unknown>;
 
       // `handled` flips once the reservation is disposed — settled on the finish
       // part, or released exactly once if the stream produced no usage (flush) or
@@ -93,11 +147,14 @@ export function budgetGuardMiddleware(
       // double-subtract and clear a concurrent call's hold.
       let handled = false;
       const guarded = stream.pipeThrough(
-        new TransformStream<StreamPart, StreamPart>({
+        new TransformStream<any, any>({
           transform(chunk, controller) {
-            if (chunk.type === "finish" && !handled) {
+            if (chunk?.type === "finish" && !handled) {
               try {
-                const { promptTokens, completionTokens } = chunk.usage;
+                const { promptTokens, completionTokens } = usageTokens(
+                  model.modelId,
+                  chunk.usage,
+                );
                 handled = true;
                 guard.settle(model.modelId, promptTokens, completionTokens, { reserved });
               } catch (err) {
@@ -130,7 +187,7 @@ export function budgetGuardMiddleware(
           },
           // `cancel` is valid per the Streams spec and supported in Node 18+, but
           // TS's Transformer lib type lags and omits it — cast to keep the type check.
-        } as Transformer<StreamPart, StreamPart>),
+        } as Transformer<any, any>),
       );
 
       return { stream: guarded, ...rest };

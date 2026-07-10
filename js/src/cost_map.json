@@ -665,6 +665,24 @@
     "litellm_provider": "openai",
     "mode": "chat"
   },
+  "llama-3.1-8b-instant": {
+    "input_cost_per_token": 5e-8,
+    "output_cost_per_token": 8e-8,
+    "litellm_provider": "groq",
+    "mode": "chat"
+  },
+  "llama-3.3-70b-versatile": {
+    "input_cost_per_token": 5.9e-7,
+    "output_cost_per_token": 7.9e-7,
+    "litellm_provider": "groq",
+    "mode": "chat"
+  },
+  "meta-llama/llama-4-scout-17b-16e-instruct": {
+    "input_cost_per_token": 1.1e-7,
+    "output_cost_per_token": 3.4e-7,
+    "litellm_provider": "groq",
+    "mode": "chat"
+  },
   "o1": {
     "input_cost_per_token": 0.000015,
     "output_cost_per_token": 0.00006,
@@ -711,6 +729,12 @@
     "input_cost_per_token": 0.0000011,
     "output_cost_per_token": 0.0000044,
     "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "qwen/qwen3-32b": {
+    "input_cost_per_token": 2.9e-7,
+    "output_cost_per_token": 5.9e-7,
+    "litellm_provider": "groq",
     "mode": "chat"
   },
   "text-embedding-3-large": {

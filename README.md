@@ -1,16 +1,24 @@
 # floe-guard
 
 [![PyPI version](https://img.shields.io/pypi/v/floe-guard.svg)](https://pypi.org/project/floe-guard/)
+[![npm version](https://img.shields.io/npm/v/floe-guard.svg)](https://www.npmjs.com/package/floe-guard)
 [![Downloads](https://static.pepy.tech/badge/floe-guard/month)](https://pepy.tech/project/floe-guard)
 [![Python versions](https://img.shields.io/pypi/pyversions/floe-guard.svg)](https://pypi.org/project/floe-guard/)
+[![CI](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 **A local budget guardrail for AI agents.** It hard-stops your agent *before its
 next LLM call* when it would cross a spend ceiling — so a runaway loop dies at
-$0.10 instead of $4,000. No account, no signup, no network. Runs in your process.
+$0.10 instead of $4,000. No account, no signup, no network, **no telemetry**.
+Runs in your process.
+
+Works with [CrewAI](#crewai) · [LiteLLM](#litellm) · [LangChain](#langchain) ·
+[OpenAI](#openai) · [Anthropic](#anthropic) ·
+[Vercel AI SDK](#vercel-ai-sdk) — or any stack, via plain `check()` / `record()`.
 
 ```bash
-pip install floe-guard
+pip install floe-guard        # Python
+npm i floe-guard              # TypeScript (Vercel AI SDK) — see js/
 ```
 
 ```python
@@ -225,10 +233,10 @@ pricing. Use `guarded_acompletion` with an `AsyncAnthropic` client for async.
 ### Vercel AI SDK
 
 The Vercel AI SDK is TypeScript-only, so it ships as a separate npm package that
-lives in [`js/`](js/).
+lives in [`js/`](js/). It works with both **AI SDK v4 and v5**.
 
 ```bash
-npm i floe-guard ai@4 @ai-sdk/openai
+npm i floe-guard ai @ai-sdk/openai
 ```
 
 ```ts
@@ -263,6 +271,17 @@ vendored cost map *inside your process*:
 
 It's genuinely useful on its own, and it's honest about its limits. No inflated
 metrics, no "zero defaults" claims — it's a free local stop, not a vault.
+
+## No telemetry
+
+floe-guard does **not** phone home. It sends no usage events, no install pings,
+no identifiers — nothing leaves your process at runtime except hosted-budget
+reads you explicitly opt into by setting `FLOE_API_KEY` (the
+[hosted Floe](#upgrade-to-hosted-floe) path) — never otherwise.
+
+This is a choice, not an oversight. A guardrail's whole value is trust: a
+library that silently exfiltrates usage from people's agents is the opposite of
+a tool you hand a budget to.
 
 ## Upgrade to hosted Floe
 
@@ -303,6 +322,10 @@ source of truth.
 → **[dev-dashboard.floelabs.xyz](https://dev-dashboard.floelabs.xyz/?utm_source=floe-guard&utm_medium=readme&utm_campaign=oss)** ·
 **[floelabs.xyz](https://floelabs.xyz/?utm_source=floe-guard&utm_medium=readme&utm_campaign=oss)**
 
+Want runnable end-to-end agents on hosted Floe (Vapi voice agents, metered LLM
+calls, CrewAI, MCP)? See the
+**[Floe Cookbook](https://github.com/Floe-Labs/floe-cookbook)**.
+
 ## Built with floe-guard
 
 Using floe-guard in your project? Add the badge so others find it:
@@ -320,6 +343,10 @@ pip install -e ".[dev]"
 pytest
 ruff check .
 ```
+
+For the TypeScript package, see [`js/README.md`](js/README.md). Contributions
+are welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md); releases are
+tracked in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

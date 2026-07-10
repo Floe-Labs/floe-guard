@@ -67,6 +67,29 @@ jobs:
       - name: Pytest
         run: pytest -q
 
+  test-js:
+    # The npm package (Vercel AI SDK middleware) lives in js/. Run its build,
+    # typecheck, and tests on every PR — publish-npm.yml re-runs them at publish
+    # time, but that's too late to catch a broken PR.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
+
   test-bare:
     # Locks the dependency-free contract: the package and its test suite must
     # work with NO framework extra installed (handler tests skip cleanly, no
