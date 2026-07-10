@@ -1,12 +1,13 @@
 name: Publish to npm
 
+# Runs after the full CI workflow succeeds on main (not on the raw push), so a
+# red lint/cost-map-sync/python job blocks an npm release too. The old js/**
+# path filter is gone; the version gate below already makes no-op runs cheap.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    # The npm package lives in js/; only publish when it (or this workflow) changes.
-    paths:
-      - 'js/**'
-      - '.github/workflows/publish-npm.yml'
   workflow_dispatch:
 
 concurrency:
@@ -14,11 +15,20 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write # push the release tag; npm auth stays the token secret
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    # workflow_run's `branches` filter matches the HEAD branch NAME of the
+    # triggering run — a fork PR from a branch named "main" would match it. The
+    # event/head_repository checks restrict publishing to push-triggered CI on
+    # this repo's own main.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -28,6 +38,9 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
+          # workflow_run checks out the default branch by default; pin to the
+          # exact commit CI validated.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -69,3 +82,16 @@ jobs:
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Tag the release
+        # Maps the published artifact back to its exact commit ("js-" prefix:
+        # the PyPI package versions independently and tags "py-v<version>").
+        if: steps.check.outputs.should_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PKG_VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          gh api "repos/${{ github.repository }}/git/refs" \
+            -f ref="refs/tags/js-v$PKG_VERSION" \
+            -f sha="$(git rev-parse HEAD)" \
+            || echo "::warning::tag js-v$PKG_VERSION already exists or could not be created"

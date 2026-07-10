@@ -1,7 +1,12 @@
 name: Publish to PyPI
 
+# Runs after the full CI workflow (lint, python matrix, cost-map-sync, js)
+# succeeds on main — not on the raw push. npm 0.2.0 once shipped while main CI
+# was red on cost-map-sync; gating on workflow_run closes that hole.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -10,17 +15,29 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write # push the release tag; PyPI auth stays the token secret
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    # workflow_run's `branches` filter matches the HEAD branch NAME of the
+    # triggering run — a fork PR from a branch named "main" would match it. The
+    # event/head_repository checks restrict publishing to push-triggered CI on
+    # this repo's own main.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
+          # workflow_run checks out the default branch by default; pin to the
+          # exact commit CI validated.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -77,3 +94,16 @@ jobs:
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Tag the release
+        # Maps the published artifact back to its exact commit ("py-" prefix:
+        # the npm package versions independently and tags "js-v<version>").
+        if: steps.check.outputs.should_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PKG_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          gh api "repos/${{ github.repository }}/git/refs" \
+            -f ref="refs/tags/py-v$PKG_VERSION" \
+            -f sha="$(git rev-parse HEAD)" \
+            || echo "::warning::tag py-v$PKG_VERSION already exists or could not be created"

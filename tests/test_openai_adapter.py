@@ -90,13 +90,18 @@ def test_model_from_prefers_response_then_kwargs() -> None:
 
 def test_settle_model_falls_back_to_priceable_alias() -> None:
     guard = BudgetGuard(limit_usd=10.0)
-    # Served snapshot isn't in the bundled cost map, but the requested alias is:
-    # settle on the alias so a stale map doesn't fail-closed an otherwise-priced call.
-    unpriced_served = _Response("gpt-4o-2099-01-01", _Usage(1, 1))
+    # Served id isn't priceable in any form (no dated suffix to strip, not in
+    # the map), but the requested alias is: settle on the alias so a stale map
+    # doesn't fail-closed an otherwise-priced call.
+    unpriced_served = _Response("gpt-4o-nonexistent-variant", _Usage(1, 1))
     assert _settle_model(guard, {"model": "gpt-4o"}, unpriced_served) == "gpt-4o"
     # Served id IS priceable → it wins (source of truth).
     priced_served = _Response("gpt-4o-2024-08-06", _Usage(1, 1))
     assert _settle_model(guard, {"model": "gpt-4o"}, priced_served) == "gpt-4o-2024-08-06"
+    # A dated snapshot the map doesn't list prices via its alias entry now, so
+    # the served id itself stays the settle model (same rate, truer id).
+    dated_served = _Response("gpt-4o-2099-01-01", _Usage(1, 1))
+    assert _settle_model(guard, {"model": "gpt-4o"}, dated_served) == "gpt-4o-2099-01-01"
 
 
 def test_record_response_accrues() -> None:
