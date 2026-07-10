@@ -103,6 +103,23 @@ guard = BudgetGuard(
 # or, set fail_closed=False to warn-and-skip for models you accept un-metered.
 ```
 
+### What the bundled map prices
+
+The vendored map deliberately covers **OpenAI, Anthropic, and a curated set of
+Groq models** (the allowlist lives in
+[`scripts/update-cost-map.mjs`](scripts/update-cost-map.mjs)) — not all of
+LiteLLM's upstream list. Generic open-weights names (`qwen3-32b`,
+`gpt-oss-120b`) are served by many vendors at very different prices, so
+resolving them at one vendor's rate would under-meter a spend guard; they stay
+unpriceable unless you scope them (`groq/…`) or pass a manual price.
+
+Model ids resolve flexibly: provider-prefixed forms work
+(`openai/gpt-4o`, `groq/qwen/qwen3-32b` and the ChatGroq `qwen/qwen3-32b` both
+hit the same entry), and a dated snapshot the map doesn't list yet
+(`claude-opus-4-8-<date>`) prices at its alias entry instead of failing closed.
+Everything else — Gemini, Mistral, Cohere, Ollama, Bedrock, self-hosted —
+needs `price_overrides` (or `fail_closed=False` to accept it un-metered).
+
 ## Context-aware budgeting
 
 The hard-stop is the guarantee; `advisory()` is the *upside*. Read it before a
@@ -142,17 +159,26 @@ pip install floe-guard[crewai]
 ```
 
 ```python
-from crewai import Crew
+from crewai import Agent, Crew
 from floe_guard import BudgetGuard
-from floe_guard.integrations.crewai import guard_crew
+from floe_guard.integrations.crewai import budget_guarded_llm
 
 guard = BudgetGuard(limit_usd=1.00)
-guard_crew(guard)              # one line — enforces across the whole crew
-Crew(agents=[...], tasks=[...]).kickoff()
+llm = budget_guarded_llm(guard, "gpt-4o")   # meters AND hard-stops
+Crew(agents=[Agent(..., llm=llm)], tasks=[...]).kickoff()
 ```
 
-CrewAI runs on LiteLLM, so one callback caps every agent and task under a single
-budget.
+CrewAI runs on LiteLLM, so one callback meters every agent and task under a
+single budget. Use `budget_guarded_llm` (not just `guard_crew`) to get the hard
+stop: LiteLLM can swallow exceptions raised inside its callbacks (verified on
+litellm 1.91.x), so a callback alone may keep the crew running past a
+violation. `budget_guarded_llm` also enforces in the LLM call path — where a
+raise reliably reaches CrewAI — re-raising any violation the callback recorded
+before the next call runs. `guard_crew(guard)` remains available for metering
+existing crews; check the returned callback's `tripped` attribute (and the
+`floe_guard` logger's ERROR output) if you use it alone. A recorded violation
+latches for the life of the callback — after remediating (say, adding a price
+override), call `callback.reset()` or build a fresh guard.
 
 ### LiteLLM
 
@@ -169,7 +195,12 @@ response = guarded_completion(guard, model="gpt-4o", messages=[...])
 ```
 
 Prefer the LiteLLM-native callback? Register `budget_guard_callback(guard)` on
-`litellm.callbacks`.
+`litellm.callbacks` — but know its limit: LiteLLM runs callbacks inside
+`except Exception`, so the callback's enforcement raise can be swallowed and
+your loop keeps going. The callback records any violation on its `tripped`
+attribute and logs it at ERROR level; consult `tripped` in your own loop, or
+use `guarded_completion` (which enforces at the call site) for the guaranteed
+stop. Wrapper enforcement is tested against litellm 1.91.x.
 
 ### LangChain
 
