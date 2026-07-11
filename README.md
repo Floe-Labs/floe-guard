@@ -241,7 +241,7 @@ class State(TypedDict):
 
 guard = BudgetGuard(limit_usd=0.10)
 
-@guarded_node(guard)                 # reserve() before, settle()/release() after
+@guarded_node(guard, estimated_cost=0.01)   # reserve() before, settle()/release() after
 def worker(state: State) -> dict:
     response = my_llm_call(state)
     return {"results": [response["text"]], "usage": {
@@ -254,7 +254,9 @@ def worker(state: State) -> dict:
 `guarded_node` gives every branch of a `StateGraph` fan-out its own atomic
 slice of the ceiling (reserve-before / settle-after, the same contract the
 OpenAI and Anthropic adapters use), so N parallel sub-agents can't race one
-shared total. After each settled call it writes the guard's `BudgetAdvisory`
+shared total. Pass `estimated_cost` so the very first branches hold a
+realistic slice (a fresh guard has no last call to estimate from); afterwards
+each reservation re-estimates from the last settled cost automatically. After each settled call it writes the guard's `BudgetAdvisory`
 into `state["budget"]`, so a router node can downshift to a cheaper model on
 `near_limit` *before* the hard-stop — see
 [`examples/langgraph_budget_aware.py`](examples/langgraph_budget_aware.py) for

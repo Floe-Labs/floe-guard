@@ -171,6 +171,23 @@ def test_node_error_releases_reservation() -> None:
     assert guard.spent_usd == pytest.approx(0.0125)  # only the warm call
 
 
+def test_malformed_usage_releases_hold_and_raises() -> None:
+    # A malformed usage payload must not leak the reservation: the hold is
+    # released before the error propagates, the same fail-safe as settle()'s
+    # pricing-error path.
+    guard = BudgetGuard(limit_usd=0.10, on_block=lambda *_: None)
+    guard.record(MODEL, 1_000, 1_000)
+
+    @guarded_node(guard)
+    def broken_usage(state: dict) -> dict:
+        return {"usage": {"model": MODEL, "prompt_tokens": "abc", "completion_tokens": 50}}
+
+    with pytest.raises(ValueError):
+        broken_usage({})
+    assert guard._reserved == pytest.approx(0.0, abs=1e-9)
+    assert guard.spent_usd == pytest.approx(0.0125)  # only the warm call
+
+
 def test_node_without_usage_releases_hold_and_still_reports_advisory() -> None:
     # A node that meters through another floe-guard adapter (or spends nothing)
     # must not be double-counted: the hold is released, not settled.

@@ -29,7 +29,9 @@ read ``state["budget"].near_limit`` and downshift to a cheaper model *before*
 
     guard = BudgetGuard(limit_usd=0.10)
 
-    @guarded_node(guard)
+    # estimated_cost seeds the very first hold (a fresh guard has no last
+    # cost to estimate from); later calls re-estimate from the last settled cost.
+    @guarded_node(guard, estimated_cost=0.01)
     def worker(state: State) -> dict:
         response = my_llm_call(state)  # however the node does its work
         return {
@@ -111,7 +113,15 @@ def _usage_from_update(update: Any, usage_key: str) -> tuple[str, int, int] | No
 
 
 def _settle_update(guard: BudgetGuard, update: Any, usage_key: str, *, reserved: float) -> None:
-    usage = _usage_from_update(update, usage_key)
+    try:
+        usage = _usage_from_update(update, usage_key)
+    except (TypeError, ValueError):
+        # A malformed usage payload (e.g. prompt_tokens="abc") cannot be priced.
+        # Release the in-flight hold before propagating so the reservation
+        # doesn't leak and shrink remaining_usd permanently — the same
+        # fail-safe as settle()'s pricing-error path.
+        guard.release(reserved)
+        raise
     if usage is None:
         # No usage reported — the node metered elsewhere (another adapter) or
         # spent nothing. Free the hold; do NOT settle, or the spend would be
