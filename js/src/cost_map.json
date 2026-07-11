@@ -137,6 +137,12 @@
     "litellm_provider": "anthropic",
     "mode": "chat"
   },
+  "claude-sonnet-5": {
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.00001,
+    "litellm_provider": "anthropic",
+    "mode": "chat"
+  },
   "ft:gpt-3.5-turbo": {
     "input_cost_per_token": 0.000003,
     "output_cost_per_token": 0.000006,
@@ -587,6 +593,30 @@
     "litellm_provider": "openai",
     "mode": "chat"
   },
+  "gpt-5.6": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.00003,
+    "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "gpt-5.6-luna": {
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.000006,
+    "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "gpt-5.6-sol": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.00003,
+    "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "gpt-5.6-terra": {
+    "input_cost_per_token": 0.0000025,
+    "output_cost_per_token": 0.000015,
+    "litellm_provider": "openai",
+    "mode": "chat"
+  },
   "gpt-audio": {
     "input_cost_per_token": 0.0000025,
     "output_cost_per_token": 0.00001,
@@ -641,6 +671,18 @@
     "litellm_provider": "openai",
     "mode": "chat"
   },
+  "gpt-realtime-2.1": {
+    "input_cost_per_token": 0.000004,
+    "output_cost_per_token": 0.000024,
+    "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "gpt-realtime-2.1-mini": {
+    "input_cost_per_token": 6e-7,
+    "output_cost_per_token": 0.0000024,
+    "litellm_provider": "openai",
+    "mode": "chat"
+  },
   "gpt-realtime-2025-08-28": {
     "input_cost_per_token": 0.000004,
     "output_cost_per_token": 0.000016,
@@ -663,6 +705,24 @@
     "input_cost_per_token": 6e-7,
     "output_cost_per_token": 0.0000024,
     "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "llama-3.1-8b-instant": {
+    "input_cost_per_token": 5e-8,
+    "output_cost_per_token": 8e-8,
+    "litellm_provider": "groq",
+    "mode": "chat"
+  },
+  "llama-3.3-70b-versatile": {
+    "input_cost_per_token": 5.9e-7,
+    "output_cost_per_token": 7.9e-7,
+    "litellm_provider": "groq",
+    "mode": "chat"
+  },
+  "meta-llama/llama-4-scout-17b-16e-instruct": {
+    "input_cost_per_token": 1.1e-7,
+    "output_cost_per_token": 3.4e-7,
+    "litellm_provider": "groq",
     "mode": "chat"
   },
   "o1": {
@@ -711,6 +771,30 @@
     "input_cost_per_token": 0.0000011,
     "output_cost_per_token": 0.0000044,
     "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "openai/gpt-oss-120b": {
+    "input_cost_per_token": 1.5e-7,
+    "output_cost_per_token": 6e-7,
+    "litellm_provider": "groq",
+    "mode": "chat"
+  },
+  "openai/gpt-oss-20b": {
+    "input_cost_per_token": 7.5e-8,
+    "output_cost_per_token": 3e-7,
+    "litellm_provider": "groq",
+    "mode": "chat"
+  },
+  "openai/gpt-oss-safeguard-20b": {
+    "input_cost_per_token": 7.5e-8,
+    "output_cost_per_token": 3e-7,
+    "litellm_provider": "groq",
+    "mode": "chat"
+  },
+  "qwen/qwen3-32b": {
+    "input_cost_per_token": 2.9e-7,
+    "output_cost_per_token": 5.9e-7,
+    "litellm_provider": "groq",
     "mode": "chat"
   },
   "text-embedding-3-large": {

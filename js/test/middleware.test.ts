@@ -79,6 +79,49 @@ describe("budgetGuardMiddleware — wrapGenerate", () => {
   });
 });
 
+describe("budgetGuardMiddleware — wrapGenerate (ai@5 usage shape)", () => {
+  it("records spend from inputTokens/outputTokens", async () => {
+    const guard = new BudgetGuard(1.0);
+    const mw = budgetGuardMiddleware(guard);
+
+    const doGenerate = vi.fn(async () => ({
+      usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 },
+    }));
+
+    await mw.wrapGenerate!({
+      doGenerate: doGenerate as never,
+      doStream: vi.fn() as never,
+      params: fakeParams,
+      model: fakeModel("gpt-4o"),
+    });
+
+    const priced = pricing.resolvePrice("gpt-4o")!;
+    expect(guard.spentUsd).toBeCloseTo(pricing.priceTokens(priced, 1000, 1000), 12);
+  });
+
+  it("rejects a result with no usable token counts instead of metering $0", async () => {
+    const guard = new BudgetGuard(1.0);
+    const mw = budgetGuardMiddleware(guard);
+
+    const doGenerate = vi.fn(async () => ({
+      usage: { totalTokens: 2000 }, // ai@5 allows undefined input/output tokens
+    }));
+
+    await expect(
+      mw.wrapGenerate!({
+        doGenerate: doGenerate as never,
+        doStream: vi.fn() as never,
+        params: fakeParams,
+        model: fakeModel("gpt-4o"),
+      }),
+    ).rejects.toThrow(/no token usage/);
+
+    // The reservation must be released — nothing spent, nothing held in flight.
+    expect(guard.spentUsd).toBe(0);
+    expect(guard.remainingUsd).toBe(1.0);
+  });
+});
+
 describe("budgetGuardMiddleware — wrapStream", () => {
   it("records usage from the stream finish part", async () => {
     const guard = new BudgetGuard(1.0);
@@ -126,6 +169,36 @@ describe("budgetGuardMiddleware — wrapStream", () => {
     ).rejects.toBeInstanceOf(BudgetExceeded);
 
     expect(doStream).not.toHaveBeenCalled();
+  });
+});
+
+describe("budgetGuardMiddleware — wrapStream (ai@5 usage shape)", () => {
+  it("records usage from an ai@5 finish part", async () => {
+    const guard = new BudgetGuard(1.0);
+    const mw = budgetGuardMiddleware(guard);
+
+    const doStream = vi.fn(async () => ({
+      stream: readableOf([
+        { type: "text-delta", id: "1", delta: "hello" },
+        {
+          type: "finish",
+          finishReason: "stop",
+          usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 },
+        },
+      ]),
+    }));
+
+    const result = await mw.wrapStream!({
+      doGenerate: vi.fn() as never,
+      doStream: doStream as never,
+      params: fakeParams,
+      model: fakeModel("gpt-4o"),
+    });
+
+    await drain((result as { stream: ReadableStream }).stream);
+
+    const priced = pricing.resolvePrice("gpt-4o")!;
+    expect(guard.spentUsd).toBeCloseTo(pricing.priceTokens(priced, 1000, 1000), 12);
   });
 });
 
