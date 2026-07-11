@@ -29,8 +29,9 @@ read ``state["budget"].near_limit`` and downshift to a cheaper model *before*
 
     guard = BudgetGuard(limit_usd=0.10)
 
-    # estimated_cost seeds the very first hold (a fresh guard has no last
-    # cost to estimate from); later calls re-estimate from the last settled cost.
+    # estimated_cost holds a fixed, conservative slice on every call of this
+    # node; omit it to estimate from the guard's last settled cost instead
+    # (0 on a fresh guard, so seed a cold-start fan-out explicitly).
     @guarded_node(guard, estimated_cost=0.01)
     def worker(state: State) -> dict:
         response = my_llm_call(state)  # however the node does its work
@@ -115,8 +116,9 @@ def _usage_from_update(update: Any, usage_key: str) -> tuple[str, int, int] | No
 def _settle_update(guard: BudgetGuard, update: Any, usage_key: str, *, reserved: float) -> None:
     try:
         usage = _usage_from_update(update, usage_key)
-    except (TypeError, ValueError):
-        # A malformed usage payload (e.g. prompt_tokens="abc") cannot be priced.
+    except (TypeError, ValueError, OverflowError):
+        # A malformed usage payload (e.g. prompt_tokens="abc" or float("inf"))
+        # cannot be priced.
         # Release the in-flight hold before propagating so the reservation
         # doesn't leak and shrink remaining_usd permanently — the same
         # fail-safe as settle()'s pricing-error path.

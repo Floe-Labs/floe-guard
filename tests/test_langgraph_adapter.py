@@ -187,6 +187,15 @@ def test_malformed_usage_releases_hold_and_raises() -> None:
     assert guard._reserved == pytest.approx(0.0, abs=1e-9)
     assert guard.spent_usd == pytest.approx(0.0125)  # only the warm call
 
+    @guarded_node(guard)
+    def infinite_usage(state: dict) -> dict:
+        return {"usage": {"model": MODEL, "prompt_tokens": float("inf"), "completion_tokens": 50}}
+
+    with pytest.raises(OverflowError):
+        infinite_usage({})
+    assert guard._reserved == pytest.approx(0.0, abs=1e-9)
+    assert guard.spent_usd == pytest.approx(0.0125)
+
 
 def test_node_without_usage_releases_hold_and_still_reports_advisory() -> None:
     # A node that meters through another floe-guard adapter (or spends nothing)

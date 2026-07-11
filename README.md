@@ -254,9 +254,10 @@ def worker(state: State) -> dict:
 `guarded_node` gives every branch of a `StateGraph` fan-out its own atomic
 slice of the ceiling (reserve-before / settle-after, the same contract the
 OpenAI and Anthropic adapters use), so N parallel sub-agents can't race one
-shared total. Pass `estimated_cost` so the very first branches hold a
-realistic slice (a fresh guard has no last call to estimate from); afterwards
-each reservation re-estimates from the last settled cost automatically. After each settled call it writes the guard's `BudgetAdvisory`
+shared total. Pass `estimated_cost` to hold a conservative fixed slice on
+every call of that node (the `0.01` above); a node that omits it estimates
+from the guard's last settled cost instead, which is `0` on a fresh guard, so
+seed a cold-start fan-out explicitly. After each settled call it writes the guard's `BudgetAdvisory`
 into `state["budget"]`, so a router node can downshift to a cheaper model on
 `near_limit` *before* the hard-stop — see
 [`examples/langgraph_budget_aware.py`](examples/langgraph_budget_aware.py) for
