@@ -10,6 +10,24 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added (py + js)
+
+- **Per-call spend ledger**: every priced `record()` / `settle()` appends a
+  typed `SpendEvent` (`timestamp`, `kind: llm|tool`, `model_or_tool`,
+  `prompt_tokens`, `completion_tokens`, `cost_usd`, optional `label` and
+  `reserved`) to `guard.spend_log` (py) / `guard.spendLog` (js), so the ledger
+  sums to the running total (unless the ring-buffer cap below has evicted old
+  events) — no more rebuilding per-call breakdowns outside the guard. `export_log()` / `exportLog()` serialises it as JSONL with
+  an identical snake_case schema in both languages, so heterogeneous agents
+  emit one concatenable stream. An optional `max_log_events` / `maxLogEvents`
+  ring-buffer cap bounds memory for long-running agents.
+- **`record_tool()` / `recordTool()`**: accrue a non-LLM cost (paid tool/API
+  call) against the same ceiling and log it as a `kind: "tool"` event, so
+  `check()` / `reserve()` enforce the budget across LLM and tool spend
+  together.
+- `record()` / `settle()` accept an optional `label` to tag events with an
+  agent/task name.
+
 ## py 0.2.0 / js 0.2.1 — 2026-07-10
 
 Everything the repo grew between the 0.1.0 uploads and this release ships here —

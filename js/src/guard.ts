@@ -33,6 +33,33 @@ import {
 /** Tolerance for float rounding in the running spend total (well below $0.000001). */
 const EPS = 1e-12;
 
+/**
+ * One priced spend event in the guard's per-call ledger.
+ *
+ * Every {@link BudgetGuard.record} / {@link BudgetGuard.settle} /
+ * {@link BudgetGuard.recordTool} that accrues spend appends exactly one event, so
+ * the ledger's costs sum to `spentUsd` (unless a `maxLogEvents` ring buffer has
+ * evicted old events). The schema is identical in the Python
+ * package (`SpendEvent` in `src/floe_guard/guard.py`) and
+ * {@link BudgetGuard.exportLog} serialises it with the same snake_case keys in
+ * both languages, so every agent emits the same shape regardless of stack.
+ */
+export interface SpendEvent {
+  /** Unix epoch seconds (UTC). */
+  readonly timestamp: number;
+  readonly kind: "llm" | "tool";
+  readonly modelOrTool: string;
+  /** `null` for tool events. */
+  readonly promptTokens: number | null;
+  /** `null` for tool events. */
+  readonly completionTokens: number | null;
+  readonly costUsd: number;
+  /** Caller-supplied tag (agent/task name). */
+  readonly label?: string;
+  /** The reservation settled by this call, if any. */
+  readonly reserved?: number;
+}
+
 export interface BudgetGuardOptions {
   /** Per-model manual prices for models the bundled cost map cannot price. */
   priceOverrides?: Record<string, ManualPrice>;
@@ -53,6 +80,13 @@ export interface BudgetGuardOptions {
    * flags `nearLimit` so an agent can taper before the hard-stop. Default 8000.
    */
   nearLimitBps?: number;
+  /**
+   * Optional cap on the per-call spend ledger ({@link BudgetGuard.spendLog}).
+   * When set, the ledger is a ring buffer keeping the most recent N events so a
+   * long-running agent's memory stays bounded; the running totals are
+   * unaffected. Default: keep every event.
+   */
+  maxLogEvents?: number;
 }
 
 /**
@@ -92,6 +126,9 @@ export class BudgetGuard {
   private lastCost = 0;
   /** USD held for in-flight calls (reserved, not yet settled). Counts toward the ceiling. */
   private reserved = 0;
+  /** Per-call ledger, oldest first; a ring buffer when maxLogEvents is set. */
+  private readonly spendEvents: SpendEvent[] = [];
+  private readonly maxLogEvents?: number;
 
   /**
    * @param limitUsd the spend ceiling, in USD. `0` blocks the very first call.
@@ -112,7 +149,16 @@ export class BudgetGuard {
         `nearLimitBps must be an integer in 0..10000, got ${nearLimitBps}`,
       );
     }
+    if (
+      options.maxLogEvents !== undefined &&
+      (!Number.isInteger(options.maxLogEvents) || options.maxLogEvents < 0)
+    ) {
+      throw new RangeError(
+        `maxLogEvents must be a non-negative integer, got ${options.maxLogEvents}`,
+      );
+    }
     this.limitUsd = limitUsd;
+    this.maxLogEvents = options.maxLogEvents;
     this.priceOverrides = options.priceOverrides;
     this.failClosed = options.failClosed ?? true;
     this.onBlock = options.onBlock ?? defaultOnBlock;
@@ -181,13 +227,16 @@ export class BudgetGuard {
    * Release a reservation and record the actual cost. `record` is `settle` with
    * no reservation. Returns the USD cost of this call; unpriceable-model handling
    * matches {@link BudgetGuard.record}, and any held reservation is released even
-   * on the warn-and-skip path.
+   * on the warn-and-skip path. A priced call appends one {@link SpendEvent} to
+   * {@link BudgetGuard.spendLog} (`label` tags it, e.g. with an agent/task name);
+   * the warn-and-skip path accrues nothing and logs nothing, so the ledger stays
+   * in lockstep with `spentUsd`.
    */
   settle(
     model: string,
     promptTokens: number,
     completionTokens: number,
-    options: { reserved?: number; price?: ManualPrice } = {},
+    options: { reserved?: number; price?: ManualPrice; label?: string } = {},
   ): number {
     const reserved = options.reserved ?? 0;
     // A bad reserved handle would corrupt this.reserved and break the ceiling for
@@ -237,6 +286,18 @@ export class BudgetGuard {
       this.spentUsd = this.limitUsd;
     }
     this.lastCost = cost;
+    this.appendEvent({
+      timestamp: Date.now() / 1000,
+      kind: "llm",
+      modelOrTool: model,
+      promptTokens,
+      completionTokens,
+      costUsd: cost,
+      ...(options.label !== undefined ? { label: options.label } : {}),
+      // 0 means "no reservation" (the plain record() path) — omit rather than
+      // log a meaningless zero.
+      ...(reserved ? { reserved } : {}),
+    });
     return cost;
   }
 
@@ -251,12 +312,46 @@ export class BudgetGuard {
     model: string,
     promptTokens: number,
     completionTokens: number,
-    options: { price?: ManualPrice } = {},
+    options: { price?: ManualPrice; label?: string } = {},
   ): number {
     return this.settle(model, promptTokens, completionTokens, {
       reserved: 0,
       price: options.price,
+      label: options.label,
     });
+  }
+
+  /**
+   * Accrue a non-LLM cost (a paid tool/API call) against the same ceiling.
+   *
+   * Tools with direct dollar costs — search APIs, scrapers, sandboxes — spend the
+   * same budget the LLM calls do; `recordTool` folds them into `spentUsd` (so
+   * `check()` / `reserve()` see them) and appends a `kind: "tool"`
+   * {@link SpendEvent} to {@link BudgetGuard.spendLog}. The caller supplies the
+   * cost: tools have no token usage to price. Deliberately does NOT update the
+   * next-call estimate — that predicts the next *LLM* call, and a tool's price
+   * would skew it. Returns `costUsd`.
+   */
+  recordTool(tool: string, costUsd: number, options: { label?: string } = {}): number {
+    if (!Number.isFinite(costUsd) || costUsd < 0) {
+      throw new RangeError(`costUsd must be a finite, non-negative number, got ${costUsd}`);
+    }
+    this.spentUsd += costUsd;
+    // Same sub-epsilon clamp as settle(): never report a rounding-artifact
+    // crossing of the ceiling.
+    if (this.spentUsd - this.limitUsd > 0 && this.spentUsd - this.limitUsd < EPS) {
+      this.spentUsd = this.limitUsd;
+    }
+    this.appendEvent({
+      timestamp: Date.now() / 1000,
+      kind: "tool",
+      modelOrTool: tool,
+      promptTokens: null,
+      completionTokens: null,
+      costUsd,
+      ...(options.label !== undefined ? { label: options.label } : {}),
+    });
+    return costUsd;
   }
 
   /**
@@ -276,6 +371,55 @@ export class BudgetGuard {
   /** USD left before the ceiling, net of in-flight reservations (never negative). */
   get remainingUsd(): number {
     return Math.max(0, this.limitUsd - this.spentUsd - this.reserved);
+  }
+
+  /**
+   * The per-call spend ledger, oldest first — one {@link SpendEvent} per priced
+   * `record()` / `settle()` / `recordTool()`. Returns a snapshot copy: mutating
+   * it cannot corrupt the ledger.
+   */
+  get spendLog(): SpendEvent[] {
+    return [...this.spendEvents];
+  }
+
+  /**
+   * The spend ledger as JSONL — one event per line, newline-terminated.
+   *
+   * The schema is stable and language-independent (snake_case keys, fixed order;
+   * optional fields omitted when absent), identical to the Python package's
+   * `export_log()`, so heterogeneous agents produce logs you can concatenate and
+   * analyse as one stream. (The *schema* is the contract, not the bytes: the two
+   * runtimes may render the same float differently, e.g. JS `0.0000025` vs
+   * Python `2.5e-06`.) Empty ledger yields `""`.
+   */
+  exportLog(): string {
+    return this.spendEvents
+      .map((e) => {
+        // snake_case wire shape, fixed key order — the cross-language schema.
+        const row: Record<string, unknown> = {
+          timestamp: e.timestamp,
+          kind: e.kind,
+          model_or_tool: e.modelOrTool,
+          prompt_tokens: e.promptTokens,
+          completion_tokens: e.completionTokens,
+          cost_usd: e.costUsd,
+        };
+        if (e.label !== undefined) row.label = e.label;
+        if (e.reserved !== undefined) row.reserved = e.reserved;
+        return `${JSON.stringify(row)}\n`;
+      })
+      .join("");
+  }
+
+  private appendEvent(event: SpendEvent): void {
+    // Frozen for parity with Python's frozen dataclass: spendLog copies the
+    // array but shares the event objects, so an unfrozen event would let a
+    // consumer silently rewrite logged history.
+    this.spendEvents.push(Object.freeze(event));
+    if (this.maxLogEvents !== undefined && this.spendEvents.length > this.maxLogEvents) {
+      // Ring buffer: drop the oldest overflow (at most one per append).
+      this.spendEvents.splice(0, this.spendEvents.length - this.maxLogEvents);
+    }
   }
 
   /**

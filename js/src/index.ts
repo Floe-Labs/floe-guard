@@ -10,6 +10,7 @@ export {
   BudgetGuard,
   type BudgetGuardOptions,
   type BudgetAdvisory,
+  type SpendEvent,
 } from "./guard.js";
 export {
   FloeGuardError,
