@@ -1,6 +1,6 @@
 {
   "name": "floe-guard",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "A local budget guardrail for AI agents — hard-stops your agent before its next LLM call crosses a USD ceiling. Vercel AI SDK middleware.",
   "type": "module",
   "license": "MIT",

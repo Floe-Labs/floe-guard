@@ -24,7 +24,7 @@ from .guard import BudgetAdvisory, BudgetGuard, SpendEvent
 from .hosted import hosted_enforcement_available, hosted_remaining_usd
 from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
 
-__version__ = "0.2.0"  # keep in lockstep with pyproject.toml
+__version__ = "0.3.0"  # keep in lockstep with pyproject.toml
 
 __all__ = [
     "BudgetGuard",

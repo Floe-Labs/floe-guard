@@ -10,6 +10,8 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## py 0.3.0 / js 0.3.0 — 2026-07-14
+
 ### Added (py + js)
 
 - **Per-call spend ledger**: every priced `record()` / `settle()` appends a
@@ -27,6 +29,11 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   together.
 - `record()` / `settle()` accept an optional `label` to tag events with an
   agent/task name.
+
+### Fixed (py)
+
+- `floe_guard.__version__` now reports the real package version (it had been
+  stuck at `0.1.0` since the 0.2.0 release).
 
 ## py 0.2.0 / js 0.2.1 — 2026-07-10
 
