@@ -20,15 +20,16 @@ from .errors import (
     UnpriceableModelError,
     UnpriceableModelWarning,
 )
-from .guard import BudgetAdvisory, BudgetGuard
+from .guard import BudgetAdvisory, BudgetGuard, SpendEvent
 from .hosted import hosted_enforcement_available, hosted_remaining_usd
 from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"  # keep in lockstep with pyproject.toml
 
 __all__ = [
     "BudgetGuard",
     "BudgetAdvisory",
+    "SpendEvent",
     "BudgetExceeded",
     "FloeGuardError",
     "HostedEnforcementError",

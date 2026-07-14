@@ -150,6 +150,31 @@ unchanged — hosted just answers across *every* vendor and cap with server-trut
 balances and rolling-window reset timing, which a single local budget can't know.
 The TS package exposes the identical `guard.advisory()`.
 
+## Per-call spend log
+
+The guard keeps a typed, in-memory ledger of everything it priced: each
+`record()` / `settle()` appends one `SpendEvent`, and `record_tool()` lets paid
+non-LLM calls (search APIs, scrapers) spend the same budget and land in the same
+log. The events sum to `spent_usd` (unless a `max_log_events` ring buffer has
+evicted old ones) — no more rebuilding per-call breakdowns around the guard.
+
+```python
+guard = BudgetGuard(limit_usd=1.00)                      # max_log_events=N caps memory
+guard.record("gpt-4o", 1_200, 350, label="researcher")   # label is optional
+guard.record_tool("serpapi.search", 0.01, label="researcher")
+
+guard.spend_log      # [SpendEvent(timestamp=…, kind="llm", model_or_tool="gpt-4o",
+                     #             prompt_tokens=1200, completion_tokens=350,
+                     #             cost_usd=0.0065, label="researcher"), …]
+print(guard.export_log(), end="")   # JSONL, one event per line
+```
+
+`export_log()` emits a stable snake_case schema —
+`{timestamp, kind: llm|tool, model_or_tool, prompt_tokens, completion_tokens,
+cost_usd, label?, reserved?}` — identical to the TS package's `exportLog()`, so
+every agent produces the same shape regardless of stack and the streams can be
+concatenated and analysed together.
+
 ## Framework adapters (optional extras)
 
 ### CrewAI
