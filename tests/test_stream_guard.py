@@ -52,7 +52,7 @@ def test_estimate_call_honors_manual_price() -> None:
 def test_oversized_first_call_is_blocked_at_its_true_size() -> None:
     # THE acceptance case: a FIRST call (no last-cost baseline) that alone would
     # cross the cap must block pre-call once the reservation is request-sized.
-    guard = BudgetGuard(limit_usd=0.01, on_block=lambda s, l: None)
+    guard = BudgetGuard(limit_usd=0.01, on_block=lambda *_: None)
     est = guard.estimate_call(MODEL, 1_000, 100_000)  # ≈ $1.0025 ≫ $0.01
     assert est is not None and est > guard.limit_usd
     with pytest.raises(BudgetExceeded):
@@ -135,7 +135,7 @@ def test_approx_tokens_heuristic() -> None:
 def test_runaway_stream_is_cut_off_mid_generation() -> None:
     # $0.01 ceiling ≙ 1_000 gpt-4o output tokens. An endless stream must be
     # aborted mid-flight, not recorded as a big overshoot after the fact.
-    guard = BudgetGuard(limit_usd=0.01, on_block=lambda s, l: None)
+    guard = BudgetGuard(limit_usd=0.01, on_block=lambda *_: None)
     sg = StreamGuard(guard, MODEL)
     chunks_fed = 0
     with pytest.raises(BudgetExceeded):
@@ -154,8 +154,37 @@ def test_runaway_stream_is_cut_off_mid_generation() -> None:
         guard.check()
 
 
+def test_parallel_unreserved_streams_share_the_ceiling() -> None:
+    # Regression: two zero-reservation streams on one $0.01 guard must JOINTLY
+    # stop near the ceiling. Before streams registered their accrual with the
+    # guard, each was blind to the other and both ran to the full ceiling —
+    # a 2x overshoot.
+    guard = BudgetGuard(limit_usd=0.01, on_block=lambda *_: None)
+    a, b = StreamGuard(guard, MODEL), StreamGuard(guard, MODEL)
+    feeds = 0
+    aborted = a
+    with pytest.raises(BudgetExceeded):
+        while True:
+            for sg in (a, b):
+                aborted = sg
+                sg.feed_text(CHUNK)
+                feeds += 1
+    # Joint cut-off at ~100 total chunks ($1e-4 each against $0.01), not ~200.
+    assert feeds == pytest.approx(100, abs=2)
+    # The surviving stream is boxed in by what the aborted one settled plus its
+    # own accrual — it must stop almost immediately, not run to a fresh ceiling.
+    survivor = b if aborted is a else a
+    with pytest.raises(BudgetExceeded):
+        for _ in range(50):
+            survivor.feed_text(CHUNK)
+    assert len(guard.spend_log) == 2  # both partials settled honestly
+    assert guard.spent_usd <= guard.limit_usd + 3e-4 + 1e-9  # ≤ ceiling + a few chunks
+    with pytest.raises(BudgetExceeded):
+        guard.check()
+
+
 def test_stream_abort_settles_its_own_reservation() -> None:
-    guard = BudgetGuard(limit_usd=0.01, on_block=lambda s, l: None)
+    guard = BudgetGuard(limit_usd=0.01, on_block=lambda *_: None)
     handle = guard.reserve(0.005)
     sg = StreamGuard(guard, MODEL, reserved=handle)
     with pytest.raises(BudgetExceeded):
@@ -227,7 +256,7 @@ def test_unpriceable_stream_fail_open_passes_through() -> None:
 
 
 def test_guard_stream_yields_until_the_ceiling_then_raises() -> None:
-    guard = BudgetGuard(limit_usd=0.01, on_block=lambda s, l: None)
+    guard = BudgetGuard(limit_usd=0.01, on_block=lambda *_: None)
 
     def endless() -> Any:
         while True:
@@ -252,6 +281,28 @@ def test_guard_stream_settles_when_the_consumer_breaks_early() -> None:
     assert event.completion_tokens == 10  # only the consumed chunk was metered
     assert event.label == "writer"
     assert guard.spent_usd == pytest.approx(10 * 1e-5)
+
+
+def test_guard_stream_fails_closed_eagerly_for_unpriceable_models() -> None:
+    # The fail-closed check runs at CALL time, not first iteration — a stream
+    # whose spend can't be measured never starts, and the hold is released.
+    guard = BudgetGuard(limit_usd=1.00)
+    handle = guard.reserve(0.01)
+    with pytest.warns(UnpriceableModelWarning), pytest.raises(UnpriceableModelError):
+        guard_stream(guard, "model-that-does-not-exist", iter([CHUNK]), reserved=handle)
+    assert guard.remaining_usd == pytest.approx(1.00)
+
+
+def test_guard_stream_refuses_chunks_it_cannot_meter() -> None:
+    # A non-string chunk with no get_text= must fail LOUDLY: metering it as
+    # zero tokens would let the whole stream through unmetered.
+    guard = BudgetGuard(limit_usd=1.00)
+    handle = guard.reserve(0.01)
+    stream = guard_stream(guard, MODEL, iter([{"delta": "hi"}]), reserved=handle)
+    with pytest.raises(TypeError, match="get_text"):
+        next(stream)
+    # The refusal still settled the stream — no reservation leak.
+    assert guard.remaining_usd == pytest.approx(1.00)
 
 
 def test_guard_stream_exhaustion_settles_the_accumulated_usage() -> None:

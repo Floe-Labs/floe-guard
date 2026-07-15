@@ -193,6 +193,10 @@ class BudgetGuard:
             )
         # Per-call ledger; deque(maxlen=None) is unbounded, otherwise a ring buffer.
         self._spend_log: deque[SpendEvent] = deque(maxlen=max_log_events)
+        # Active streams' (accrued_usd, reserved_usd), keyed by registry token —
+        # see _stream_register(). Lets parallel streams count each other's
+        # in-flight accrual against the ceiling before anything settles.
+        self._stream_costs: dict[object, tuple[float, float]] = {}
         self._lock = threading.Lock()
 
     # ── enforcement ───────────────────────────────────────────────────────────
@@ -484,14 +488,39 @@ class BudgetGuard:
         if estimated is not None and not math.isfinite(estimated):
             raise ValueError(f"estimated cost must be a finite number, got {estimated!r}")
 
-    def _stream_would_cross(self, cumulative_call_cost: float, own_reserved: float) -> bool:
-        """Would an in-flight streaming call, at its cumulative cost so far,
-        cross the ceiling? Other calls' reservations still count against the
-        limit; this call's own hold is excluded because its real accrued cost
-        replaces the estimate. Used by :class:`~floe_guard.stream.StreamGuard`.
+    def _stream_register(self, reserved: float) -> object:
+        """Register an active stream (see :class:`~floe_guard.stream.StreamGuard`)
+        and return its registry key. Active streams' accrued-but-unsettled costs
+        count against the ceiling for each OTHER stream, so parallel unreserved
+        streams share the budget instead of each spending the full ceiling."""
+        key = object()
+        with self._lock:
+            self._stream_costs[key] = (0.0, max(0.0, reserved))
+        return key
+
+    def _stream_unregister(self, key: object) -> None:
+        """Drop a stream's registry entry once its cost is settled (settle()
+        moves the accrual into ``spent_usd``, so keeping it would double-count)."""
+        with self._lock:
+            self._stream_costs.pop(key, None)
+
+    def _stream_would_cross(self, key: object, cumulative_call_cost: float) -> bool:
+        """Atomically record stream ``key``'s cumulative cost so far and answer:
+        would it cross the ceiling? Counted against the limit: settled spend,
+        other calls' reservations (this stream's own hold is excluded — its real
+        accrued cost replaces the estimate), and each OTHER active stream's
+        accrual beyond its own reservation (the reservation part is already
+        inside ``_reserved``). Used by :class:`~floe_guard.stream.StreamGuard`.
         """
         with self._lock:
-            others = self.spent_usd + max(0.0, self._reserved - max(0.0, own_reserved))
+            own_reserved = self._stream_costs.get(key, (0.0, 0.0))[1]
+            self._stream_costs[key] = (cumulative_call_cost, own_reserved)
+            other_overage = sum(
+                max(0.0, accrued - held)
+                for k, (accrued, held) in self._stream_costs.items()
+                if k is not key
+            )
+            others = self.spent_usd + max(0.0, self._reserved - own_reserved) + other_overage
             return others + cumulative_call_cost > self.limit_usd + _EPS
 
     def _would_cross(self, estimated_next_cost: float | None) -> bool:

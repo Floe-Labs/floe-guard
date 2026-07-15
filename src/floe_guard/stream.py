@@ -89,6 +89,9 @@ class StreamGuard:
         self._count = count_tokens or approx_tokens
         self._completion_tokens = 0
         self._closed = False
+        # Intra-package seam: StreamGuard is the streaming face of BudgetGuard,
+        # so it shares the guard's private resolution/ceiling internals rather
+        # than duplicating that logic (or widening the public API).
         self._priced = guard._resolve(model, price)
         if self._priced is None and guard.fail_closed:
             # Same policy as settle(), applied BEFORE any money moves: refuse to
@@ -104,6 +107,10 @@ class StreamGuard:
             self._closed = True
             guard.release(reserved)
             raise UnpriceableModelError(model)
+        # Registered AFTER the fail-closed raise so a refused stream leaves no
+        # entry; _settle() unregisters, so entries live exactly as long as the
+        # stream. Parallel streams see each other's accrual through this.
+        self._key = guard._stream_register(self._reserved)
 
     def feed_text(self, delta: str) -> None:
         """Meter one text delta (token count via the heuristic/``count_tokens``).
@@ -122,7 +129,7 @@ class StreamGuard:
         if self._priced is None:
             return  # fail-open + unpriceable: nothing to price chunks with
         cumulative = price_tokens(self._priced, self._prompt_tokens, self._completion_tokens)
-        if self._guard._stream_would_cross(cumulative, self._reserved):
+        if self._guard._stream_would_cross(self._key, cumulative):
             # The tokens in this chunk were already generated (and billed) —
             # settle them before raising so spent_usd reflects reality. The
             # overshoot is at most this one chunk, not the rest of the stream.
@@ -154,14 +161,20 @@ class StreamGuard:
 
     def _settle(self) -> float:
         self._closed = True
-        return self._guard.settle(
-            self._model,
-            self._prompt_tokens,
-            self._completion_tokens,
-            reserved=self._reserved,
-            price=self._price,
-            label=self._label,
-        )
+        try:
+            return self._guard.settle(
+                self._model,
+                self._prompt_tokens,
+                self._completion_tokens,
+                reserved=self._reserved,
+                price=self._price,
+                label=self._label,
+            )
+        finally:
+            # Settle moved the accrual into spent_usd (or skipped it, fail-open)
+            # — either way the registry entry must go, even if settle raised,
+            # or a phantom accrual would throttle every other stream forever.
+            self._guard._stream_unregister(self._key)
 
     def __enter__(self) -> StreamGuard:
         return self
@@ -192,9 +205,17 @@ def guard_stream(
     Yields each chunk after metering it, so the consumer sees everything that
     was within budget; raises :class:`~floe_guard.BudgetExceeded` mid-stream
     (after settling the partial spend) when the call would cross the ceiling.
-    ``get_text`` extracts the text delta from a chunk — defaults to treating
-    chunks as strings. The stream settles on ANY exit, including the consumer
-    breaking out early.
+    The stream settles on ANY exit, including the consumer breaking out early.
+
+    ``get_text`` extracts the text delta from a chunk. The default handles
+    plain-string chunks only and REFUSES (``TypeError``) anything else — a
+    silent zero-token fallback would let a whole stream through unmetered,
+    which is exactly the failure mode this guard exists to prevent.
+
+    Validation and the fail-closed unpriceable check run eagerly, at call
+    time. Once you start iterating, the wrapper owns ``reserved`` and settles
+    or releases it on every exit path; a returned-but-never-iterated stream
+    leaves the handle with you (release it yourself).
     """
     sg = StreamGuard(
         guard,
@@ -205,11 +226,25 @@ def guard_stream(
         label=label,
         count_tokens=count_tokens,
     )
-    extract = get_text or (lambda chunk: chunk if isinstance(chunk, str) else "")
-    with sg:
-        for chunk in chunks:
-            sg.feed_text(extract(chunk))
-            yield chunk
+
+    def _default_get_text(chunk: Any) -> str:
+        if isinstance(chunk, str):
+            return chunk
+        raise TypeError(
+            f"guard_stream got a non-string chunk ({type(chunk).__name__}) and no "
+            f"get_text= — pass get_text= to extract each chunk's text delta, or the "
+            f"stream cannot be metered."
+        )
+
+    extract = get_text or _default_get_text
+
+    def _run() -> Iterator[Any]:
+        with sg:
+            for chunk in chunks:
+                sg.feed_text(extract(chunk))
+                yield chunk
+
+    return _run()
 
 
 __all__ = ["StreamGuard", "guard_stream", "approx_tokens"]

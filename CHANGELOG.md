@@ -10,7 +10,7 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
-## py 0.4.0 — 2026-07-14
+## py 0.4.0 — 2026-07-15
 
 ### Added (py)
 
@@ -29,8 +29,10 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   spend is settled (and lands in `spend_log`) instead of the whole overshoot
   being discovered post-mortem. `finish(prompt_tokens=…, completion_tokens=…)`
   reconciles the chunk heuristic to provider-reported usage; unpriceable
-  models fail closed before the stream starts. Demo:
-  `examples/streaming_guard.py` (no API key).
+  models fail closed before the stream starts; parallel streams count each
+  other's in-flight accrual, so unreserved streams share the ceiling instead
+  of each spending it in full. Demo: `examples/streaming_guard.py` (no API
+  key).
 
 ## py 0.3.0 / js 0.3.0 — 2026-07-14
 
