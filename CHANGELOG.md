@@ -10,6 +10,28 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## py 0.4.0 — 2026-07-14
+
+### Added (py)
+
+- **Request-sized pre-call estimates**: `BudgetGuard.estimate_call(model,
+  prompt_tokens, max_completion_tokens)` prices the actual incoming request
+  from the cost map, so `reserve(est)` / `check(est)` block an oversized call
+  — including the very first one, which the last-cost prediction is blind to.
+  The LiteLLM adapter reserves request-sized automatically (prompt via
+  `litellm.token_counter`, cap from `max_tokens`); the LangChain handler sizes
+  its pre-call `check()` from the serialized model config and a ~4 chars/token
+  prompt heuristic. Anything unpriceable/unsized falls back to the previous
+  last-cost behaviour.
+- **Mid-stream enforcement**: `StreamGuard` / `guard_stream()` re-price a
+  streaming response chunk-by-chunk and raise `BudgetExceeded`
+  mid-generation when the running call would cross the ceiling — the partial
+  spend is settled (and lands in `spend_log`) instead of the whole overshoot
+  being discovered post-mortem. `finish(prompt_tokens=…, completion_tokens=…)`
+  reconciles the chunk heuristic to provider-reported usage; unpriceable
+  models fail closed before the stream starts. Demo:
+  `examples/streaming_guard.py` (no API key).
+
 ## py 0.3.0 / js 0.3.0 — 2026-07-14
 
 ### Added (py + js)

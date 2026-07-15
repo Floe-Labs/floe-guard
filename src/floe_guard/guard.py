@@ -214,6 +214,36 @@ class BudgetGuard:
         if self._would_cross(estimated_next_cost):
             self._block()
 
+    def estimate_call(
+        self,
+        model: str,
+        prompt_tokens: int,
+        max_completion_tokens: int = 0,
+        *,
+        price: ManualPrice | None = None,
+    ) -> float | None:
+        """Price the ACTUAL incoming request, for a request-sized reserve()/check().
+
+        :meth:`check` and :meth:`reserve` default to predicting the next call
+        from the LAST call's cost — which is blind on the first call and wrong
+        for a call much larger than the previous one. Feed this the request you
+        are about to send (its real prompt size and output cap) and pass the
+        result straight through::
+
+            est = guard.estimate_call("gpt-4o", prompt_tokens, max_completion_tokens=1024)
+            handle = guard.reserve(est)   # blocks NOW if this call alone would cross
+
+        The estimate is worst-case on output (the model may stop well short of
+        ``max_completion_tokens``); the hold is corrected to actual cost at
+        :meth:`settle`. Returns ``None`` when the model is unpriceable — and
+        ``reserve(None)`` / ``check(None)`` fall back to the last-cost
+        prediction, so the wiring degrades gracefully instead of failing.
+        """
+        priced = self._resolve(model, price)
+        if priced is None:
+            return None
+        return price_tokens(priced, prompt_tokens, max_completion_tokens)
+
     def reserve(self, estimated_cost: float | None = None) -> float:
         """Atomically check the ceiling AND hold the estimated cost in-flight.
 
@@ -453,6 +483,16 @@ class BudgetGuard:
         # matching the constructor's math.isfinite guard and the TS Number.isFinite.
         if estimated is not None and not math.isfinite(estimated):
             raise ValueError(f"estimated cost must be a finite number, got {estimated!r}")
+
+    def _stream_would_cross(self, cumulative_call_cost: float, own_reserved: float) -> bool:
+        """Would an in-flight streaming call, at its cumulative cost so far,
+        cross the ceiling? Other calls' reservations still count against the
+        limit; this call's own hold is excluded because its real accrued cost
+        replaces the estimate. Used by :class:`~floe_guard.stream.StreamGuard`.
+        """
+        with self._lock:
+            others = self.spent_usd + max(0.0, self._reserved - max(0.0, own_reserved))
+            return others + cumulative_call_cost > self.limit_usd + _EPS
 
     def _would_cross(self, estimated_next_cost: float | None) -> bool:
         with self._lock:
