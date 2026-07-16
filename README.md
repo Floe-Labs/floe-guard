@@ -188,6 +188,7 @@ deadline = LatencyBudget(sla_ms=5000)          # the user is promised 5s
 
 for step in plan:
     deadline.check(expected_ms=step.est_ms)    # raises DeadlineExceeded when projected over
+    model = DEFAULT_MODEL
     if deadline.advisory().near_deadline:      # 80% consumed by default —
         model = FAST_FALLBACK                  # downshift BEFORE the wall
     run(step, model, timeout_ms=deadline.remaining_ms)

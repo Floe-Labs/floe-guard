@@ -70,13 +70,21 @@ export class UnpriceableModelError extends FloeGuardError {
  * Mirrors `DeadlineExceeded` in `src/floe_guard/errors.py` — message format is
  * kept byte-for-byte identical so both adapters read the same.
  */
+/** Shared millisecond rounding for cross-language message parity: `toFixed(0)`
+ *  rounds half-up while Python's `:.0f` rounds half-to-even, so tie values
+ *  would break the byte-for-byte contract. Both packages use floor(x + 0.5)
+ *  (see `_round_half_up` in `src/floe_guard/errors.py`). */
+function roundHalfUp(ms: number): number {
+  return Math.floor(ms + 0.5);
+}
+
 export class DeadlineExceeded extends FloeGuardError {
   readonly elapsedMs: number;
   readonly slaMs: number;
 
   constructor(elapsedMs: number, slaMs: number) {
     super(
-      `DEADLINE EXCEEDED — call blocked (elapsed ${elapsedMs.toFixed(0)}ms of ${slaMs.toFixed(0)}ms SLA)`,
+      `DEADLINE EXCEEDED — call blocked (elapsed ${roundHalfUp(elapsedMs)}ms of ${roundHalfUp(slaMs)}ms SLA)`,
     );
     this.name = "DeadlineExceeded";
     this.elapsedMs = elapsedMs;

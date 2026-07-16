@@ -6,6 +6,20 @@ can catch the whole family with a single ``except FloeGuardError``.
 
 from __future__ import annotations
 
+import math
+
+
+def _round_half_up(ms: float) -> int:
+    """Shared millisecond rounding for cross-language message parity.
+
+    Python's ``:.0f`` rounds half-to-even while JS ``toFixed(0)`` rounds
+    half-up, so tie values would break the byte-for-byte message contract.
+    Both packages format deadline messages through floor(x + 0.5) instead —
+    identical semantics in both runtimes (see ``roundHalfUp`` in
+    ``js/src/errors.ts``).
+    """
+    return math.floor(ms + 0.5)
+
 
 class FloeGuardError(Exception):
     """Base class for every error raised by floe-guard."""
@@ -77,5 +91,6 @@ class DeadlineExceeded(FloeGuardError):
         self.elapsed_ms = elapsed_ms
         self.sla_ms = sla_ms
         super().__init__(
-            f"DEADLINE EXCEEDED — call blocked (elapsed {elapsed_ms:.0f}ms of {sla_ms:.0f}ms SLA)"
+            f"DEADLINE EXCEEDED — call blocked (elapsed {_round_half_up(elapsed_ms)}ms "
+            f"of {_round_half_up(sla_ms)}ms SLA)"
         )

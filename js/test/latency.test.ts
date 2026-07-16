@@ -81,4 +81,21 @@ describe("LatencyBudget", () => {
     const { budget } = make();
     expect(() => budget.check(-1)).toThrow(RangeError);
   });
+
+  it("rejects non-finite inputs (inf would disable the deadline; NaN slips comparisons)", () => {
+    expect(() => new LatencyBudget(Infinity)).toThrow(RangeError);
+    expect(() => new LatencyBudget(NaN)).toThrow(RangeError);
+    const { budget } = make();
+    expect(() => budget.check(NaN)).toThrow(RangeError);
+    expect(() => budget.check(Infinity)).toThrow(RangeError);
+  });
+
+  it("deadline message uses the shared half-up rounding (byte-parity with Python)", () => {
+    expect(new DeadlineExceeded(0.5, 5000.5).message).toBe(
+      "DEADLINE EXCEEDED — call blocked (elapsed 1ms of 5001ms SLA)",
+    );
+    expect(new DeadlineExceeded(-0.5, 1000).message).toBe(
+      "DEADLINE EXCEEDED — call blocked (elapsed 0ms of 1000ms SLA)",
+    );
+  });
 });

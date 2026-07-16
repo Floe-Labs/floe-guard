@@ -94,3 +94,30 @@ def test_constructor_and_check_validate_inputs() -> None:
     budget, _ = make()
     with pytest.raises(ValueError):
         budget.check(expected_ms=-1)
+
+
+def test_rejects_non_finite_and_bool_inputs() -> None:
+    # inf would silently disable the deadline; nan slips every comparison.
+    with pytest.raises(ValueError):
+        LatencyBudget(float("inf"))
+    with pytest.raises(ValueError):
+        LatencyBudget(float("nan"))
+    # bool subclasses int — True must not pass as near_deadline_bps.
+    with pytest.raises(ValueError):
+        LatencyBudget(5000, near_deadline_bps=True)
+    budget, _ = make()
+    with pytest.raises(ValueError):
+        budget.check(expected_ms=float("nan"))
+    with pytest.raises(ValueError):
+        budget.check(expected_ms=float("inf"))
+
+
+def test_deadline_message_uses_shared_half_up_rounding() -> None:
+    # Byte-parity with the TS twin on rounding ties (floor(x + 0.5) in both;
+    # Python's :.0f would round 0.5 half-to-even while JS toFixed rounds up).
+    assert str(DeadlineExceeded(0.5, 5000.5)) == (
+        "DEADLINE EXCEEDED — call blocked (elapsed 1ms of 5001ms SLA)"
+    )
+    assert str(DeadlineExceeded(-0.5, 1000)) == (
+        "DEADLINE EXCEEDED — call blocked (elapsed 0ms of 1000ms SLA)"
+    )

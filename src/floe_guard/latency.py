@@ -30,6 +30,7 @@ Design notes (mirroring BudgetGuard's ergonomics):
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -78,9 +79,13 @@ class LatencyBudget:
         on_block: Callable[[float, float], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if not (sla_ms > 0):
+        if not (math.isfinite(sla_ms) and sla_ms > 0):
             raise ValueError("sla_ms must be > 0")
-        if not (isinstance(near_deadline_bps, int) and 0 <= near_deadline_bps <= 10000):
+        if (
+            isinstance(near_deadline_bps, bool)
+            or not isinstance(near_deadline_bps, int)
+            or not 0 <= near_deadline_bps <= 10000
+        ):
             raise ValueError("near_deadline_bps must be an integer 0..10000")
         self.sla_ms = float(sla_ms)
         self.near_deadline_bps = near_deadline_bps
@@ -110,7 +115,7 @@ class LatencyBudget:
         the caller's estimate for the next call — pass 0 to only gate on time
         already spent.
         """
-        if expected_ms < 0:
+        if not (math.isfinite(expected_ms) and expected_ms >= 0):
             raise ValueError("expected_ms must be >= 0")
         elapsed = self.elapsed_ms
         if elapsed + expected_ms > self.sla_ms:
