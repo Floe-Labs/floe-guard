@@ -57,3 +57,29 @@ export class UnpriceableModelError extends FloeGuardError {
     this.model = model;
   }
 }
+
+/**
+ * Thrown before a call whose projected duration would blow the SLA.
+ *
+ * The latency twin of {@link BudgetExceeded}: `LatencyBudget.check()` throws this
+ * *instead of* letting the next tool/model call start, so the chain sheds work or
+ * falls back to a faster path rather than violating the end-user SLA. Cooperative —
+ * killing an already-running stalled call is the framework's job (AbortSignal),
+ * not the guard's.
+ *
+ * Mirrors `DeadlineExceeded` in `src/floe_guard/errors.py` — message format is
+ * kept byte-for-byte identical so both adapters read the same.
+ */
+export class DeadlineExceeded extends FloeGuardError {
+  readonly elapsedMs: number;
+  readonly slaMs: number;
+
+  constructor(elapsedMs: number, slaMs: number) {
+    super(
+      `DEADLINE EXCEEDED — call blocked (elapsed ${elapsedMs.toFixed(0)}ms of ${slaMs.toFixed(0)}ms SLA)`,
+    );
+    this.name = "DeadlineExceeded";
+    this.elapsedMs = elapsedMs;
+    this.slaMs = slaMs;
+  }
+}

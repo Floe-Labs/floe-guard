@@ -60,3 +60,22 @@ class UnpriceableModelWarning(UserWarning):
     :class:`UnpriceableModelError` is additionally raised; in fail-open mode the
     warning is emitted and the call's spend is skipped.
     """
+
+
+class DeadlineExceeded(FloeGuardError):
+    """Raised before a call whose projected duration would blow the SLA.
+
+    The latency twin of :class:`BudgetExceeded`: :meth:`LatencyBudget.check`
+    raises this *instead of* letting the next tool/model call start, so the
+    chain sheds work or falls back to a faster path rather than violating the
+    end-user SLA. This is a cooperative signal — killing an already-running
+    stalled task is the framework's job (asyncio cancellation / AbortSignal),
+    not the guard's.
+    """
+
+    def __init__(self, elapsed_ms: float, sla_ms: float) -> None:
+        self.elapsed_ms = elapsed_ms
+        self.sla_ms = sla_ms
+        super().__init__(
+            f"DEADLINE EXCEEDED — call blocked (elapsed {elapsed_ms:.0f}ms of {sla_ms:.0f}ms SLA)"
+        )

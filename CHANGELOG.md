@@ -10,6 +10,20 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## py 0.5.0 / js 0.4.0 — 2026-07-16
+
+### Added (py + js)
+
+- **`LatencyBudget`** — BudgetGuard's sibling for time: tracks cumulative
+  elapsed time across an agentic tool chain against an end-user SLA.
+  `check(expected_ms)` raises the new `DeadlineExceeded` before a call whose
+  projected duration would blow the SLA; `remaining_ms` is the readable
+  mid-chain signal for router fallback/truncation; `advisory()` returns
+  `near_deadline` / `used_bps` / `remaining_ms`, symmetric to the budget
+  advisory's `near_limit`. Monotonic clock (`time.monotonic` /
+  `performance.now`); cooperative by design — the guard supplies the deadline
+  signal, killing a stalled in-flight call remains the framework's job.
+
 ## py 0.4.0 — 2026-07-15
 
 ### Added (py)

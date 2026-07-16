@@ -13,8 +13,14 @@ export {
   type SpendEvent,
 } from "./guard.js";
 export {
+  LatencyBudget,
+  type LatencyBudgetOptions,
+  type LatencyAdvisory,
+} from "./latency.js";
+export {
   FloeGuardError,
   BudgetExceeded,
+  DeadlineExceeded,
   UnpriceableModelError,
 } from "./errors.js";
 export {
