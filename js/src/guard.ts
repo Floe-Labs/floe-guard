@@ -347,6 +347,12 @@ export class BudgetGuard {
    * {@link BudgetGuard.settleTool}, or {@link BudgetGuard.release} on failure.
    */
   reserveTool(estimatedCost: number): number {
+    if (estimatedCost === undefined) {
+      // reserve(undefined) would silently fall back to the last-cost prediction
+      // (0 on a fresh guard) — an unguarded tool call. A missing price must
+      // fail loudly, e.g. guard.reserveTool(priceTable[tool]).
+      throw new RangeError("reserveTool requires an estimated cost, got undefined");
+    }
     return this.reserve(estimatedCost);
   }
 

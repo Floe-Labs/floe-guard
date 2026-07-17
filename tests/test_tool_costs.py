@@ -23,6 +23,14 @@ def test_reserve_tool_rejects_non_finite_estimates() -> None:
             guard.reserve_tool(bad)
 
 
+def test_reserve_tool_rejects_a_missing_estimate() -> None:
+    # A None estimate must not silently fall back to the last-cost prediction
+    # (0 on a fresh guard = an unguarded tool call) — it must fail loudly.
+    guard = BudgetGuard(limit_usd=1.00)
+    with pytest.raises(ValueError, match="estimated cost"):
+        guard.reserve_tool(None)  # type: ignore[arg-type]
+
+
 def test_settle_tool_rejects_bad_amounts() -> None:
     guard = BudgetGuard(limit_usd=1.00)
     for bad in (float("nan"), float("inf"), -0.01):

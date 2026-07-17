@@ -388,6 +388,11 @@ class BudgetGuard:
         prediction worth falling back to. Pass the returned handle to
         :meth:`settle_tool`, or :meth:`release` if the call fails.
         """
+        if estimated_cost is None:
+            # reserve(None) would silently fall back to the last-cost prediction
+            # (0 on a fresh guard) — an unguarded tool call. A missing price must
+            # fail loudly, e.g. guard.reserve_tool(price_table.get(tool)).
+            raise ValueError("reserve_tool requires an estimated cost, got None")
         return self.reserve(estimated_cost)
 
     def settle_tool(

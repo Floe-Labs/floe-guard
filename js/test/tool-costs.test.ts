@@ -12,6 +12,13 @@ describe("tool spend (reserveTool / settleTool / recordTool / toolCosts)", () =>
     }
   });
 
+  it("reserveTool rejects a missing estimate instead of silently falling back", () => {
+    // reserve(undefined) means "use the last-cost prediction" — 0 on a fresh
+    // guard, i.e. an unguarded tool call. reserveTool must fail loudly instead.
+    const guard = new BudgetGuard(1.0);
+    expect(() => guard.reserveTool(undefined as unknown as number)).toThrow(RangeError);
+  });
+
   it("settleTool rejects bad amounts", () => {
     const guard = new BudgetGuard(1.0);
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -0.01]) {
