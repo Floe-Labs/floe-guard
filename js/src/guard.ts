@@ -37,7 +37,8 @@ const EPS = 1e-12;
  * One priced spend event in the guard's per-call ledger.
  *
  * Every {@link BudgetGuard.record} / {@link BudgetGuard.settle} /
- * {@link BudgetGuard.recordTool} that accrues spend appends exactly one event, so
+ * {@link BudgetGuard.recordTool} / {@link BudgetGuard.settleTool} that accrues
+ * spend appends exactly one event, so
  * the ledger's costs sum to `spentUsd` (unless a `maxLogEvents` ring buffer has
  * evicted old events). The schema is identical in the Python
  * package (`SpendEvent` in `src/floe_guard/guard.py`) and
@@ -129,6 +130,13 @@ export class BudgetGuard {
   /** Per-call ledger, oldest first; a ring buffer when maxLogEvents is set. */
   private readonly spendEvents: SpendEvent[] = [];
   private readonly maxLogEvents?: number;
+  /**
+   * Per-tool running totals (settleTool/recordTool) — the tool side of the one
+   * shared ceiling, exposed via the toolCosts getter. null-prototype: tool
+   * names are caller-supplied strings, so a "__proto__" name is stored as
+   * plain data instead of mutating the object's prototype.
+   */
+  private readonly toolCostTotals: Record<string, number> = Object.create(null);
 
   /**
    * @param limitUsd the spend ceiling, in USD. `0` blocks the very first call.
@@ -322,19 +330,54 @@ export class BudgetGuard {
   }
 
   /**
-   * Accrue a non-LLM cost (a paid tool/API call) against the same ceiling.
+   * Atomically check the ceiling AND hold a tool call's cost in flight.
    *
-   * Tools with direct dollar costs — search APIs, scrapers, sandboxes — spend the
-   * same budget the LLM calls do; `recordTool` folds them into `spentUsd` (so
-   * `check()` / `reserve()` see them) and appends a `kind: "tool"`
-   * {@link SpendEvent} to {@link BudgetGuard.spendLog}. The caller supplies the
-   * cost: tools have no token usage to price. Deliberately does NOT update the
-   * next-call estimate — that predicts the next *LLM* call, and a tool's price
-   * would skew it. Returns `costUsd`.
+   * The tool-spend counterpart of {@link BudgetGuard.reserve} — and STRONGER
+   * than the LLM path, because a paid tool's price is usually known exactly
+   * before the call, so the pre-call hard-stop is precise rather than
+   * estimated:
+   *
+   *     const handle = guard.reserveTool(0.02);   // throws BEFORE Apollo runs
+   *     const result = await apollo.peopleLookup(...);
+   *     guard.settleTool("apollo.people_lookup", 0.02, { reserved: handle });
+   *
+   * Throws {@link BudgetExceeded} (without reserving) if the call would cross
+   * the ceiling. The estimate is required — tools have no last-cost prediction
+   * worth falling back to. Pass the returned handle to
+   * {@link BudgetGuard.settleTool}, or {@link BudgetGuard.release} on failure.
    */
-  recordTool(tool: string, costUsd: number, options: { label?: string } = {}): number {
+  reserveTool(estimatedCost: number): number {
+    return this.reserve(estimatedCost);
+  }
+
+  /**
+   * Release a reservation and record a tool call's actual cost.
+   *
+   * `recordTool` is `settleTool` with no reservation. The caller supplies the
+   * cost — tools have no token usage to price. Accrues into the same
+   * `spentUsd` ceiling as tokens, tallies the per-tool total
+   * ({@link BudgetGuard.toolCosts}), updates the next-call estimate (so a
+   * tool-hammering loop's plain `check()` predicts one tool call ahead and
+   * stops BEFORE the crossing call — the same contract as tokens), and appends
+   * a `kind: "tool"` {@link SpendEvent} to {@link BudgetGuard.spendLog}.
+   * Returns `costUsd`.
+   */
+  settleTool(
+    tool: string,
+    costUsd: number,
+    options: { reserved?: number; label?: string } = {},
+  ): number {
     if (!Number.isFinite(costUsd) || costUsd < 0) {
       throw new RangeError(`costUsd must be a finite, non-negative number, got ${costUsd}`);
+    }
+    const reserved = options.reserved ?? 0;
+    // A bad reserved handle would corrupt the in-flight tally and break the
+    // ceiling for OTHER calls — same contract as settle().
+    if (!Number.isFinite(reserved) || reserved < 0) {
+      throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
+    }
+    if (reserved) {
+      this.reserved = Math.max(0, this.reserved - reserved);
     }
     this.spentUsd += costUsd;
     // Same sub-epsilon clamp as settle(): never report a rounding-artifact
@@ -342,6 +385,8 @@ export class BudgetGuard {
     if (this.spentUsd - this.limitUsd > 0 && this.spentUsd - this.limitUsd < EPS) {
       this.spentUsd = this.limitUsd;
     }
+    this.lastCost = costUsd;
+    this.toolCostTotals[tool] = (this.toolCostTotals[tool] ?? 0) + costUsd;
     this.appendEvent({
       timestamp: Date.now() / 1000,
       kind: "tool",
@@ -350,8 +395,21 @@ export class BudgetGuard {
       completionTokens: null,
       costUsd,
       ...(options.label !== undefined ? { label: options.label } : {}),
+      ...(reserved ? { reserved } : {}),
     });
     return costUsd;
+  }
+
+  /**
+   * Accrue a non-LLM cost (a paid tool/API call) against the same ceiling.
+   *
+   * Post-hoc accrual for costs only known after the call (metered APIs); when
+   * the price is known up front, {@link BudgetGuard.reserveTool} /
+   * {@link BudgetGuard.settleTool} give the stronger pre-call hard-stop. See
+   * `settleTool` for the full contract. Returns `costUsd`.
+   */
+  recordTool(tool: string, costUsd: number, options: { label?: string } = {}): number {
+    return this.settleTool(tool, costUsd, { reserved: 0, label: options.label });
   }
 
   /**
@@ -374,9 +432,19 @@ export class BudgetGuard {
   }
 
   /**
+   * Per-tool running USD totals, keyed by the name given to `settleTool()` /
+   * `recordTool()` — e.g. `{"apollo.people_lookup": 0.42, "exa.search": 0.11}`.
+   * Makes the token/tool split of the one shared ceiling inspectable
+   * (`spentUsd - sum of toolCosts` is the token side). Returns a snapshot copy.
+   */
+  get toolCosts(): Record<string, number> {
+    return { ...this.toolCostTotals };
+  }
+
+  /**
    * The per-call spend ledger, oldest first — one {@link SpendEvent} per priced
-   * `record()` / `settle()` / `recordTool()`. Returns a snapshot copy: mutating
-   * it cannot corrupt the ledger.
+   * `record()` / `settle()` / `recordTool()` / `settleTool()`. Returns a
+   * snapshot copy: mutating it cannot corrupt the ledger.
    */
   get spendLog(): SpendEvent[] {
     return [...this.spendEvents];

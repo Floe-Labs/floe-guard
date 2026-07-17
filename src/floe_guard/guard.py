@@ -78,7 +78,8 @@ class SpendEvent:
     """One priced spend event in the guard's per-call ledger.
 
     Every :meth:`BudgetGuard.record` / :meth:`BudgetGuard.settle` /
-    :meth:`BudgetGuard.record_tool` that accrues spend appends exactly one event,
+    :meth:`BudgetGuard.record_tool` / :meth:`BudgetGuard.settle_tool`
+    that accrues spend appends exactly one event,
     so ``sum(e.cost_usd for e in guard.spend_log)`` equals ``guard.spent_usd``
     (unless a ``max_log_events`` ring buffer has evicted old events).
     The schema is identical in the TS package (``SpendEvent`` in ``js/src/guard.ts``)
@@ -120,7 +121,7 @@ class SpendEvent:
 
 
 class BudgetGuard:
-    """Hard-stop an agent before its next LLM call crosses a USD ceiling.
+    """Hard-stop an agent before its next LLM or tool call crosses a USD ceiling.
 
     Args:
         limit_usd: the spend ceiling, in USD. ``0`` blocks the very first call.
@@ -176,8 +177,8 @@ class BudgetGuard:
         self._on_block = on_block or _default_on_block
         self.near_limit_bps = near_limit_bps
         self.spent_usd = 0.0
-        # Cost of the most recent priced call, used to predict the next one so we
-        # can block BEFORE the crossing call runs (not one call too late).
+        # Cost of the most recent priced call — LLM or tool — used to predict the
+        # next one so we can block BEFORE the crossing call runs (not one too late).
         self._last_cost = 0.0
         # USD held for calls that are in flight (reserved but not yet settled).
         # Counted against the ceiling so concurrent callers can't overshoot.
@@ -197,6 +198,9 @@ class BudgetGuard:
         # see _stream_register(). Lets parallel streams count each other's
         # in-flight accrual against the ceiling before anything settles.
         self._stream_costs: dict[object, tuple[float, float]] = {}
+        # Per-tool running totals (settle_tool/record_tool) — the tool side of
+        # the one shared ceiling, exposed via the tool_costs property.
+        self._tool_costs: dict[str, float] = {}
         self._lock = threading.Lock()
 
     # ── enforcement ───────────────────────────────────────────────────────────
@@ -368,28 +372,62 @@ class BudgetGuard:
             model, prompt_tokens, completion_tokens, reserved=0.0, price=price, label=label
         )
 
-    def record_tool(self, tool: str, cost_usd: float, *, label: str | None = None) -> float:
-        """Accrue a non-LLM cost (a paid tool/API call) against the same ceiling.
+    def reserve_tool(self, estimated_cost: float) -> float:
+        """Atomically check the ceiling AND hold a tool call's cost in-flight.
 
-        Tools with direct dollar costs — search APIs, scrapers, sandboxes — spend
-        the same budget the LLM calls do; ``record_tool`` folds them into
-        ``spent_usd`` (so :meth:`check` / :meth:`reserve` see them) and appends a
-        ``kind="tool"`` :class:`SpendEvent` to :attr:`spend_log`. The caller
-        supplies the cost: tools have no token usage to price. Deliberately does
-        NOT update the next-call estimate — that predicts the next *LLM* call, and
-        a tool's price would skew it. Returns ``cost_usd``.
+        The tool-spend counterpart of :meth:`reserve` — and STRONGER than the
+        LLM path, because a paid tool's price is usually known exactly before
+        the call, so the pre-call hard-stop is precise rather than estimated::
+
+            handle = guard.reserve_tool(0.02)      # raises BEFORE Apollo runs
+            result = apollo.people_lookup(...)
+            guard.settle_tool("apollo.people_lookup", 0.02, reserved=handle)
+
+        Raises :class:`BudgetExceeded` (without reserving) if the call would
+        cross the ceiling. The estimate is required — tools have no last-cost
+        prediction worth falling back to. Pass the returned handle to
+        :meth:`settle_tool`, or :meth:`release` if the call fails.
+        """
+        return self.reserve(estimated_cost)
+
+    def settle_tool(
+        self,
+        tool: str,
+        cost_usd: float,
+        *,
+        reserved: float = 0.0,
+        label: str | None = None,
+    ) -> float:
+        """Release a reservation and record a tool call's actual cost.
+
+        Concurrency-safe; ``record_tool`` is ``settle_tool`` with no
+        reservation. The caller supplies the cost — tools have no token usage
+        to price. Accrues into the same ``spent_usd`` ceiling as tokens,
+        tallies the per-tool total (:attr:`tool_costs`), updates the next-call
+        estimate (so a tool-hammering loop's plain :meth:`check` predicts one
+        tool call ahead and stops BEFORE the crossing call — the same contract
+        as tokens), and appends a ``kind="tool"`` :class:`SpendEvent` to
+        :attr:`spend_log`. Returns ``cost_usd``.
         """
         if not math.isfinite(cost_usd) or cost_usd < 0:
             raise ValueError(f"cost_usd must be a finite, non-negative number, got {cost_usd!r}")
+        # A bad reserved handle would corrupt _reserved and break the ceiling for
+        # OTHER in-flight calls — same contract as settle().
+        if not math.isfinite(reserved) or reserved < 0:
+            raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
         # int (and bool) are valid inputs; coerce so the logged event and the
         # return value are always float, like every other cost in the guard.
         cost_usd = float(cost_usd)
         with self._lock:
+            if reserved:
+                self._reserved = max(0.0, self._reserved - reserved)
             self.spent_usd += cost_usd
             # Same sub-epsilon clamp as settle(): never report a rounding-artifact
             # crossing of the ceiling.
             if 0.0 < self.spent_usd - self.limit_usd < _EPS:
                 self.spent_usd = self.limit_usd
+            self._last_cost = cost_usd
+            self._tool_costs[tool] = self._tool_costs.get(tool, 0.0) + cost_usd
             self._spend_log.append(
                 SpendEvent(
                     timestamp=time.time(),
@@ -399,9 +437,20 @@ class BudgetGuard:
                     completion_tokens=None,
                     cost_usd=cost_usd,
                     label=label,
+                    reserved=reserved if reserved else None,
                 )
             )
         return cost_usd
+
+    def record_tool(self, tool: str, cost_usd: float, *, label: str | None = None) -> float:
+        """Accrue a non-LLM cost (a paid tool/API call) against the same ceiling.
+
+        Post-hoc accrual for costs only known after the call (metered APIs);
+        when the price is known up front, :meth:`reserve_tool` /
+        :meth:`settle_tool` give the stronger pre-call hard-stop. See
+        :meth:`settle_tool` for the full contract. Returns ``cost_usd``.
+        """
+        return self.settle_tool(tool, cost_usd, reserved=0.0, label=label)
 
     def release(self, reserved: float) -> None:
         """Drop an in-flight reservation without recording spend (e.g. the call
@@ -423,9 +472,21 @@ class BudgetGuard:
             return max(0.0, self.limit_usd - self.spent_usd - self._reserved)
 
     @property
+    def tool_costs(self) -> dict[str, float]:
+        """Per-tool running USD totals, keyed by the name given to
+        :meth:`settle_tool` / :meth:`record_tool` — e.g.
+        ``{"apollo.people_lookup": 0.42, "exa.search": 0.11}``. Makes the
+        token/tool split of the one shared ceiling inspectable
+        (``spent_usd - sum(tool_costs.values())`` is the token side).
+        Returns a snapshot copy."""
+        with self._lock:
+            return dict(self._tool_costs)
+
+    @property
     def spend_log(self) -> list[SpendEvent]:
         """The per-call spend ledger, oldest first — one :class:`SpendEvent` per
-        priced :meth:`record` / :meth:`settle` / :meth:`record_tool`.
+        priced :meth:`record` / :meth:`settle` / :meth:`record_tool` /
+        :meth:`settle_tool`.
 
         Returns a snapshot copy: safe to iterate while other threads keep
         recording, and mutating it cannot corrupt the ledger.

@@ -4,9 +4,10 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](../LICENSE)
 
 **A local budget guardrail for AI agents** — the TypeScript counterpart to the
-[Python `floe-guard`](../README.md). It hard-stops your agent *before its next LLM
-call* when it would cross a USD spend ceiling. No account, no signup, no network.
-Runs in your process.
+[Python `floe-guard`](../README.md). It hard-stops your agent *before its next
+LLM or paid tool call* when it would cross a USD spend ceiling — tokens and
+tool calls under one local ceiling. No account, no signup, no network. Runs in
+your process.
 
 Works with both **AI SDK v4 and v5** (`ai@4` / `ai@5`).
 
@@ -61,6 +62,21 @@ the Python package exposes and that hosted Floe returns on every proxied call
 const guard = new BudgetGuard(0.1, { nearLimitBps: 7000 }); // flag at 70% used
 const adv = guard.advisory();
 const model = adv.nearLimit ? openai("gpt-4o-mini") : openai("gpt-4o");
+```
+
+## Tool spend under the same ceiling
+
+Paid tool calls (Apollo, Exa, scrapers) burn the same budget as tokens. The
+full reserve/settle contract applies — and the price is known *before* the
+call, so the pre-call hard-stop is exact:
+
+```ts
+const handle = guard.reserveTool(0.02); // throws BudgetExceeded BEFORE the call
+const result = await apollo.peopleLookup(...);
+guard.settleTool("apollo.people_lookup", 0.02, { reserved: handle });
+
+guard.recordTool("exa.search", 0.004); // post-hoc, for metered APIs
+guard.toolCosts; // { "apollo.people_lookup": 0.42, "exa.search": 0.11 }
 ```
 
 ## Per-call spend log

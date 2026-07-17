@@ -1,6 +1,7 @@
 """floe-guard — a local, framework-agnostic budget guardrail for AI agents.
 
-Hard-stops an agent before its next LLM call when it would cross a spend ceiling.
+Hard-stops an agent before its next LLM or paid tool call when it would cross a
+spend ceiling — tokens and tool costs share one local ceiling.
 Zero account, no network, runs in-process. Hosted Floe is the un-bypassable,
 cross-vendor upgrade path (see the README).
 
@@ -25,7 +26,7 @@ from .hosted import hosted_enforcement_available, hosted_remaining_usd
 from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
 from .stream import StreamGuard, guard_stream
 
-__version__ = "0.4.0"  # keep in lockstep with pyproject.toml
+__version__ = "0.5.0"  # keep in lockstep with pyproject.toml
 
 __all__ = [
     "BudgetGuard",
