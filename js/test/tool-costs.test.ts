@@ -5,11 +5,12 @@ import { BudgetExceeded, BudgetGuard } from "../src/index.js";
 const MODEL = "gpt-4o"; // 1k in + 1k out = $0.0125/call
 
 describe("tool spend (reserveTool / settleTool / recordTool / toolCosts)", () => {
-  it("reserveTool rejects non-finite estimates", () => {
+  it("reserveTool rejects non-finite and negative estimates", () => {
     const guard = new BudgetGuard(1.0);
-    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -0.01]) {
       expect(() => guard.reserveTool(bad)).toThrow(RangeError);
     }
+    expect(guard.remainingUsd).toBeCloseTo(1.0, 12); // nothing was held
   });
 
   it("reserveTool rejects a missing estimate instead of silently falling back", () => {

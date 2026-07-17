@@ -393,6 +393,12 @@ class BudgetGuard:
             # (0 on a fresh guard) — an unguarded tool call. A missing price must
             # fail loudly, e.g. guard.reserve_tool(price_table.get(tool)).
             raise ValueError("reserve_tool requires an estimated cost, got None")
+        if not math.isfinite(estimated_cost) or estimated_cost < 0:
+            # reserve() clamps a negative estimate to 0 (lenient LLM contract) —
+            # for a tool that would reserve nothing: the same unguarded call.
+            raise ValueError(
+                f"estimated_cost must be a finite, non-negative number, got {estimated_cost!r}"
+            )
         return self.reserve(estimated_cost)
 
     def settle_tool(

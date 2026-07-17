@@ -353,6 +353,13 @@ export class BudgetGuard {
       // fail loudly, e.g. guard.reserveTool(priceTable[tool]).
       throw new RangeError("reserveTool requires an estimated cost, got undefined");
     }
+    if (!Number.isFinite(estimatedCost) || estimatedCost < 0) {
+      // reserve() clamps a negative estimate to 0 (lenient LLM contract) — for
+      // a tool that would reserve nothing: the same unguarded call.
+      throw new RangeError(
+        `estimatedCost must be a finite, non-negative number, got ${estimatedCost}`,
+      );
+    }
     return this.reserve(estimatedCost);
   }
 

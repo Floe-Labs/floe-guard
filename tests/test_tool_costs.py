@@ -16,11 +16,12 @@ MODEL = "gpt-4o"  # 1k in + 1k out = $0.0125/call
 # ── validation ──────────────────────────────────────────────────────────────────
 
 
-def test_reserve_tool_rejects_non_finite_estimates() -> None:
+def test_reserve_tool_rejects_non_finite_and_negative_estimates() -> None:
     guard = BudgetGuard(limit_usd=1.00)
-    for bad in (float("nan"), float("inf")):
+    for bad in (float("nan"), float("inf"), -0.01):
         with pytest.raises(ValueError):
             guard.reserve_tool(bad)
+    assert guard.remaining_usd == pytest.approx(1.00)  # nothing was held
 
 
 def test_reserve_tool_rejects_a_missing_estimate() -> None:
