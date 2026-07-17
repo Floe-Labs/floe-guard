@@ -175,6 +175,41 @@ cost_usd, label?, reserved?}` — identical to the TS package's `exportLog()`, s
 every agent produces the same shape regardless of stack and the streams can be
 concatenated and analysed together.
 
+## LatencyBudget — deadlines, the same way
+
+Money isn't the only budget an agent burns. `LatencyBudget` is `BudgetGuard`'s
+sibling for **time**: it tracks cumulative elapsed time across a tool chain
+against an end-user SLA and stops the *next* call before it would blow it.
+
+```python
+from floe_guard import LatencyBudget, DeadlineExceeded
+
+deadline = LatencyBudget(sla_ms=5000)          # the user is promised 5s
+
+for step in plan:
+    deadline.check(expected_ms=step.est_ms)    # raises DeadlineExceeded when projected over
+    model = DEFAULT_MODEL
+    if deadline.advisory().near_deadline:      # 80% consumed by default —
+        model = FAST_FALLBACK                  # downshift BEFORE the wall
+    run(step, model, timeout_ms=deadline.remaining_ms)
+```
+
+Same shape in TypeScript: `new LatencyBudget(5000)`, `check(expectedMs)`,
+`remainingMs`, `advisory().nearDeadline`.
+
+Honest scope, mirroring the rest of this package:
+
+- **Monotonic clock** (`time.monotonic()` / `performance.now()`) — NTP steps
+  and DST can't corrupt the budget.
+- **Cooperative, not preemptive.** The guard supplies the deadline *signal*;
+  killing an already-running stalled call is your framework's job (asyncio
+  cancellation, `AbortSignal`). `check()` prevents the next call from starting.
+- **Advisory symmetry.** `near_deadline` / `used_bps` / `remaining_ms` are the
+  latency twin of the budget advisory's `near_limit` / `used_bps` /
+  `remaining_usd` — taper logic written against one ports to the other.
+- **In-process.** One instance per request/run; distributed/server-side latency
+  tracking is out of scope.
+
 ## Request-sized estimates and mid-stream enforcement
 
 Two gaps in last-cost prediction, closed in 0.4.0 (Python):
