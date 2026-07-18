@@ -45,6 +45,9 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from pipecat.frames.frames import (
+    CancelFrame,
+    EndFrame,
+    ErrorFrame,
     Frame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
@@ -82,9 +85,11 @@ class FloeBudgetGuardProcessor(FrameProcessor):
     ``LLMFullResponseStartFrame`` (raising ``BudgetExceeded`` before the
     turn's TTS/audio spend accrues on top of a call that would already cross
     the ceiling), ``guard.settle()`` once a ``MetricsFrame`` reports real
-    token usage, and ``guard.release()`` on ``LLMFullResponseEndFrame`` if no
-    usage was ever reported (e.g. the turn was interrupted) so the
-    reservation doesn't leak.
+    token usage, and ``guard.release()`` whenever a turn ends with its
+    reservation still unsettled — an ``LLMFullResponseEndFrame``, a new turn
+    starting before the last one settled, or the pipeline tearing down
+    (``EndFrame``/``CancelFrame``/``ErrorFrame``) — so the reservation never
+    leaks against the ceiling.
 
     Requires the pipeline's ``PipelineTask`` to be created with
     ``PipelineParams(enable_metrics=True, enable_usage_metrics=True)`` --
@@ -134,10 +139,24 @@ class FloeBudgetGuardProcessor(FrameProcessor):
             return self._model
         return reported_model or self._model
 
+    def _release_pending(self) -> None:
+        """Drop a still-held turn reservation -- an interrupted turn, a new turn
+        starting before the last one settled, or pipeline teardown -- so it
+        never leaks against the ceiling."""
+        self._guard.release(self._reserved)
+        self._reserved = 0.0
+        self._pending = False
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, LLMFullResponseStartFrame):
+            # If the previous turn never settled its usage (interrupted, or no
+            # MetricsFrame ever arrived), its reservation is still held -- release
+            # it before opening the new turn's, or back-to-back start frames would
+            # overwrite the handle and leak the earlier hold against the ceiling.
+            if self._pending:
+                self._release_pending()
             try:
                 self._reserved = self._guard.reserve()
                 self._pending = True
@@ -161,26 +180,42 @@ class FloeBudgetGuardProcessor(FrameProcessor):
                     await self.push_error(str(exc), exception=exc, fatal=True)
                 return  # don't forward the frame for a call that was blocked
 
-        elif isinstance(frame, MetricsFrame) and self._pending:
+        elif isinstance(frame, MetricsFrame):
+            # Settle whenever a frame carries real token usage -- NOT gated on
+            # _pending, so usage is still metered if the start frame was missed
+            # or a prior frame already cleared the reservation. With no live
+            # reservation ``self._reserved`` is 0.0, i.e. a plain record().
             usage = _usage_from(frame)
             if usage is not None:
                 reported_model, prompt_tokens, completion_tokens = usage
-                self._guard.settle(
-                    self._settle_model(reported_model),
-                    prompt_tokens,
-                    completion_tokens,
-                    reserved=self._reserved,
-                )
+                reserved = self._reserved
                 self._reserved = 0.0
                 self._pending = False
+                try:
+                    self._guard.settle(
+                        self._settle_model(reported_model),
+                        prompt_tokens,
+                        completion_tokens,
+                        reserved=reserved,
+                    )
+                except Exception as exc:
+                    # settle() fail-closes on a model it can't price (and
+                    # re-raises a non-finite cost). A guard that can't measure
+                    # spend must hard-stop the pipeline, not let the exception be
+                    # downgraded to a non-fatal log by Pipecat (same reasoning as
+                    # the BudgetExceeded branch above). settle() already released
+                    # the reservation on its raise path, so don't release again.
+                    logger.warning("floe-guard could not settle a turn: %s", exc)
+                    await self.push_error(str(exc), exception=exc, fatal=True)
+                    return
 
-        elif isinstance(frame, LLMFullResponseEndFrame) and self._pending:
-            # Turn ended without ever reporting usage (e.g. interrupted
-            # mid-response) -- release the held reservation instead of
-            # leaking it against the ceiling forever.
-            self._guard.release(self._reserved)
-            self._reserved = 0.0
-            self._pending = False
+        elif isinstance(frame, (LLMFullResponseEndFrame, EndFrame, CancelFrame, ErrorFrame)):
+            # A turn that ended (LLMFullResponseEndFrame) or the pipeline tearing
+            # down (End/Cancel/Error) while a reservation is still held and no
+            # usage was ever reported -- release it instead of leaking. Fall
+            # through so the terminating frame still propagates downstream.
+            if self._pending:
+                self._release_pending()
 
         # Always forward every frame -- a FrameProcessor that swallows frames
         # breaks the pipeline for everything downstream.

@@ -29,7 +29,8 @@ crewai = ["crewai>=0.30", "litellm>=1.0"]
 langchain = ["langchain-core>=0.3"]
 openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.40"]
-dev = ["pytest>=7.0", "ruff>=0.4"]
+pipecat = ["pipecat-ai>=1.0"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
 
 [project.urls]
 Homepage = "https://floelabs.xyz"

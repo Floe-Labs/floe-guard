@@ -16,24 +16,31 @@ match exactly once you've opened that file, for consistency with the rest
 of the test suite.
 """
 
+from __future__ import annotations
+
 import asyncio
 
 import pytest
-from pipecat.frames.frames import (
+
+# The adapter under test hard-imports pipecat at module load, so skip the whole
+# module (rather than erroring collection) when the optional extra is absent.
+pytest.importorskip("pipecat")
+
+from pipecat.frames.frames import (  # noqa: E402
     EndFrame,
     Frame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     MetricsFrame,
 )
-from pipecat.metrics.metrics import LLMTokenUsage, LLMUsageMetricsData
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.metrics.metrics import LLMTokenUsage, LLMUsageMetricsData  # noqa: E402
+from pipecat.pipeline.pipeline import Pipeline  # noqa: E402
+from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
+from pipecat.pipeline.task import PipelineParams, PipelineTask  # noqa: E402
 
-from floe_guard import BudgetGuard
-from floe_guard.errors import BudgetExceeded
-from floe_guard.integrations.pipecat import FloeBudgetGuardProcessor
+from floe_guard import BudgetGuard  # noqa: E402
+from floe_guard.errors import BudgetExceeded  # noqa: E402
+from floe_guard.integrations.pipecat import FloeBudgetGuardProcessor  # noqa: E402
 
 
 def _metrics_frame(prompt_tokens, completion_tokens, model="gpt-4o") -> MetricsFrame:
@@ -117,13 +124,36 @@ async def test_interrupted_turn_releases_reservation_instead_of_leaking():
 @pytest.mark.asyncio
 async def test_ignores_metrics_frames_without_usage_data():
     """A MetricsFrame carrying only e.g. TTFB data (no LLMUsageMetricsData)
-    should not clear the pending reservation."""
+    should not settle or release the pending reservation.
+
+    Checked mid-flight, before the EndFrame teardown -- which now *does* release
+    a dangling reservation, so ``_run_frames`` (it queues an EndFrame) can't be
+    used here or the assertion would race the teardown.
+    """
     guard = BudgetGuard(limit_usd=1.00)
     processor = FloeBudgetGuardProcessor(guard, model="gpt-4o")
 
-    await _run_frames(processor, [LLMFullResponseStartFrame(), MetricsFrame(data=[])])
+    pipeline = Pipeline([processor])
+    task = PipelineTask(
+        pipeline, params=PipelineParams(enable_metrics=True, enable_usage_metrics=True)
+    )
+    runner = PipelineRunner()
 
-    assert processor._pending  # still waiting for real usage data
+    async def drive():
+        await task.queue_frame(LLMFullResponseStartFrame())
+        await asyncio.sleep(0.05)
+        await task.queue_frame(MetricsFrame(data=[]))
+        await asyncio.sleep(0.05)
+        # Usage-less metrics neither settled nor released -- still holding the turn.
+        assert processor._pending
+        if not task.has_finished():
+            await task.queue_frame(EndFrame())
+
+    await asyncio.gather(runner.run(task), drive())
+
+    # ...and the EndFrame teardown released the dangling reservation (no leak).
+    assert not processor._pending
+    assert processor._reserved == 0.0
 
 
 @pytest.mark.asyncio
@@ -168,3 +198,91 @@ async def test_pushes_fatal_error_when_ceiling_crossed_without_callback():
 
     assert len(captured_errors) == 1
     assert captured_errors[0].fatal is True
+
+
+@pytest.mark.asyncio
+async def test_unbalanced_start_frames_do_not_leak_reservation():
+    """Two LLMFullResponseStartFrames without a settle/end between them must not
+    leak: the first turn's reservation is released before the second reserves, so
+    the guard never holds more than the processor is tracking."""
+    guard = BudgetGuard(limit_usd=100.00)
+    processor = FloeBudgetGuardProcessor(guard, model="gpt-4o")
+
+    pipeline = Pipeline([processor])
+    task = PipelineTask(
+        pipeline, params=PipelineParams(enable_metrics=True, enable_usage_metrics=True)
+    )
+    runner = PipelineRunner()
+
+    async def drive():
+        # A full turn first, so _last_cost > 0 and later reservations are non-zero
+        # (a fresh guard reserves the last call's cost, which starts at $0).
+        await task.queue_frame(LLMFullResponseStartFrame())
+        await asyncio.sleep(0.05)
+        await task.queue_frame(_metrics_frame(100, 50))
+        await asyncio.sleep(0.05)
+        await task.queue_frame(LLMFullResponseStartFrame())  # turn B reserves
+        await asyncio.sleep(0.05)
+        await task.queue_frame(LLMFullResponseStartFrame())  # turn C, unbalanced
+        await asyncio.sleep(0.05)
+        assert processor._reserved > 0.0
+        # Exactly one live reservation -- not two. On a leak the guard would hold
+        # turn B's hold on top of turn C's, i.e. twice what the processor tracks.
+        assert guard._reserved == pytest.approx(processor._reserved)
+        if not task.has_finished():
+            await task.queue_frame(EndFrame())
+
+    await asyncio.gather(runner.run(task), drive())
+
+    assert guard._reserved == pytest.approx(0.0)  # teardown released the last hold
+
+
+@pytest.mark.asyncio
+async def test_settles_usage_even_without_a_start_frame():
+    """Usage is metered even if the LLMFullResponseStartFrame was missed -- the
+    MetricsFrame settle path is not gated on a live reservation."""
+    guard = BudgetGuard(limit_usd=100.00)
+    processor = FloeBudgetGuardProcessor(guard, model="gpt-4o")
+
+    await _run_frames(processor, [_metrics_frame(100, 50)])
+
+    assert guard.advisory().spent_usd > 0
+    assert not processor._pending
+    assert processor._reserved == 0.0
+
+
+@pytest.mark.asyncio
+async def test_unpriceable_usage_pushes_fatal_error():
+    """If settle() can't price the turn, the guard can't measure spend -- the
+    processor hard-stops with a fatal ErrorFrame rather than letting Pipecat
+    downgrade the failure to a non-fatal log."""
+    guard = BudgetGuard(limit_usd=100.00)  # fail_closed defaults to True
+    # Both the reported model and the fallback are unpriceable, so _settle_model
+    # can't fall back to a priceable id and settle() fail-closes.
+    processor = FloeBudgetGuardProcessor(guard, model="totally-made-up-model")
+
+    pipeline = Pipeline([processor])
+    task = PipelineTask(
+        pipeline, params=PipelineParams(enable_metrics=True, enable_usage_metrics=True)
+    )
+    runner = PipelineRunner()
+
+    captured_errors = []
+
+    @task.event_handler("on_pipeline_error")
+    async def _on_pipeline_error(task, frame):
+        captured_errors.append(frame)
+
+    async def drive():
+        await task.queue_frame(LLMFullResponseStartFrame())
+        await asyncio.sleep(0.05)
+        await task.queue_frame(_metrics_frame(100, 50, model="also-unpriceable"))
+        await asyncio.sleep(0.05)
+        if not task.has_finished():
+            await task.queue_frame(EndFrame())
+
+    await asyncio.gather(runner.run(task), drive())
+
+    assert len(captured_errors) == 1
+    assert captured_errors[0].fatal is True
+    assert guard.advisory().spent_usd == 0.0  # nothing was metered
