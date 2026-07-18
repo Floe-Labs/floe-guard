@@ -150,6 +150,105 @@ unchanged — hosted just answers across *every* vendor and cap with server-trut
 balances and rolling-window reset timing, which a single local budget can't know.
 The TS package exposes the identical `guard.advisory()`.
 
+## Per-call spend log
+
+The guard keeps a typed, in-memory ledger of everything it priced: each
+`record()` / `settle()` appends one `SpendEvent`, and `record_tool()` lets paid
+non-LLM calls (search APIs, scrapers) spend the same budget and land in the same
+log. The events sum to `spent_usd` (unless a `max_log_events` ring buffer has
+evicted old ones) — no more rebuilding per-call breakdowns around the guard.
+
+```python
+guard = BudgetGuard(limit_usd=1.00)                      # max_log_events=N caps memory
+guard.record("gpt-4o", 1_200, 350, label="researcher")   # label is optional
+guard.record_tool("serpapi.search", 0.01, label="researcher")
+
+guard.spend_log      # [SpendEvent(timestamp=…, kind="llm", model_or_tool="gpt-4o",
+                     #             prompt_tokens=1200, completion_tokens=350,
+                     #             cost_usd=0.0065, label="researcher"), …]
+print(guard.export_log(), end="")   # JSONL, one event per line
+```
+
+`export_log()` emits a stable snake_case schema —
+`{timestamp, kind: llm|tool, model_or_tool, prompt_tokens, completion_tokens,
+cost_usd, label?, reserved?}` — identical to the TS package's `exportLog()`, so
+every agent produces the same shape regardless of stack and the streams can be
+concatenated and analysed together.
+
+## LatencyBudget — deadlines, the same way
+
+Money isn't the only budget an agent burns. `LatencyBudget` is `BudgetGuard`'s
+sibling for **time**: it tracks cumulative elapsed time across a tool chain
+against an end-user SLA and stops the *next* call before it would blow it.
+
+```python
+from floe_guard import LatencyBudget, DeadlineExceeded
+
+deadline = LatencyBudget(sla_ms=5000)          # the user is promised 5s
+
+for step in plan:
+    deadline.check(expected_ms=step.est_ms)    # raises DeadlineExceeded when projected over
+    model = DEFAULT_MODEL
+    if deadline.advisory().near_deadline:      # 80% consumed by default —
+        model = FAST_FALLBACK                  # downshift BEFORE the wall
+    run(step, model, timeout_ms=deadline.remaining_ms)
+```
+
+Same shape in TypeScript: `new LatencyBudget(5000)`, `check(expectedMs)`,
+`remainingMs`, `advisory().nearDeadline`.
+
+Honest scope, mirroring the rest of this package:
+
+- **Monotonic clock** (`time.monotonic()` / `performance.now()`) — NTP steps
+  and DST can't corrupt the budget.
+- **Cooperative, not preemptive.** The guard supplies the deadline *signal*;
+  killing an already-running stalled call is your framework's job (asyncio
+  cancellation, `AbortSignal`). `check()` prevents the next call from starting.
+- **Advisory symmetry.** `near_deadline` / `used_bps` / `remaining_ms` are the
+  latency twin of the budget advisory's `near_limit` / `used_bps` /
+  `remaining_usd` — taper logic written against one ports to the other.
+- **In-process.** One instance per request/run; distributed/server-side latency
+  tracking is out of scope.
+
+## Request-sized estimates and mid-stream enforcement
+
+Two gaps in last-cost prediction, closed in 0.4.0 (Python):
+
+**The oversized first call.** `check()`/`reserve()` predict from the *last*
+call — blind on call #1, wrong for a call much bigger than the previous one.
+`estimate_call()` prices the **actual incoming request** so even a first call
+that alone would cross the cap blocks pre-flight:
+
+```python
+est = guard.estimate_call("gpt-4o", prompt_tokens=12_000, max_completion_tokens=4_096)
+handle = guard.reserve(est)   # raises BudgetExceeded NOW if this call can't fit
+```
+
+The LiteLLM adapter does this automatically (prompt tokens via
+`litellm.token_counter`, output cap from `max_tokens`), and the LangChain
+handler sizes its pre-call `check()` the same way. Unpriceable or unsized
+requests fall back to the old last-cost prediction — the wiring only ever
+tightens enforcement.
+
+**The stream that runs long.** `record()` meters a *completed* response — too
+late for a generation that starts cheap and keeps going. `guard_stream()` (or
+the underlying `StreamGuard`) re-prices the call on every chunk and cuts the
+stream off **mid-generation**, settling the tokens actually consumed instead of
+recording a big overshoot after the fact:
+
+```python
+from floe_guard import guard_stream
+
+for chunk in guard_stream(guard, "gpt-4o", stream, prompt_tokens=1_000):
+    print(chunk, end="")   # raises BudgetExceeded mid-stream at the ceiling
+```
+
+Chunk sizes are estimated at ~4 chars/token (pass `count_tokens=` for a real
+tokenizer); the final accrual reconciles to provider-reported usage via
+`StreamGuard.finish(...)`. See
+[`examples/streaming_guard.py`](examples/streaming_guard.py) for a runnable
+demo (no API key).
+
 ## Framework adapters (optional extras)
 
 ### CrewAI
@@ -337,10 +436,13 @@ vendored cost map *inside your process*:
 - It only sees the vendors you instrument.
 - A determined agent or a bug could route around an in-process check.
 - Under heavy or cold-start concurrency it bounds steady-state spend, not the
-  first parallel wave. Reservations size from the last call's cost (`0` until the
-  first `record()`), so the opening fan-out has nothing to estimate from. Pass a
-  known per-call max to `reserve()` to bound it, or use hosted Floe for a hard cap
+  first parallel wave. Reservations default to the last call's cost (`0` until
+  the first `record()`) — size them to the real request with `estimate_call()`
+  (the LiteLLM adapter does this for you), or use hosted Floe for a hard cap
   under arbitrary concurrency.
+- Mid-stream enforcement (`guard_stream`) prices chunks by a ~4 chars/token
+  heuristic unless you supply a tokenizer, so the cut-off point is approximate;
+  the final accrual reconciles to provider-reported usage.
 
 It's genuinely useful on its own, and it's honest about its limits. No inflated
 metrics, no "zero defaults" claims — it's a free local stop, not a vault.

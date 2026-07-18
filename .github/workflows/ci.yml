@@ -67,6 +67,11 @@ jobs:
       # CrewAI adapter tests stub crewai itself, so the heavy extra stays out);
       # langgraph covers the fan-out reserve/settle and advisory-channel tests.
       - run: pip install -e ".[dev,langchain,litellm,langgraph]"
+      # pipecat-ai requires Python >=3.11, so add it (and exercise the Pipecat
+      # adapter tests) on every matrix cell except 3.10 — there the tests
+      # importorskip cleanly.
+      - if: matrix.python-version != '3.10'
+        run: pip install -e ".[pipecat]"
       - name: Pytest
         run: pytest -q
 

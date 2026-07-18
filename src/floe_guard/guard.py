@@ -27,12 +27,16 @@ upgrade (see the README).
 
 from __future__ import annotations
 
+import json
 import math
 import sys
 import threading
+import time
 import warnings
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from .errors import (
     BudgetExceeded,
@@ -69,6 +73,52 @@ class BudgetAdvisory:
     scope: str = "local"  # hosted reports the tightest cap across all scopes
 
 
+@dataclass(frozen=True)
+class SpendEvent:
+    """One priced spend event in the guard's per-call ledger.
+
+    Every :meth:`BudgetGuard.record` / :meth:`BudgetGuard.settle` /
+    :meth:`BudgetGuard.record_tool` that accrues spend appends exactly one event,
+    so ``sum(e.cost_usd for e in guard.spend_log)`` equals ``guard.spent_usd``
+    (unless a ``max_log_events`` ring buffer has evicted old events).
+    The schema is identical in the TS package (``SpendEvent`` in ``js/src/guard.ts``)
+    and :meth:`BudgetGuard.export_log` serialises it with the same snake_case keys
+    in both languages, so every agent emits the same shape regardless of stack.
+    """
+
+    timestamp: float  # Unix epoch seconds (UTC)
+    kind: Literal["llm", "tool"]
+    model_or_tool: str
+    prompt_tokens: int | None  # None for tool events
+    completion_tokens: int | None  # None for tool events
+    cost_usd: float
+    label: str | None = None  # caller-supplied tag (agent/task name)
+    reserved: float | None = None  # the reservation settled by this call, if any
+
+    def to_dict(self) -> dict[str, object]:
+        """The stable wire shape used by :meth:`BudgetGuard.export_log`.
+
+        Key order is fixed and the optional fields (``label``, ``reserved``) are
+        omitted when absent — not emitted as null — matching the TS package's
+        ``exportLog()`` field-for-field. (The *schema* is the contract, not the
+        bytes: the two runtimes may render the same float differently, e.g.
+        Python ``2.5e-06`` vs JS ``0.0000025``.)
+        """
+        out: dict[str, object] = {
+            "timestamp": self.timestamp,
+            "kind": self.kind,
+            "model_or_tool": self.model_or_tool,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "cost_usd": self.cost_usd,
+        }
+        if self.label is not None:
+            out["label"] = self.label
+        if self.reserved is not None:
+            out["reserved"] = self.reserved
+        return out
+
+
 class BudgetGuard:
     """Hard-stop an agent before its next LLM call crosses a USD ceiling.
 
@@ -87,6 +137,10 @@ class BudgetGuard:
         near_limit_bps: utilization (basis points, 0..10000) at which
             :meth:`advisory` flags ``near_limit`` so an agent can taper before the
             hard-stop. Defaults to ``8000`` (80%).
+        max_log_events: optional cap on the per-call spend ledger
+            (:attr:`spend_log`). When set, the ledger is a ring buffer keeping the
+            most recent N events so a long-running agent's memory stays bounded;
+            the running totals are unaffected. ``None`` (default) keeps every event.
 
     Thread-safe: the running total and in-flight reservations are guarded by a
     lock, so the guard can back a parallel crew (use :meth:`reserve` /
@@ -101,6 +155,7 @@ class BudgetGuard:
         fail_closed: bool = True,
         on_block: Callable[[float, float], None] | None = None,
         near_limit_bps: int = 8000,
+        max_log_events: int | None = None,
     ) -> None:
         if not math.isfinite(limit_usd) or limit_usd < 0:
             # NaN/inf would make every check() comparison evaluate False and
@@ -127,6 +182,21 @@ class BudgetGuard:
         # USD held for calls that are in flight (reserved but not yet settled).
         # Counted against the ceiling so concurrent callers can't overshoot.
         self._reserved = 0.0
+        # Same int-not-bool contract as near_limit_bps (parity with TS Number.isInteger).
+        if max_log_events is not None and (
+            isinstance(max_log_events, bool)
+            or not isinstance(max_log_events, int)
+            or max_log_events < 0
+        ):
+            raise ValueError(
+                f"max_log_events must be None or a non-negative int, got {max_log_events!r}"
+            )
+        # Per-call ledger; deque(maxlen=None) is unbounded, otherwise a ring buffer.
+        self._spend_log: deque[SpendEvent] = deque(maxlen=max_log_events)
+        # Active streams' (accrued_usd, reserved_usd), keyed by registry token —
+        # see _stream_register(). Lets parallel streams count each other's
+        # in-flight accrual against the ceiling before anything settles.
+        self._stream_costs: dict[object, tuple[float, float]] = {}
         self._lock = threading.Lock()
 
     # ── enforcement ───────────────────────────────────────────────────────────
@@ -147,6 +217,36 @@ class BudgetGuard:
         self._validate_estimate(estimated_next_cost)
         if self._would_cross(estimated_next_cost):
             self._block()
+
+    def estimate_call(
+        self,
+        model: str,
+        prompt_tokens: int,
+        max_completion_tokens: int = 0,
+        *,
+        price: ManualPrice | None = None,
+    ) -> float | None:
+        """Price the ACTUAL incoming request, for a request-sized reserve()/check().
+
+        :meth:`check` and :meth:`reserve` default to predicting the next call
+        from the LAST call's cost — which is blind on the first call and wrong
+        for a call much larger than the previous one. Feed this the request you
+        are about to send (its real prompt size and output cap) and pass the
+        result straight through::
+
+            est = guard.estimate_call("gpt-4o", prompt_tokens, max_completion_tokens=1024)
+            handle = guard.reserve(est)   # blocks NOW if this call alone would cross
+
+        The estimate is worst-case on output (the model may stop well short of
+        ``max_completion_tokens``); the hold is corrected to actual cost at
+        :meth:`settle`. Returns ``None`` when the model is unpriceable — and
+        ``reserve(None)`` / ``check(None)`` fall back to the last-cost
+        prediction, so the wiring degrades gracefully instead of failing.
+        """
+        priced = self._resolve(model, price)
+        if priced is None:
+            return None
+        return price_tokens(priced, prompt_tokens, max_completion_tokens)
 
     def reserve(self, estimated_cost: float | None = None) -> float:
         """Atomically check the ceiling AND hold the estimated cost in-flight.
@@ -181,13 +281,20 @@ class BudgetGuard:
         *,
         reserved: float = 0.0,
         price: ManualPrice | None = None,
+        cache_creation_input_tokens: int = 0,
+        cache_creation_input_tokens_1h: int = 0,
+        cache_read_input_tokens: int = 0,
+        label: str | None = None,
     ) -> float:
         """Release a reservation and record the actual cost. Concurrency-safe.
 
         ``record`` is ``settle`` with no reservation. Returns the USD cost of
         this call. Unpriceable-model handling matches :meth:`record` (warn +
         raise when ``fail_closed``, else warn + skip), and any held reservation
-        is released even on the skip path.
+        is released even on the skip path. A priced call appends one
+        :class:`SpendEvent` to :attr:`spend_log` (``label`` tags it, e.g. with an
+        agent or task name); the warn-and-skip path accrues nothing and logs
+        nothing, so the ledger stays in lockstep with ``spent_usd``.
         """
         # A bad reserved handle would corrupt _reserved and break the ceiling for
         # OTHER in-flight calls (negative → phantom hold; inf → clears all holds).
@@ -212,7 +319,14 @@ class BudgetGuard:
             return 0.0
 
         try:
-            cost = price_tokens(priced, prompt_tokens, completion_tokens)
+            cost = price_tokens(
+                priced,
+                prompt_tokens,
+                completion_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
+                cache_creation_input_tokens_1h=cache_creation_input_tokens_1h,
+                cache_read_input_tokens=cache_read_input_tokens,
+            )
         except Exception:
             # price_tokens can raise (e.g. non-finite token counts). Release the
             # in-flight hold before propagating so _reserved doesn't leak and
@@ -229,6 +343,20 @@ class BudgetGuard:
             if 0.0 < self.spent_usd - self.limit_usd < _EPS:
                 self.spent_usd = self.limit_usd
             self._last_cost = cost
+            self._spend_log.append(
+                SpendEvent(
+                    timestamp=time.time(),
+                    kind="llm",
+                    model_or_tool=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost_usd=cost,
+                    label=label,
+                    # 0.0 means "no reservation" (the plain record() path) — omit
+                    # rather than log a meaningless zero.
+                    reserved=reserved if reserved else None,
+                )
+            )
         return cost
 
     def record(
@@ -238,6 +366,10 @@ class BudgetGuard:
         completion_tokens: int,
         *,
         price: ManualPrice | None = None,
+        cache_creation_input_tokens: int = 0,
+        cache_creation_input_tokens_1h: int = 0,
+        cache_read_input_tokens: int = 0,
+        label: str | None = None,
     ) -> float:
         """Price one response's tokens offline and add the cost to the total.
 
@@ -245,7 +377,52 @@ class BudgetGuard:
         ``price`` is given, behaviour depends on ``fail_closed`` (see the class
         docstring): warn + raise (default), or warn + skip accrual.
         """
-        return self.settle(model, prompt_tokens, completion_tokens, reserved=0.0, price=price)
+        return self.settle(
+            model,
+            prompt_tokens,
+            completion_tokens,
+            reserved=0.0,
+            price=price,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_creation_input_tokens_1h=cache_creation_input_tokens_1h,
+            cache_read_input_tokens=cache_read_input_tokens,
+            label=label,
+        )
+
+    def record_tool(self, tool: str, cost_usd: float, *, label: str | None = None) -> float:
+        """Accrue a non-LLM cost (a paid tool/API call) against the same ceiling.
+
+        Tools with direct dollar costs — search APIs, scrapers, sandboxes — spend
+        the same budget the LLM calls do; ``record_tool`` folds them into
+        ``spent_usd`` (so :meth:`check` / :meth:`reserve` see them) and appends a
+        ``kind="tool"`` :class:`SpendEvent` to :attr:`spend_log`. The caller
+        supplies the cost: tools have no token usage to price. Deliberately does
+        NOT update the next-call estimate — that predicts the next *LLM* call, and
+        a tool's price would skew it. Returns ``cost_usd``.
+        """
+        if not math.isfinite(cost_usd) or cost_usd < 0:
+            raise ValueError(f"cost_usd must be a finite, non-negative number, got {cost_usd!r}")
+        # int (and bool) are valid inputs; coerce so the logged event and the
+        # return value are always float, like every other cost in the guard.
+        cost_usd = float(cost_usd)
+        with self._lock:
+            self.spent_usd += cost_usd
+            # Same sub-epsilon clamp as settle(): never report a rounding-artifact
+            # crossing of the ceiling.
+            if 0.0 < self.spent_usd - self.limit_usd < _EPS:
+                self.spent_usd = self.limit_usd
+            self._spend_log.append(
+                SpendEvent(
+                    timestamp=time.time(),
+                    kind="tool",
+                    model_or_tool=tool,
+                    prompt_tokens=None,
+                    completion_tokens=None,
+                    cost_usd=cost_usd,
+                    label=label,
+                )
+            )
+        return cost_usd
 
     def release(self, reserved: float) -> None:
         """Drop an in-flight reservation without recording spend (e.g. the call
@@ -265,6 +442,34 @@ class BudgetGuard:
         """USD left before the ceiling, net of in-flight reservations (never negative)."""
         with self._lock:
             return max(0.0, self.limit_usd - self.spent_usd - self._reserved)
+
+    @property
+    def spend_log(self) -> list[SpendEvent]:
+        """The per-call spend ledger, oldest first — one :class:`SpendEvent` per
+        priced :meth:`record` / :meth:`settle` / :meth:`record_tool`.
+
+        Returns a snapshot copy: safe to iterate while other threads keep
+        recording, and mutating it cannot corrupt the ledger.
+        """
+        with self._lock:
+            return list(self._spend_log)
+
+    def export_log(self) -> str:
+        """The spend ledger as JSONL — one event per line, newline-terminated.
+
+        The schema is stable and language-independent (snake_case keys, fixed
+        order; optional fields omitted when absent), identical to the TS
+        package's ``exportLog()``, so heterogeneous agents produce logs you can
+        concatenate and analyse as one stream. Empty ledger yields ``""``.
+        """
+        # Compact separators and raw (non-escaped) unicode match JS
+        # JSON.stringify's layout; float rendering may still differ between the
+        # runtimes (2.5e-06 vs 0.0000025) — the schema, not the bytes, is the
+        # cross-language contract.
+        return "".join(
+            f"{json.dumps(event.to_dict(), separators=(',', ':'), ensure_ascii=False)}\n"
+            for event in self.spend_log
+        )
 
     def advisory(self) -> BudgetAdvisory:
         """Context-aware spend advisory for this budget — see :class:`BudgetAdvisory`.
@@ -303,6 +508,41 @@ class BudgetGuard:
         # matching the constructor's math.isfinite guard and the TS Number.isFinite.
         if estimated is not None and not math.isfinite(estimated):
             raise ValueError(f"estimated cost must be a finite number, got {estimated!r}")
+
+    def _stream_register(self, reserved: float) -> object:
+        """Register an active stream (see :class:`~floe_guard.stream.StreamGuard`)
+        and return its registry key. Active streams' accrued-but-unsettled costs
+        count against the ceiling for each OTHER stream, so parallel unreserved
+        streams share the budget instead of each spending the full ceiling."""
+        key = object()
+        with self._lock:
+            self._stream_costs[key] = (0.0, max(0.0, reserved))
+        return key
+
+    def _stream_unregister(self, key: object) -> None:
+        """Drop a stream's registry entry once its cost is settled (settle()
+        moves the accrual into ``spent_usd``, so keeping it would double-count)."""
+        with self._lock:
+            self._stream_costs.pop(key, None)
+
+    def _stream_would_cross(self, key: object, cumulative_call_cost: float) -> bool:
+        """Atomically record stream ``key``'s cumulative cost so far and answer:
+        would it cross the ceiling? Counted against the limit: settled spend,
+        other calls' reservations (this stream's own hold is excluded — its real
+        accrued cost replaces the estimate), and each OTHER active stream's
+        accrual beyond its own reservation (the reservation part is already
+        inside ``_reserved``). Used by :class:`~floe_guard.stream.StreamGuard`.
+        """
+        with self._lock:
+            own_reserved = self._stream_costs.get(key, (0.0, 0.0))[1]
+            self._stream_costs[key] = (cumulative_call_cost, own_reserved)
+            other_overage = sum(
+                max(0.0, accrued - held)
+                for k, (accrued, held) in self._stream_costs.items()
+                if k is not key
+            )
+            others = self.spent_usd + max(0.0, self._reserved - own_reserved) + other_overage
+            return others + cumulative_call_cost > self.limit_usd + _EPS
 
     def _would_cross(self, estimated_next_cost: float | None) -> bool:
         with self._lock:

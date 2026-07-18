@@ -24,10 +24,8 @@ from typing import Any
 from ..guard import BudgetGuard
 from ..pricing import resolve_price
 
-# Anthropic prompt-cache pricing multipliers, relative to the base input rate:
-# 5-minute cache writes bill at ~1.25x, cache reads at ~0.1x. See _usage_from.
-_CACHE_WRITE_WEIGHT = 1.25
-_CACHE_READ_WEIGHT = 0.1
+# Anthropic prompt-cache pricing is now handled natively in the core (guard.py / pricing.py).
+# We extract the buckets and pass them through.
 
 
 def _model_from(kwargs: dict[str, Any], response: Any) -> str:
@@ -41,38 +39,46 @@ def _model_from(kwargs: dict[str, Any], response: Any) -> str:
     return str(model or "")
 
 
-def _usage_from(response: Any) -> tuple[int, int]:
-    """Map an Anthropic message's usage onto (prompt_tokens, completion_tokens).
+def _usage_from(response: Any) -> tuple[int, int, int, int, int]:
+    """Map an Anthropic message's usage onto token buckets.
 
-    Anthropic reports ``usage.input_tokens`` / ``usage.output_tokens``; the guard
-    settles on the OpenAI-style ``(prompt_tokens, completion_tokens)`` pair, so
-    input maps to prompt and output to completion.
-
-    Prompt caching: ``input_tokens`` counts only the *fresh* prompt tokens —
-    cached tokens are reported separately as ``cache_creation_input_tokens``
-    (billed ~1.25x base input) and ``cache_read_input_tokens`` (~0.1x). Dropping
-    them would under-meter a cached call, and a budget guard must never
-    under-count. Since the guard prices with a flat per-model input rate, we fold
-    the cache tokens into the prompt bucket at their *effective* weight so the
-    metered cost approximates the real spend (an estimate, not exact cache-aware
-    pricing — safe-direction).
+    Anthropic reports ``usage.input_tokens`` / ``usage.output_tokens``.
+    Prompt caching tokens are reported as ``cache_creation_input_tokens``
+    and ``cache_read_input_tokens``. We return all five buckets so the
+    core pricing engine can apply exact cost multipliers.
     """
     usage = getattr(response, "usage", None)
     if usage is None and isinstance(response, dict):
         usage = response.get("usage")
     if usage is None:
-        return 0, 0
+        return 0, 0, 0, 0, 0
     get = usage.get if isinstance(usage, dict) else lambda k, d=0: getattr(usage, k, d)
     input_tokens = int(get("input_tokens", 0) or 0)
     output_tokens = int(get("output_tokens", 0) or 0)
-    cache_write = int(get("cache_creation_input_tokens", 0) or 0)
+    cache_write_total = int(get("cache_creation_input_tokens", 0) or 0)
     cache_read = int(get("cache_read_input_tokens", 0) or 0)
-    prompt_tokens = (
-        input_tokens
-        + round(cache_write * _CACHE_WRITE_WEIGHT)
-        + round(cache_read * _CACHE_READ_WEIGHT)
-    )
-    return prompt_tokens, output_tokens
+
+    # Resolve TTL buckets from `cache_creation` if present
+    cache_creation = get("cache_creation", None)
+    cache_write_5m = 0
+    cache_write_1h = 0
+    if cache_creation is not None:
+        get_cc = (
+            cache_creation.get
+            if isinstance(cache_creation, dict)
+            else lambda k, d=0: getattr(cache_creation, k, d)
+        )
+        cache_write_5m = int(get_cc("ephemeral_5m_input_tokens", 0) or 0)
+        cache_write_1h = int(get_cc("ephemeral_1h_input_tokens", 0) or 0)
+
+    # Fallback/defense-in-depth: if there are missing or future buckets, allocate
+    # any leftover cache_creation tokens to the most expensive known bucket (1h) so
+    # the guard over-counts rather than under-meters spend it can't fully attribute.
+    leftover = cache_write_total - (cache_write_5m + cache_write_1h)
+    if leftover > 0:
+        cache_write_1h += leftover
+
+    return input_tokens, output_tokens, cache_write_5m, cache_write_1h, cache_read
 
 
 def _settle_model(guard: BudgetGuard, kwargs: dict[str, Any], response: Any) -> str:
@@ -103,8 +109,20 @@ def _record_response(
     if not isinstance(kwargs, dict):
         kwargs = {}
     model = _settle_model(guard, kwargs, response)
-    prompt_tokens, completion_tokens = _usage_from(response)
-    if prompt_tokens <= 0 and completion_tokens <= 0:
+    (
+        prompt_tokens,
+        completion_tokens,
+        cache_creation_5m,
+        cache_creation_1h,
+        cache_read,
+    ) = _usage_from(response)
+    if (
+        prompt_tokens <= 0
+        and completion_tokens <= 0
+        and cache_creation_5m <= 0
+        and cache_creation_1h <= 0
+        and cache_read <= 0
+    ):
         # No tokens spent — free the reservation.
         guard.release(reserved)
         return
@@ -112,7 +130,15 @@ def _record_response(
     # model id is missing, so the guard's policy applies (fail-closed → warn +
     # raise; fail-open → warn + skip) rather than letting a completed call go
     # unmetered and skew the next check().
-    guard.settle(model, prompt_tokens, completion_tokens, reserved=reserved)
+    guard.settle(
+        model,
+        prompt_tokens,
+        completion_tokens,
+        reserved=reserved,
+        cache_creation_input_tokens=cache_creation_5m,
+        cache_creation_input_tokens_1h=cache_creation_1h,
+        cache_read_input_tokens=cache_read,
+    )
 
 
 def _reject_streaming(kwargs: dict[str, Any]) -> None:
