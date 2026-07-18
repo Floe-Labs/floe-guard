@@ -64,6 +64,11 @@ jobs:
       # Install the framework extras so the adapter handler tests actually run
       # (instead of skipping). langchain-core covers the LangChain handler tests.
       - run: pip install -e ".[dev,langchain]"
+      # pipecat-ai requires Python >=3.11, so add it (and exercise the Pipecat
+      # adapter tests) on every matrix cell except 3.10 — there the tests
+      # importorskip cleanly.
+      - if: matrix.python-version != '3.10'
+        run: pip install -e ".[pipecat]"
       - name: Pytest
         run: pytest -q
 
