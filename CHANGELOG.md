@@ -10,6 +10,8 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## py 0.6.0 — 2026-07-18
+
 ### Added (py)
 
 - **LangGraph adapter** (`floe-guard[langgraph]`, issue #33): `guarded_node`
