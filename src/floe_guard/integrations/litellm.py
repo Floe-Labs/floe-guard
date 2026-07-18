@@ -73,6 +73,41 @@ def _usage_from(response: Any) -> tuple[int, int]:
     return int(get("prompt_tokens", 0) or 0), int(get("completion_tokens", 0) or 0)
 
 
+def _estimate_request(litellm: Any, guard: BudgetGuard, kwargs: Any) -> float | None:
+    """Request-sized cost estimate for the pre-call reservation.
+
+    Prices the ACTUAL incoming request — prompt tokens via litellm's offline
+    ``token_counter`` plus the ``max_tokens`` output cap — so a first call, or
+    one much larger than the last, reserves its true worst-case size instead of
+    the last call's cost (which is 0 on call one). Returns ``None`` when
+    anything needed is unavailable (no model, counter failure, unpriceable
+    model); ``reserve(None)`` falls back to the last-cost prediction, so this
+    only ever tightens enforcement, never breaks a call path.
+
+    Without ``max_tokens`` on the request the output side is unpredictable and
+    estimates prompt-only — set a cap for full pre-call sizing.
+    """
+    if not isinstance(kwargs, dict):
+        return None
+    model = kwargs.get("model")
+    if not model:
+        return None
+    try:
+        prompt_tokens = int(
+            litellm.token_counter(model=model, messages=kwargs.get("messages") or [])
+        )
+    except Exception:
+        # token_counter can fail on unknown models/shapes — degrade to the
+        # guard's default prediction rather than blocking the call path.
+        return None
+    max_out = kwargs.get("max_completion_tokens") or kwargs.get("max_tokens") or 0
+    try:
+        max_out = max(0, int(max_out))
+    except (TypeError, ValueError):
+        max_out = 0
+    return guard.estimate_call(str(model), prompt_tokens, max_out)
+
+
 def _record_response(
     guard: BudgetGuard, kwargs: Any, response: Any, *, reserved: float = 0.0
 ) -> None:
@@ -98,10 +133,12 @@ def guarded_completion(guard: BudgetGuard, **kwargs: Any) -> Any:
     """``litellm.completion`` with a pre-call budget reservation and post-call accrual.
 
     Raises :class:`~floe_guard.BudgetExceeded` before the call if the budget
-    would be crossed — the request never reaches LiteLLM.
+    would be crossed — the request never reaches LiteLLM. The reservation is
+    sized to the actual request (prompt tokens + ``max_tokens`` cap) when it
+    can be, so even a FIRST call that alone would cross the cap is blocked.
     """
     litellm = _require_litellm()
-    reserved = guard.reserve()
+    reserved = guard.reserve(_estimate_request(litellm, guard, kwargs))
     try:
         response = litellm.completion(**kwargs)
     except BaseException:
@@ -114,7 +151,7 @@ def guarded_completion(guard: BudgetGuard, **kwargs: Any) -> Any:
 async def guarded_acompletion(guard: BudgetGuard, **kwargs: Any) -> Any:
     """Async counterpart of :func:`guarded_completion`."""
     litellm = _require_litellm()
-    reserved = guard.reserve()
+    reserved = guard.reserve(_estimate_request(litellm, guard, kwargs))
     try:
         response = await litellm.acompletion(**kwargs)
     except BaseException:
@@ -190,7 +227,9 @@ def budget_guard_callback(guard: BudgetGuard) -> Any:
 
         def _hold(self, kwargs: Any) -> None:
             try:
-                reserved = self.guard.reserve()  # raises BudgetExceeded -> aborts the call
+                # Request-sized when possible (see _estimate_request); raises
+                # BudgetExceeded -> aborts the call.
+                reserved = self.guard.reserve(_estimate_request(litellm, self.guard, kwargs))
             except BudgetExceeded as exc:
                 self._trip(exc)
                 raise
@@ -234,7 +273,6 @@ def budget_guard_callback(guard: BudgetGuard) -> Any:
         ) -> None:
             self.guard.release(self._pop(kwargs))
 
-    _ = litellm  # adapter import already validated litellm is present
     return BudgetGuardCallback()
 
 

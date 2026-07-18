@@ -10,6 +10,69 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## py 0.5.0 / js 0.4.0 — 2026-07-16
+
+### Added (py + js)
+
+- **`LatencyBudget`** — BudgetGuard's sibling for time: tracks cumulative
+  elapsed time across an agentic tool chain against an end-user SLA.
+  `check(expected_ms)` raises the new `DeadlineExceeded` before a call whose
+  projected duration would blow the SLA; `remaining_ms` is the readable
+  mid-chain signal for router fallback/truncation; `advisory()` returns
+  `near_deadline` / `used_bps` / `remaining_ms`, symmetric to the budget
+  advisory's `near_limit`. Monotonic clock (`time.monotonic` /
+  `performance.now`); cooperative by design — the guard supplies the deadline
+  signal, killing a stalled in-flight call remains the framework's job.
+
+## py 0.4.0 — 2026-07-15
+
+### Added (py)
+
+- **Request-sized pre-call estimates**: `BudgetGuard.estimate_call(model,
+  prompt_tokens, max_completion_tokens)` prices the actual incoming request
+  from the cost map, so `reserve(est)` / `check(est)` block an oversized call
+  — including the very first one, which the last-cost prediction is blind to.
+  The LiteLLM adapter reserves request-sized automatically (prompt via
+  `litellm.token_counter`, cap from `max_tokens`); the LangChain handler sizes
+  its pre-call `check()` from the serialized model config and a ~4 chars/token
+  prompt heuristic. Anything unpriceable/unsized falls back to the previous
+  last-cost behaviour.
+- **Mid-stream enforcement**: `StreamGuard` / `guard_stream()` re-price a
+  streaming response chunk-by-chunk and raise `BudgetExceeded`
+  mid-generation when the running call would cross the ceiling — the partial
+  spend is settled (and lands in `spend_log`) instead of the whole overshoot
+  being discovered post-mortem. `finish(prompt_tokens=…, completion_tokens=…)`
+  reconciles the chunk heuristic to provider-reported usage; unpriceable
+  models fail closed before the stream starts; parallel streams count each
+  other's in-flight accrual, so unreserved streams share the ceiling instead
+  of each spending it in full. Demo: `examples/streaming_guard.py` (no API
+  key).
+
+## py 0.3.0 / js 0.3.0 — 2026-07-14
+
+### Added (py + js)
+
+- **Per-call spend ledger**: every priced `record()` / `settle()` appends a
+  typed `SpendEvent` (`timestamp`, `kind: llm|tool`, `model_or_tool`,
+  `prompt_tokens`, `completion_tokens`, `cost_usd`, optional `label` and
+  `reserved`) to `guard.spend_log` (py) / `guard.spendLog` (js), so the ledger
+  sums to the running total (unless the ring-buffer cap below has evicted old
+  events) — no more rebuilding per-call breakdowns outside the guard. `export_log()` / `exportLog()` serialises it as JSONL with
+  an identical snake_case schema in both languages, so heterogeneous agents
+  emit one concatenable stream. An optional `max_log_events` / `maxLogEvents`
+  ring-buffer cap bounds memory for long-running agents.
+- **`record_tool()` / `recordTool()`**: accrue a non-LLM cost (paid tool/API
+  call) against the same ceiling and log it as a `kind: "tool"` event, so
+  `check()` / `reserve()` enforce the budget across LLM and tool spend
+  together.
+- `record()` / `settle()` accept an optional `label` to tag events with an
+  agent/task name.
+
+### Fixed (py)
+
+- `floe_guard.__version__` now reports the real package version (it had been
+  stuck at `0.1.0` since the 0.2.0 release).
+
 ## py 0.2.0 / js 0.2.1 — 2026-07-10
 
 Everything the repo grew between the 0.1.0 uploads and this release ships here —

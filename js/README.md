@@ -63,6 +63,27 @@ const adv = guard.advisory();
 const model = adv.nearLimit ? openai("gpt-4o-mini") : openai("gpt-4o");
 ```
 
+## Per-call spend log
+
+The guard keeps a typed, in-memory ledger of everything it priced: each
+`record()` / `settle()` appends one `SpendEvent`, and `recordTool()` lets paid
+non-LLM calls spend the same budget and land in the same log. The events sum to
+`spentUsd` (unless a `maxLogEvents` ring buffer has evicted old ones).
+
+```ts
+const guard = new BudgetGuard(1.0); // { maxLogEvents: N } caps memory
+guard.record("gpt-4o", 1_200, 350, { label: "researcher" });
+guard.recordTool("serpapi.search", 0.01, { label: "researcher" });
+
+guard.spendLog; // [{ timestamp, kind: "llm", modelOrTool: "gpt-4o", … }, …]
+process.stdout.write(guard.exportLog()); // JSONL, one event per line
+```
+
+`exportLog()` emits a stable snake_case schema —
+`{timestamp, kind: llm|tool, model_or_tool, prompt_tokens, completion_tokens,
+cost_usd, label?, reserved?}` — identical to the Python package's
+`export_log()`, so every agent produces the same shape regardless of stack.
+
 ## Compatibility
 
 `ai` is declared as a peer dependency with the range `>=4.0.0 <6.0.0`:
