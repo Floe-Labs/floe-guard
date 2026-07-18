@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..guard import BudgetGuard
+from ..stream import approx_tokens
 
 
 def _require_langchain() -> Any:
@@ -34,6 +35,43 @@ def _require_langchain() -> Any:
             "Install with: pip install floe-guard[langchain]"
         ) from e
     return langchain_core
+
+
+def _estimate_start(guard: BudgetGuard, serialized: Any, texts: list[str]) -> float | None:
+    """Request-sized cost estimate for the pre-call check.
+
+    ``check()`` defaults to predicting from the LAST call's cost — blind on the
+    first call and wrong for a much larger one. Size the prediction to the
+    request instead: model id and ``max_tokens`` from the serialized model
+    config, prompt tokens via the ~4 chars/token heuristic (langchain-core has
+    no tokenizer; a rough request-sized figure still beats a stale or zero
+    baseline). Returns ``None`` when the model is unknown/unpriceable —
+    ``check(None)`` keeps the old behaviour.
+    """
+    model_kwargs = serialized.get("kwargs") if isinstance(serialized, dict) else None
+    if not isinstance(model_kwargs, dict):
+        return None
+    model = model_kwargs.get("model_name") or model_kwargs.get("model")
+    if not model:
+        return None
+    prompt_tokens = sum(approx_tokens(t) for t in texts if isinstance(t, str))
+    max_out = model_kwargs.get("max_tokens") or model_kwargs.get("max_completion_tokens") or 0
+    try:
+        max_out = max(0, int(max_out))
+    except (TypeError, ValueError):
+        max_out = 0
+    return guard.estimate_call(str(model), prompt_tokens, max_out)
+
+
+def _chat_texts(messages: Any) -> list[str]:
+    """Flatten LangChain's batched chat messages to their text contents."""
+    texts: list[str] = []
+    for batch in messages or []:
+        for message in batch or []:
+            content = getattr(message, "content", None)
+            if isinstance(content, str):
+                texts.append(content)
+    return texts
 
 
 def _model_from_result(response: Any) -> str:
@@ -112,10 +150,13 @@ def budget_guard_callback_handler(guard: BudgetGuard) -> Any:
             self.guard = guard
 
         def on_llm_start(self, serialized: Any, prompts: Any, **kwargs: Any) -> None:
-            self.guard.check()
+            # Request-sized when derivable (see _estimate_start); check(None)
+            # falls back to the last-cost prediction.
+            texts = [p for p in (prompts or []) if isinstance(p, str)]
+            self.guard.check(_estimate_start(self.guard, serialized, texts))
 
         def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
-            self.guard.check()
+            self.guard.check(_estimate_start(self.guard, serialized, _chat_texts(messages)))
 
         def on_llm_end(self, response: Any, **kwargs: Any) -> None:
             _record_result(self.guard, response)

@@ -62,8 +62,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install --upgrade pip
       # Install the framework extras so the adapter handler tests actually run
-      # (instead of skipping). langchain-core covers the LangChain handler tests.
-      - run: pip install -e ".[dev,langchain]"
+      # (instead of skipping). langchain-core covers the LangChain handler
+      # tests; litellm covers the callback-swallowing regression tests (the
+      # CrewAI adapter tests stub crewai itself, so the heavy extra stays out).
+      - run: pip install -e ".[dev,langchain,litellm]"
       # pipecat-ai requires Python >=3.11, so add it (and exercise the Pipecat
       # adapter tests) on every matrix cell except 3.10 — there the tests
       # importorskip cleanly.
@@ -71,6 +73,29 @@ jobs:
         run: pip install -e ".[pipecat]"
       - name: Pytest
         run: pytest -q
+
+  test-js:
+    # The npm package (Vercel AI SDK middleware) lives in js/. Run its build,
+    # typecheck, and tests on every PR — publish-npm.yml re-runs them at publish
+    # time, but that's too late to catch a broken PR.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
 
   test-bare:
     # Locks the dependency-free contract: the package and its test suite must

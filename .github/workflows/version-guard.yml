@@ -1,0 +1,66 @@
+name: Version Guard
+
+# Publishing is version-gated on main, so a source change merged without a
+# version bump silently never ships — that is exactly how PyPI fell 3.5 weeks
+# behind the repo. Fail the PR instead, unless the change is deliberately
+# unreleased (apply the skip-version-guard label).
+#
+# Lives in its own workflow (not ci.yml) so the labeled/unlabeled trigger types
+# — needed for the skip label to re-evaluate without a manual re-run — don't
+# re-run and cancel the whole CI matrix on every label change.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+concurrency:
+  group: version-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  version-guard:
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-version-guard') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          # The checkout is refs/pull/N/merge — a synthetic merge commit whose
+          # first parent is the CURRENT base tip. Depth 2 makes HEAD^1
+          # resolvable; comparing against it (rather than the event's
+          # pull_request.base.sha snapshot, which goes stale as the base moves)
+          # means a release merged to main after the PR opened still counts.
+          fetch-depth: 2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - name: Require a version bump when package source changes
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          fail=0
+
+          # pyproject.toml is included: dependency/extras changes alter the
+          # shipped artifact just like src changes do.
+          if echo "$changed" | grep -q '^\(src/floe_guard/\|pyproject\.toml\)'; then
+            old=$(git show "HEAD^1:pyproject.toml" | python -c "import sys,tomllib;print(tomllib.loads(sys.stdin.read())['project']['version'])")
+            new=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+            if [ "$old" = "$new" ]; then
+              echo "::error::Python package source or packaging metadata changed but pyproject.toml version is still $new — bump it (or label the PR skip-version-guard)."
+              fail=1
+            fi
+          fi
+
+          if echo "$changed" | grep -q '^js/\(src/\|package\.json\)'; then
+            old=$(git show "HEAD^1:js/package.json" | python -c "import sys,json;print(json.loads(sys.stdin.read())['version'])")
+            new=$(python -c "import json;print(json.load(open('js/package.json'))['version'])")
+            if [ "$old" = "$new" ]; then
+              echo "::error::js package source or packaging metadata changed but js/package.json version is still $new — bump it (or label the PR skip-version-guard)."
+              fail=1
+            fi
+          fi
+
+          exit "$fail"

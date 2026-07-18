@@ -10,13 +10,23 @@ export {
   BudgetGuard,
   type BudgetGuardOptions,
   type BudgetAdvisory,
+  type SpendEvent,
 } from "./guard.js";
+export {
+  LatencyBudget,
+  type LatencyBudgetOptions,
+  type LatencyAdvisory,
+} from "./latency.js";
 export {
   FloeGuardError,
   BudgetExceeded,
+  DeadlineExceeded,
   UnpriceableModelError,
 } from "./errors.js";
-export { budgetGuardMiddleware } from "./middleware.js";
+export {
+  budgetGuardMiddleware,
+  type BudgetGuardMiddleware,
+} from "./middleware.js";
 export {
   type ManualPrice,
   type PricedModel,

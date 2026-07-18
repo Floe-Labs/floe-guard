@@ -7,7 +7,8 @@
  *   - src/floe_guard/cost_map.json   (Python package)
  *   - js/src/cost_map.json           (JS package)
  *
- * The transform mirrors the proxy's scripts/update-llm-cost-map.ts exactly, and
+ * The transform mirrors the proxy's scripts/update-llm-cost-map.ts (plus a
+ * curated Groq allowlist for the LangChain/Groq integration), and
  * serialises with the same JSON.stringify(…, 2) so refreshes show up as clean
  * price diffs rather than reformatting noise. (A Python re-serialiser would emit
  * floats differently, e.g. 1e-06 vs 1e-7, and churn the whole file.)
@@ -25,6 +26,33 @@ const SOURCE_URL =
 // Providers floe-guard prices (matches the proxy's ROUTABLE_PROVIDERS).
 const ROUTABLE_PROVIDERS = new Set(["openai", "anthropic"]);
 
+// Curated Groq models, vendored under their ChatGroq ids (upstream keys them
+// "groq/<id>"; pricing.py/pricing.ts strip the known "groq/" prefix at lookup,
+// so both id conventions resolve). Kept as an explicit allowlist rather than
+// adding "groq" to ROUTABLE_PROVIDERS: fully-generic bare names (e.g.
+// "qwen3-32b") are multi-provider, and pricing them at Groq's cheap rate would
+// under-meter a spend guard — unlisted models stay unpriceable and fail closed.
+//
+// Groq deprecation schedule (keep entries until their shutdown date passes):
+//   qwen/qwen3-32b + meta-llama/llama-4-scout-17b-16e-instruct — 2026-07-17
+//   llama-3.1-8b-instant + llama-3.3-70b-versatile             — 2026-08-16
+const GROQ_KEY_MAP = new Map([
+  ["groq/llama-3.1-8b-instant", "llama-3.1-8b-instant"],
+  ["groq/llama-3.3-70b-versatile", "llama-3.3-70b-versatile"],
+  [
+    "groq/meta-llama/llama-4-scout-17b-16e-instruct",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+  ],
+  ["groq/qwen/qwen3-32b", "qwen/qwen3-32b"],
+  // Current production lineup (gpt-oss-120b/20b are Groq's recommended
+  // replacements for the deprecating llamas). The "openai/" ChatGroq prefix is
+  // safe: OpenAI's own API does not serve gpt-oss, so the key can't collide
+  // with an OpenAI-routed id.
+  ["groq/openai/gpt-oss-120b", "openai/gpt-oss-120b"],
+  ["groq/openai/gpt-oss-20b", "openai/gpt-oss-20b"],
+  ["groq/openai/gpt-oss-safeguard-20b", "openai/gpt-oss-safeguard-20b"],
+]);
+
 /**
  * A model is vendored only if we can fully price it: a numeric input rate, a
  * routable provider, and either embedding mode (input-only) or chat mode WITH a
@@ -32,7 +60,7 @@ const ROUTABLE_PROVIDERS = new Set(["openai", "anthropic"]);
  * model that bills output free, which fail-closed pricing can't catch (0 is
  * finite). An excluded model is simply absent.
  */
-function isUsable(v) {
+function isUsable(k, v) {
   // Number.isFinite (not typeof === "number") so a NaN, or a huge upstream value
   // that JSON.parse turns into Infinity, is treated as unpriceable and dropped —
   // matching the fail-closed pricing paths.
@@ -40,7 +68,7 @@ function isUsable(v) {
     !!v &&
     Number.isFinite(v.input_cost_per_token) &&
     v.litellm_provider !== undefined &&
-    ROUTABLE_PROVIDERS.has(v.litellm_provider) &&
+    (ROUTABLE_PROVIDERS.has(v.litellm_provider) || GROQ_KEY_MAP.has(k)) &&
     (v.mode === "embedding" ||
       (v.mode === "chat" && Number.isFinite(v.output_cost_per_token)))
   );
@@ -53,8 +81,22 @@ if (!res.ok) {
 const raw = await res.json();
 
 const entries = Object.entries(raw)
-  .filter(([, v]) => isUsable(v))
+  .filter(([k, v]) => isUsable(k, v))
+  .map(([k, v]) => [GROQ_KEY_MAP.get(k) ?? k, v])
   .sort(([a], [b]) => a.localeCompare(b));
+
+// A curated Groq model that upstream dropped (or stopped fully pricing) would
+// otherwise vanish from the vendored map with no signal — the refresh PR diff
+// would just show a deletion. Warn so the reviewer knows the allowlist entry
+// stopped resolving (expected once Groq's shutdown dates pass; see above).
+const vendored = new Set(entries.map(([k]) => k));
+for (const [src, dest] of GROQ_KEY_MAP) {
+  if (!vendored.has(dest)) {
+    console.warn(
+      `WARNING: curated Groq model ${src} is missing or unpriceable upstream — dropped from the vendored map.`,
+    );
+  }
+}
 
 // null-prototype: model keys come from remote JSON, so a "__proto__" (or similar)
 // key is stored as plain data instead of mutating the object's prototype.

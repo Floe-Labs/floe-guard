@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "floe-guard"
-version = "0.1.0"
+version = "0.5.0"
 description = "Local budget guardrail for AI agents — hard-stops a runaway loop before its next LLM call crosses a spend ceiling. No account, no network."
 readme = "README.md"
 requires-python = ">=3.10"

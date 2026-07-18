@@ -1,12 +1,17 @@
 # floe-guard (Vercel AI SDK)
 
+[![npm version](https://img.shields.io/npm/v/floe-guard.svg)](https://www.npmjs.com/package/floe-guard)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](../LICENSE)
+
 **A local budget guardrail for AI agents** — the TypeScript counterpart to the
 [Python `floe-guard`](../README.md). It hard-stops your agent *before its next LLM
 call* when it would cross a USD spend ceiling. No account, no signup, no network.
 Runs in your process.
 
+Works with both **AI SDK v4 and v5** (`ai@4` / `ai@5`).
+
 ```bash
-npm i floe-guard ai@4 @ai-sdk/openai
+npm i floe-guard ai @ai-sdk/openai
 ```
 
 ```ts
@@ -58,10 +63,40 @@ const adv = guard.advisory();
 const model = adv.nearLimit ? openai("gpt-4o-mini") : openai("gpt-4o");
 ```
 
-## Verified against
+## Per-call spend log
 
-`ai@4` (`LanguageModelV1Middleware` via `wrapLanguageModel` /
-`experimental_wrapLanguageModel`). Declared as a peer dependency.
+The guard keeps a typed, in-memory ledger of everything it priced: each
+`record()` / `settle()` appends one `SpendEvent`, and `recordTool()` lets paid
+non-LLM calls spend the same budget and land in the same log. The events sum to
+`spentUsd` (unless a `maxLogEvents` ring buffer has evicted old ones).
+
+```ts
+const guard = new BudgetGuard(1.0); // { maxLogEvents: N } caps memory
+guard.record("gpt-4o", 1_200, 350, { label: "researcher" });
+guard.recordTool("serpapi.search", 0.01, { label: "researcher" });
+
+guard.spendLog; // [{ timestamp, kind: "llm", modelOrTool: "gpt-4o", … }, …]
+process.stdout.write(guard.exportLog()); // JSONL, one event per line
+```
+
+`exportLog()` emits a stable snake_case schema —
+`{timestamp, kind: llm|tool, model_or_tool, prompt_tokens, completion_tokens,
+cost_usd, label?, reserved?}` — identical to the Python package's
+`export_log()`, so every agent produces the same shape regardless of stack.
+
+## Compatibility
+
+`ai` is declared as a peer dependency with the range `>=4.0.0 <6.0.0`:
+
+- **`ai@4`** — `LanguageModelV1Middleware` via `wrapLanguageModel` /
+  `experimental_wrapLanguageModel`; usage read from
+  `promptTokens`/`completionTokens`.
+- **`ai@5`** — `LanguageModelV2Middleware` via `wrapLanguageModel`; usage read
+  from `inputTokens`/`outputTokens`.
+
+The middleware imports nothing from `ai` at runtime or in its types, so one
+build serves both majors. If a provider reports no usable token counts, the
+call is rejected (fail-closed) rather than metered as $0.
 
 ## Development
 

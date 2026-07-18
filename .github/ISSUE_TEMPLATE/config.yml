@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/Floe-Labs/floe-guard/blob/main/SECURITY.md
+    about: Report security issues privately via email — do NOT open a public issue
+  - name: Floe Cookbook (runnable agent examples)
+    url: https://github.com/Floe-Labs/floe-cookbook
+    about: End-to-end reference agents built on hosted Floe

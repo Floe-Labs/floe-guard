@@ -32,11 +32,58 @@ interface CostMapEntry {
 
 const COST_MAP = costMapJson as Record<string, CostMapEntry>;
 
-/** Strip an optional `provider/` prefix (LiteLLM convention, e.g. `openai/gpt-4o`). */
-function bareModel(model: string): string {
+/**
+ * The one `<provider>/` prefix that is safe to strip: the remainder of a
+ * `groq/…` id is the ChatGroq id the map vendors (e.g. `groq/qwen/qwen3-32b` →
+ * `qwen/qwen3-32b`). `openai/` and `anthropic/` are deliberately excluded:
+ * their own model ids never contain slashes (single-segment remainders are
+ * already covered by the bare-last-segment fallback), so a multi-segment
+ * remainder under those prefixes is some OTHER vendor's model behind an
+ * OpenAI-compatible endpoint (vLLM, OpenRouter, …) — bridging it into a
+ * Groq-priced key would under-meter. Unknown prefixes fail closed the same way.
+ */
+const PROVIDER_PREFIXES = new Set(["groq"]);
+
+/**
+ * A trailing dated-snapshot suffix: Anthropic's `-20250929` or OpenAI's
+ * `-2024-08-06`. Vendors resolve alias ids to dated snapshots in responses, so a
+ * snapshot the map doesn't list yet prices at its alias entry (same model, same
+ * rate) instead of failing closed. (`\d` is ASCII-only in JS; the Python regex
+ * uses re.ASCII to match.)
+ */
+const DATE_SUFFIX = /-(?:\d{8}|\d{4}-\d{2}-\d{2})$/;
+
+/**
+ * Lookup keys for a model id in two specificity groups, deduplicated.
+ *
+ * Group 1 (exact): the raw id, the id with a known `provider/` first segment
+ * stripped, the bare last segment. Group 2 (date-stripped): the same forms
+ * with a trailing dated-snapshot suffix removed. Kept separate so a
+ * less-specific date-stripped key (in overrides OR the map) can never shadow
+ * an exact dated entry — e.g. an alias override must not absorb a snapshot
+ * the map prices differently.
+ */
+function candidateGroups(model: string): [string[], string[]] {
   const m = model.trim();
-  const slash = m.lastIndexOf("/");
-  return slash === -1 ? m : m.slice(slash + 1);
+  const base = [m];
+  const firstSlash = m.indexOf("/");
+  if (firstSlash !== -1 && PROVIDER_PREFIXES.has(m.slice(0, firstSlash))) {
+    base.push(m.slice(firstSlash + 1));
+  }
+  const lastSlash = m.lastIndexOf("/");
+  if (lastSlash !== -1) {
+    base.push(m.slice(lastSlash + 1));
+  }
+  const exact: string[] = [];
+  for (const cand of base) {
+    if (cand && !exact.includes(cand)) exact.push(cand);
+  }
+  const stripped: string[] = [];
+  for (const cand of exact) {
+    const c = cand.replace(DATE_SUFFIX, "");
+    if (c && !exact.includes(c) && !stripped.includes(c)) stripped.push(c);
+  }
+  return [exact, stripped];
 }
 
 function bothFinite(a: unknown, b: unknown): boolean {
@@ -51,41 +98,53 @@ function bothFinite(a: unknown, b: unknown): boolean {
 /**
  * Resolve a model to its per-token price, or `null` if it cannot be priced.
  *
- * Overrides win, then the bundled cost map (looked up by bare name, then the raw
- * field). Fail-closed: both prices must be finite, else `null`.
+ * Per specificity group (exact forms first, date-stripped fallbacks second):
+ * overrides win, then the bundled cost map. Fail-closed: the first matching
+ * entry must have finite prices, else `null`.
  */
 export function resolvePrice(
   model: string,
   overrides?: Record<string, ManualPrice>,
 ): PricedModel | null {
-  const bare = bareModel(model);
-
-  if (overrides) {
-    const ov = overrides[bare] ?? overrides[model.trim()];
-    if (ov !== undefined) {
-      if (bothFinite(ov.inputCostPerToken, ov.outputCostPerToken)) {
-        return {
-          inputCostPerToken: ov.inputCostPerToken,
-          outputCostPerToken: ov.outputCostPerToken,
-          source: "override",
-        };
+  for (const cands of candidateGroups(model)) {
+    if (overrides) {
+      for (const cand of cands) {
+        // Own-property check so a key like "constructor" can't pull a function
+        // off Object.prototype and be treated as a price entry.
+        const ov = Object.prototype.hasOwnProperty.call(overrides, cand)
+          ? overrides[cand]
+          : undefined;
+        if (ov !== undefined) {
+          if (bothFinite(ov.inputCostPerToken, ov.outputCostPerToken)) {
+            return {
+              inputCostPerToken: ov.inputCostPerToken,
+              outputCostPerToken: ov.outputCostPerToken,
+              source: "override",
+            };
+          }
+          return null;
+        }
       }
-      return null;
+    }
+
+    for (const cand of cands) {
+      const entry = Object.prototype.hasOwnProperty.call(COST_MAP, cand)
+        ? COST_MAP[cand]
+        : undefined;
+      if (!entry) continue;
+
+      const input = entry.input_cost_per_token;
+      const output = entry.output_cost_per_token;
+      if (!bothFinite(input, output)) return null;
+
+      return {
+        inputCostPerToken: input as number,
+        outputCostPerToken: output as number,
+        source: "cost_map",
+      };
     }
   }
-
-  const entry = COST_MAP[bare] ?? COST_MAP[model.trim()];
-  if (!entry) return null;
-
-  const input = entry.input_cost_per_token;
-  const output = entry.output_cost_per_token;
-  if (!bothFinite(input, output)) return null;
-
-  return {
-    inputCostPerToken: input as number,
-    outputCostPerToken: output as number,
-    source: "cost_map",
-  };
+  return null;
 }
 
 /** USD cost for token usage. Negative counts are clamped to zero. */
