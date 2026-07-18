@@ -65,7 +65,7 @@ class _Client:
 _MODEL = "claude-3-7-sonnet-20250219"  # present in the bundled cost map
 
 
-def test_usage_maps_input_output_to_prompt_completion() -> None:
+def test_usage_maps_input_output_and_cache_buckets() -> None:
     # Anthropic-specific: input_tokens -> prompt, output_tokens -> completion, plus cache buckets
     assert _usage_from(_Response(_MODEL, _Usage(5, 7))) == (5, 7, 0, 0, 0)
     assert _usage_from({"usage": {"input_tokens": 5, "output_tokens": 7}}) == (5, 7, 0, 0, 0)
@@ -79,8 +79,10 @@ def test_usage_extracts_prompt_cache_tokens() -> None:
         "cache_creation_input_tokens": 200,
         "cache_read_input_tokens": 1000,
     }
-    # Direct fallback: cache_creation is missing, so cache_creation_input_tokens defaults to 5m
-    assert _usage_from({"usage": usage}) == (100, 50, 200, 0, 1000)
+    # Direct fallback: no per-TTL cache_creation breakdown, so the leftover
+    # cache_creation tokens default to the most expensive known bucket (1h) —
+    # defense-in-depth so the guard over-counts rather than under-meters.
+    assert _usage_from({"usage": usage}) == (100, 50, 0, 200, 1000)
 
     # Detailed cache_creation breakdown with 5m and 1h TTLs
     usage_with_breakdown = {
@@ -95,7 +97,8 @@ def test_usage_extracts_prompt_cache_tokens() -> None:
     }
     assert _usage_from({"usage": usage_with_breakdown}) == (100, 50, 100, 200, 1000)
 
-    # Detailed cache_creation breakdown with some leftover tokens mapped to 5m (defense-in-depth)
+    # Detailed cache_creation breakdown with leftover tokens mapped to the 1h
+    # bucket (defense-in-depth: leftover goes to the most expensive known bucket).
     usage_with_leftover = {
         "input_tokens": 100,
         "output_tokens": 50,
@@ -106,7 +109,8 @@ def test_usage_extracts_prompt_cache_tokens() -> None:
             "ephemeral_1h_input_tokens": 200,
         }
     }
-    assert _usage_from({"usage": usage_with_leftover}) == (100, 50, 100, 200, 1000)
+    # 5m=50, 1h=200 → leftover 50 → 1h, so 5m=50, 1h=250.
+    assert _usage_from({"usage": usage_with_leftover}) == (100, 50, 50, 250, 1000)
 
     # No cache fields → unchanged (the object path getattr-defaults to 0).
     assert _usage_from(_Response(_MODEL, _Usage(5, 7))) == (5, 7, 0, 0, 0)

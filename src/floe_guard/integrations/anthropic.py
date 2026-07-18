@@ -71,11 +71,12 @@ def _usage_from(response: Any) -> tuple[int, int, int, int, int]:
         cache_write_5m = int(get_cc("ephemeral_5m_input_tokens", 0) or 0)
         cache_write_1h = int(get_cc("ephemeral_1h_input_tokens", 0) or 0)
 
-    # Fallback/defense-in-depth: if there are missing or future buckets,
-    # default any leftover of cache_write_total to the 5m bucket (safest default).
+    # Fallback/defense-in-depth: if there are missing or future buckets, allocate
+    # any leftover cache_creation tokens to the most expensive known bucket (1h) so
+    # the guard over-counts rather than under-meters spend it can't fully attribute.
     leftover = cache_write_total - (cache_write_5m + cache_write_1h)
     if leftover > 0:
-        cache_write_5m += leftover
+        cache_write_1h += leftover
 
     return input_tokens, output_tokens, cache_write_5m, cache_write_1h, cache_read
 
