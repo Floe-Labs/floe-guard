@@ -10,6 +10,18 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## py 0.6.0 — 2026-07-18
+
+### Added (py)
+
+- **LangGraph adapter** (`floe-guard[langgraph]`, issue #33): `guarded_node`
+  wraps graph nodes with the reserve-before / settle-after contract, so a
+  `StateGraph` fan-out of parallel sub-agents holds one shared ceiling
+  atomically; `AdvisoryChannel` / `latest_advisory` expose the typed
+  `BudgetAdvisory` in graph state after each metered node, so a router can
+  downshift models on `near_limit` before the hard-stop. Ships with a
+  no-API-key example (`examples/langgraph_budget_aware.py`).
+
 ## py 0.5.0 / js 0.4.0 — 2026-07-16
 
 ### Added (py + js)

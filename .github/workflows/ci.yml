@@ -64,8 +64,9 @@ jobs:
       # Install the framework extras so the adapter handler tests actually run
       # (instead of skipping). langchain-core covers the LangChain handler
       # tests; litellm covers the callback-swallowing regression tests (the
-      # CrewAI adapter tests stub crewai itself, so the heavy extra stays out).
-      - run: pip install -e ".[dev,langchain,litellm]"
+      # CrewAI adapter tests stub crewai itself, so the heavy extra stays out);
+      # langgraph covers the fan-out reserve/settle and advisory-channel tests.
+      - run: pip install -e ".[dev,langchain,litellm,langgraph]"
       # pipecat-ai requires Python >=3.11, so add it (and exercise the Pipecat
       # adapter tests) on every matrix cell except 3.10 — there the tests
       # importorskip cleanly.

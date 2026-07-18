@@ -27,7 +27,7 @@ from .latency import LatencyAdvisory, LatencyBudget
 from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
 from .stream import StreamGuard, guard_stream
 
-__version__ = "0.5.0"  # keep in lockstep with pyproject.toml
+__version__ = "0.6.0"  # keep in lockstep with pyproject.toml
 
 __all__ = [
     "BudgetGuard",

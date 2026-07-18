@@ -13,7 +13,7 @@ $0.10 instead of $4,000. No account, no signup, no network, **no telemetry**.
 Runs in your process.
 
 Works with [CrewAI](#crewai) · [LiteLLM](#litellm) · [LangChain](#langchain) ·
-[OpenAI](#openai) · [Anthropic](#anthropic) ·
+[LangGraph](#langgraph) · [OpenAI](#openai) · [Anthropic](#anthropic) ·
 [Vercel AI SDK](#vercel-ai-sdk) — or any stack, via plain `check()` / `record()`.
 
 ```bash
@@ -319,6 +319,48 @@ llm.invoke("hello")            # checks budget before the call, records spend af
 
 The handler checks the budget on LLM start (raising `BudgetExceeded` aborts the
 call before it runs) and records token usage on LLM end.
+
+### LangGraph
+
+```bash
+pip install floe-guard[langgraph]
+```
+
+```python
+import operator
+from typing import Annotated
+from typing_extensions import TypedDict
+
+from floe_guard import BudgetGuard
+from floe_guard.integrations.langgraph import AdvisoryChannel, guarded_node
+
+class State(TypedDict):
+    results: Annotated[list, operator.add]
+    budget: AdvisoryChannel          # typed BudgetAdvisory, refreshed per call
+
+guard = BudgetGuard(limit_usd=0.10)
+
+@guarded_node(guard, estimated_cost=0.01)   # reserve() before, settle()/release() after
+def worker(state: State) -> dict:
+    response = my_llm_call(state)
+    return {"results": [response["text"]], "usage": {
+        "model": response["model"],
+        "prompt_tokens": response["prompt_tokens"],
+        "completion_tokens": response["completion_tokens"],
+    }}
+```
+
+`guarded_node` gives every branch of a `StateGraph` fan-out its own atomic
+slice of the ceiling (reserve-before / settle-after, the same contract the
+OpenAI and Anthropic adapters use), so N parallel sub-agents can't race one
+shared total. Pass `estimated_cost` to hold a conservative fixed slice on
+every call of that node (the `0.01` above); a node that omits it estimates
+from the guard's last settled cost instead, which is `0` on a fresh guard, so
+seed a cold-start fan-out explicitly. After each settled call it writes the guard's `BudgetAdvisory`
+into `state["budget"]`, so a router node can downshift to a cheaper model on
+`near_limit` *before* the hard-stop — see
+[`examples/langgraph_budget_aware.py`](examples/langgraph_budget_aware.py) for
+the full budget-aware router (no API key needed).
 
 ### OpenAI
 
