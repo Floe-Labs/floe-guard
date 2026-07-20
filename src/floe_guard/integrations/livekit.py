@@ -79,7 +79,9 @@ class LiveKitBudgetGuard:
         release (close) onto a session + agent pair."""
         orig_llm_node = agent.llm_node
 
-        async def _guarded_llm_node(chat_ctx, tools, model_settings):
+        # forward LiveKit's (chat_ctx, tools, model_settings) unchanged, so an
+        # upstream signature change can't break the wrapper.
+        async def _guarded_llm_node(*args, **kwargs):
             # A previous turn that never settled (no metrics emitted) still holds
             # its reservation — release before opening this one, or it leaks.
             if self._pending:
@@ -94,7 +96,7 @@ class LiveKitBudgetGuard:
                     raise
                 await self._on_budget_exceeded(exc)
                 return
-            stream = orig_llm_node(chat_ctx, tools, model_settings)
+            stream = orig_llm_node(*args, **kwargs)
             if inspect.isawaitable(stream):
                 stream = await stream
             async for chunk in stream:
