@@ -403,6 +403,9 @@ response = guarded_completion(guard, client, model="claude-3-7-sonnet-20250219",
 Same reserve-before / record-after contract as the OpenAI adapter; Anthropic's
 `input_tokens` / `output_tokens` are mapped onto the guard's prompt/completion
 pricing. Use `guarded_acompletion` with an `AsyncAnthropic` client for async.
+See [`examples/anthropic_adapter.py`](examples/anthropic_adapter.py) for a
+runnable demo of the adapter's native prompt-cache pricing — a cached read
+costs a fraction of a fresh one (no API key needed).
 
 ### Vercel AI SDK
 
