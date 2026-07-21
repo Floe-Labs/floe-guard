@@ -16,6 +16,10 @@ process.
 Works with [CrewAI](#crewai) · [LiteLLM](#litellm) · [LangChain](#langchain) ·
 [LangGraph](#langgraph) · [OpenAI](#openai) · [Anthropic](#anthropic) ·
 [Vercel AI SDK](#vercel-ai-sdk) — or any stack, via plain `check()` / `record()`.
+The hard-stop is contract-based: gate each call through the guard — adapters do
+it for LLM calls; for paid tools, [`reserve_tool()` / `settle_tool()`](#tool-spend-under-the-same-ceiling)
+block *before* the call runs (`record_tool()` alone meters a call after the
+fact — it can't stop one already made).
 
 ```bash
 pip install floe-guard        # Python
