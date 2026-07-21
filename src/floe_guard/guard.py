@@ -285,6 +285,9 @@ class BudgetGuard:
         *,
         reserved: float = 0.0,
         price: ManualPrice | None = None,
+        cache_creation_input_tokens: int = 0,
+        cache_creation_input_tokens_1h: int = 0,
+        cache_read_input_tokens: int = 0,
         label: str | None = None,
     ) -> float:
         """Release a reservation and record the actual cost. Concurrency-safe.
@@ -320,7 +323,14 @@ class BudgetGuard:
             return 0.0
 
         try:
-            cost = price_tokens(priced, prompt_tokens, completion_tokens)
+            cost = price_tokens(
+                priced,
+                prompt_tokens,
+                completion_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
+                cache_creation_input_tokens_1h=cache_creation_input_tokens_1h,
+                cache_read_input_tokens=cache_read_input_tokens,
+            )
         except Exception:
             # price_tokens can raise (e.g. non-finite token counts). Release the
             # in-flight hold before propagating so _reserved doesn't leak and
@@ -360,6 +370,9 @@ class BudgetGuard:
         completion_tokens: int,
         *,
         price: ManualPrice | None = None,
+        cache_creation_input_tokens: int = 0,
+        cache_creation_input_tokens_1h: int = 0,
+        cache_read_input_tokens: int = 0,
         label: str | None = None,
     ) -> float:
         """Price one response's tokens offline and add the cost to the total.
@@ -369,7 +382,15 @@ class BudgetGuard:
         docstring): warn + raise (default), or warn + skip accrual.
         """
         return self.settle(
-            model, prompt_tokens, completion_tokens, reserved=0.0, price=price, label=label
+            model,
+            prompt_tokens,
+            completion_tokens,
+            reserved=0.0,
+            price=price,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_creation_input_tokens_1h=cache_creation_input_tokens_1h,
+            cache_read_input_tokens=cache_read_input_tokens,
+            label=label,
         )
 
     def reserve_tool(self, estimated_cost: float) -> float:

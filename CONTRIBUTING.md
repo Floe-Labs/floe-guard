@@ -31,6 +31,7 @@ The optional adapters need their extras to run/import:
 pip install -e ".[crewai]"      # CrewAI adapter
 pip install -e ".[litellm]"     # LiteLLM adapter
 pip install -e ".[langchain]"   # LangChain adapter
+pip install -e ".[langgraph]"   # LangGraph adapter
 pip install -e ".[openai]"      # OpenAI adapter
 pip install -e ".[anthropic]"   # Anthropic adapter
 ```

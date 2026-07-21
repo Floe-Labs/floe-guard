@@ -10,31 +10,17 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
-## py 0.6.0 / js 0.5.0 — 2026-07-17
+## py 0.6.0 — 2026-07-18
 
-### Added (py + js)
+### Added (py)
 
-- **Tool spend as a first-class primitive** with the full reserve/settle
-  contract, sharing the token ceiling: `reserve_tool(estimated_cost)` /
-  `reserveTool` holds a tool call's known price in-flight and raises
-  `BudgetExceeded` BEFORE the call would cross the cap (stronger than the LLM
-  path — the price is exact, not an estimate); `settle_tool(name, cost_usd,
-  reserved=…)` / `settleTool` releases the hold and accrues the actual cost;
-  `record_tool` / `recordTool` remains the post-hoc form. The caller supplies
-  the USD — there is no tool cost-map.
-- **`tool_costs` / `toolCosts`**: per-tool-name running totals (e.g.
-  `{"apollo.people_lookup": 0.42, "exa.search": 0.11}`), so the token/tool
-  split of the one shared ceiling is inspectable. Tool settles land in the
-  spend ledger as `kind: "tool"` events with the reservation recorded.
-- Example: `examples/tool_budget.py` (no API key) — a prospecting loop whose
-  Apollo/Exa spend dies at the ceiling.
-
-### Changed (py + js)
-
-- `record_tool` / `recordTool` (and the new `settle_tool` / `settleTool`) now
-  update the next-call estimate, so a plain `check()` + `record_tool` loop
-  stops BEFORE the crossing tool call — the same stop-one-early contract as
-  tokens. Previously tool costs accrued but did not inform the prediction.
+- **LangGraph adapter** (`floe-guard[langgraph]`, issue #33): `guarded_node`
+  wraps graph nodes with the reserve-before / settle-after contract, so a
+  `StateGraph` fan-out of parallel sub-agents holds one shared ceiling
+  atomically; `AdvisoryChannel` / `latest_advisory` expose the typed
+  `BudgetAdvisory` in graph state after each metered node, so a router can
+  downshift models on `near_limit` before the hard-stop. Ships with a
+  no-API-key example (`examples/langgraph_budget_aware.py`).
 
 ## py 0.5.0 / js 0.4.0 — 2026-07-16
 
