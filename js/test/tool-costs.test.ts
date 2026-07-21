@@ -94,12 +94,48 @@ describe("tool spend (reserveTool / settleTool / recordTool / toolCosts)", () =>
     expect(event.label).toBe("prospector");
   });
 
+  it("an oversized reserved handle fails loud instead of freeing others' holds", () => {
+    // A handle exceeding the TOTAL in-flight sum cannot have come from a
+    // matching reserve(). The old clamp silently zeroed other callers' holds
+    // (fail-open ceiling break); now it throws, and nothing is mutated.
+    const guard = new BudgetGuard(1.0);
+    const other = guard.reserveTool(0.05); // another caller's in-flight hold
+    expect(() =>
+      guard.settleTool("apollo.people_lookup", 0.01, { reserved: 0.3 }),
+    ).toThrow(RangeError);
+    expect(() => guard.settle(MODEL, 1_000, 1_000, { reserved: 0.3 })).toThrow(RangeError);
+    expect(() => guard.release(0.3)).toThrow(RangeError);
+    // The other caller's hold is intact and the bad settles recorded nothing.
+    expect(guard.remainingUsd).toBeCloseTo(1.0 - 0.05, 12);
+    expect(guard.spendLog).toHaveLength(0);
+    // A matching handle still settles cleanly (float-dust tolerance intact).
+    guard.settleTool("apollo.people_lookup", 0.05, { reserved: other });
+    expect(guard.remainingUsd).toBeCloseTo(1.0 - 0.05, 12);
+  });
+
   it("release frees a tool reservation when the call fails", () => {
     const guard = new BudgetGuard(1.0);
     const handle = guard.reserveTool(0.02);
     guard.release(handle);
     expect(guard.remainingUsd).toBeCloseTo(1.0, 12);
     expect(guard.spendLog).toHaveLength(0);
+  });
+
+  it("a cheap tool call does not shrink the LLM estimate", () => {
+    // Regression: the default reserve()/check() prediction is the MAX of the
+    // last LLM and last tool costs — a cheap tool right before an un-estimated
+    // LLM reserve() must not shrink the hold and let a crossing call through.
+    const guard = new BudgetGuard(0.02, { onBlock: () => {} });
+    guard.record(MODEL, 1_000, 1_000); // $0.0125
+    guard.recordTool("exa.search", 0.0001); // cheap tool, spent = $0.0126
+    expect(() => guard.reserve()).toThrow(BudgetExceeded); // predicts $0.0125
+  });
+
+  it("a cheap LLM call does not shrink the tool estimate", () => {
+    const guard = new BudgetGuard(0.05, { onBlock: () => {} });
+    guard.recordTool("apollo.people_lookup", 0.03);
+    guard.record(MODEL, 100, 100); // ~$0.00125, spent ≈ $0.03125
+    expect(() => guard.check()).toThrow(BudgetExceeded); // predicts $0.03
   });
 
   it("a runaway tool loop dies at the ceiling (check predicts one call ahead)", () => {

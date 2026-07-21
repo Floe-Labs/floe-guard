@@ -123,8 +123,14 @@ export class BudgetGuard {
   nearLimitBps: number;
 
   private readonly onBlock: (spentUsd: number, limitUsd: number) => void;
-  /** Cost of the most recent priced call, used to predict the next one. */
-  private lastCost = 0;
+  /**
+   * Costs of the most recent priced LLM call and tool call, tracked
+   * SEPARATELY: the default next-call prediction is the max of the two, so a
+   * cheap tool call can't shrink the estimate right before an expensive LLM
+   * call (or vice versa) — conservative beats one-call-too-late.
+   */
+  private lastLlmCost = 0;
+  private lastToolCost = 0;
   /** USD held for in-flight calls (reserved, not yet settled). Counts toward the ceiling. */
   private reserved = 0;
   /** Per-call ledger, oldest first; a ring buffer when maxLogEvents is set. */
@@ -177,7 +183,8 @@ export class BudgetGuard {
    * Throw {@link BudgetExceeded} if the next call would cross the ceiling.
    *
    * Call this immediately before each LLM request. The "next call" is estimated
-   * from the last recorded call's cost (override with `estimatedNextCost`); the
+   * conservatively as the costlier of the last LLM call and the last tool call
+   * (override with `estimatedNextCost`); the
    * first call is always allowed unless the ceiling is already met. In-flight
    * reservations count toward the total, so this stays correct alongside
    * {@link BudgetGuard.reserve}.
@@ -187,7 +194,7 @@ export class BudgetGuard {
    */
   check(estimatedNextCost?: number): void {
     const rawEstimate =
-      estimatedNextCost === undefined ? this.lastCost : estimatedNextCost;
+      estimatedNextCost === undefined ? this.defaultEstimate() : estimatedNextCost;
     if (!Number.isFinite(rawEstimate)) {
       // NaN/Infinity would poison the comparisons and fail-open — reject it
       // (parity with the constructor's Number.isFinite guard).
@@ -211,10 +218,11 @@ export class BudgetGuard {
    * the same stale total. Throws {@link BudgetExceeded} (without reserving) if
    * the reservation would cross the ceiling. Returns the reservation handle to
    * pass to {@link BudgetGuard.settle} (or {@link BudgetGuard.release} on error).
-   * `estimatedCost` defaults to the last call's cost.
+   * `estimatedCost` defaults to the costlier of the last LLM call and the last
+   * tool call.
    */
   reserve(estimatedCost?: number): number {
-    const rawEstimate = estimatedCost === undefined ? this.lastCost : estimatedCost;
+    const rawEstimate = estimatedCost === undefined ? this.defaultEstimate() : estimatedCost;
     if (!Number.isFinite(rawEstimate)) {
       // NaN would poison this.reserved and fail-open the ceiling — reject it.
       throw new RangeError(
@@ -285,7 +293,7 @@ export class BudgetGuard {
       throw err;
     }
     if (reserved) {
-      this.reserved = Math.max(0, this.reserved - reserved);
+      this.consumeReservation(reserved);
     }
     this.spentUsd += cost;
     // Clamp a sub-epsilon float overshoot back to the limit so the running total
@@ -293,7 +301,7 @@ export class BudgetGuard {
     if (this.spentUsd - this.limitUsd > 0 && this.spentUsd - this.limitUsd < EPS) {
       this.spentUsd = this.limitUsd;
     }
-    this.lastCost = cost;
+    this.lastLlmCost = cost;
     this.appendEvent({
       timestamp: Date.now() / 1000,
       kind: "llm",
@@ -369,9 +377,11 @@ export class BudgetGuard {
    * `recordTool` is `settleTool` with no reservation. The caller supplies the
    * cost — tools have no token usage to price. Accrues into the same
    * `spentUsd` ceiling as tokens, tallies the per-tool total
-   * ({@link BudgetGuard.toolCosts}), updates the next-call estimate (so a
-   * tool-hammering loop's plain `check()` predicts one tool call ahead and
-   * stops BEFORE the crossing call — the same contract as tokens), and appends
+   * ({@link BudgetGuard.toolCosts}), updates the tool side of the next-call
+   * estimate (tracked separately from the LLM side; the default prediction is
+   * the max of the two, so a tool-hammering loop's plain `check()` stops
+   * BEFORE the crossing call without a cheap tool shrinking the LLM
+   * prediction), and appends
    * a `kind: "tool"` {@link SpendEvent} to {@link BudgetGuard.spendLog}.
    * Returns `costUsd`.
    */
@@ -390,7 +400,7 @@ export class BudgetGuard {
       throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
     }
     if (reserved) {
-      this.reserved = Math.max(0, this.reserved - reserved);
+      this.consumeReservation(reserved);
     }
     this.spentUsd += costUsd;
     // Same sub-epsilon clamp as settle(): never report a rounding-artifact
@@ -398,7 +408,7 @@ export class BudgetGuard {
     if (this.spentUsd - this.limitUsd > 0 && this.spentUsd - this.limitUsd < EPS) {
       this.spentUsd = this.limitUsd;
     }
-    this.lastCost = costUsd;
+    this.lastToolCost = costUsd;
     this.toolCostTotals[tool] = (this.toolCostTotals[tool] ?? 0) + costUsd;
     this.appendEvent({
       timestamp: Date.now() / 1000,
@@ -436,7 +446,7 @@ export class BudgetGuard {
       throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
     }
     if (!reserved) return;
-    this.reserved = Math.max(0, this.reserved - reserved);
+    this.consumeReservation(reserved);
   }
 
   /** USD left before the ceiling, net of in-flight reservations (never negative). */
@@ -490,6 +500,37 @@ export class BudgetGuard {
         return `${JSON.stringify(row)}\n`;
       })
       .join("");
+  }
+
+  /**
+   * The default next-call prediction when the caller supplies no estimate.
+   * Conservative: the costlier of the last LLM call and the last tool call — a
+   * mixed loop predicts the pricier kind, which at worst blocks one call early
+   * (fail-closed) rather than letting a crossing call through because the LAST
+   * event happened to be cheap.
+   */
+  private defaultEstimate(): number {
+    return Math.max(this.lastLlmCost, this.lastToolCost);
+  }
+
+  /**
+   * Subtract a settled/released hold from the in-flight tally. A handle larger
+   * than EVERYTHING currently held cannot have come from a matching
+   * `reserve()` — throwing beats silently clamping, which would free OTHER
+   * callers' holds and fail the ceiling open. The epsilon absorbs float dust
+   * from accumulating and draining many holds; per-caller over-release (a
+   * handle within the total but larger than the caller's own hold) is
+   * undetectable without per-handle tracking and remains the caller's
+   * responsibility.
+   */
+  private consumeReservation(reserved: number): void {
+    if (reserved > this.reserved + EPS) {
+      throw new RangeError(
+        `reserved handle (${reserved}) exceeds total in-flight reservations ` +
+          `(${this.reserved}) — a handle must come from a matching reserve()`,
+      );
+    }
+    this.reserved = Math.max(0, this.reserved - reserved);
   }
 
   private appendEvent(event: SpendEvent): void {

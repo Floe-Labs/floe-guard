@@ -105,12 +105,54 @@ def test_reserve_settle_tool_round_trip() -> None:
     assert event.label == "prospector"
 
 
+def test_oversized_reserved_handle_fails_loud_instead_of_freeing_others() -> None:
+    # Regression: a handle exceeding the TOTAL in-flight sum cannot have come
+    # from a matching reserve(). The old clamp silently zeroed other callers'
+    # holds (fail-open ceiling break); now it raises, and nothing is mutated.
+    guard = BudgetGuard(limit_usd=1.00)
+    other = guard.reserve_tool(0.05)  # another caller's in-flight hold
+    with pytest.raises(ValueError, match="in-flight"):
+        guard.settle_tool("apollo.people_lookup", 0.01, reserved=0.30)
+    with pytest.raises(ValueError, match="in-flight"):
+        guard.settle(MODEL, 1_000, 1_000, reserved=0.30)
+    with pytest.raises(ValueError, match="in-flight"):
+        guard.release(0.30)
+    # The other caller's hold is intact and the bad settles recorded nothing.
+    assert guard.remaining_usd == pytest.approx(1.00 - 0.05)
+    assert guard.spend_log == []
+    # A matching handle still settles cleanly (float-dust tolerance intact).
+    guard.settle_tool("apollo.people_lookup", 0.05, reserved=other)
+    assert guard.remaining_usd == pytest.approx(1.00 - 0.05)
+
+
 def test_release_frees_a_tool_reservation_on_failure() -> None:
     guard = BudgetGuard(limit_usd=1.00)
     handle = guard.reserve_tool(0.02)
     guard.release(handle)  # the tool call failed — nothing was spent
     assert guard.remaining_usd == pytest.approx(1.00)
     assert guard.spend_log == []
+
+
+def test_cheap_tool_call_does_not_shrink_the_llm_estimate() -> None:
+    # Regression: expensive LLM call, then a cheap tool call. The default
+    # reserve()/check() prediction is the MAX of the last LLM and last tool
+    # costs — a cheap tool right before an un-estimated LLM reserve() must not
+    # shrink the hold and let a crossing LLM call through.
+    guard = BudgetGuard(limit_usd=0.02, on_block=lambda *_: None)
+    guard.record(MODEL, 1_000, 1_000)  # $0.0125
+    guard.record_tool("exa.search", 0.0001)  # cheap tool, spent = $0.0126
+    with pytest.raises(BudgetExceeded):
+        guard.reserve()  # predicts $0.0125 (not $0.0001): 0.0251 > 0.02
+
+
+def test_cheap_llm_call_does_not_shrink_the_tool_estimate() -> None:
+    # The mirror case: an expensive tool then a cheap LLM call — plain check()
+    # still predicts the pricier tool for the next iteration of a mixed loop.
+    guard = BudgetGuard(limit_usd=0.05, on_block=lambda *_: None)
+    guard.record_tool("apollo.people_lookup", 0.03)
+    guard.record(MODEL, 100, 100)  # ~$0.00125, spent ≈ $0.03125
+    with pytest.raises(BudgetExceeded):
+        guard.check()  # 0.03125 + max(0.00125, 0.03) > 0.05
 
 
 def test_runaway_tool_loop_dies_at_the_ceiling() -> None:

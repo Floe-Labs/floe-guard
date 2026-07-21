@@ -198,7 +198,9 @@ guard.remaining_usd  # tokens + tools, one ceiling
 
 `record_tool` also updates the next-call estimate, so a plain
 `check()`/`record_tool` loop stops *before* the crossing call — a runaway tool
-loop dies exactly like a runaway LLM loop. The caller supplies the USD (there
+loop dies exactly like a runaway LLM loop. (Tool and LLM estimates are tracked
+separately; the default prediction is the costlier of the two, so a cheap tool
+call never shrinks the hold ahead of an expensive LLM call.) The caller supplies the USD (there
 is no tool cost-map); every tool call lands in `spend_log` as a
 `kind: "tool"` event. Same API in TS (`reserveTool`/`settleTool`/`recordTool`/
 `toolCosts`). See [`examples/tool_budget.py`](examples/tool_budget.py).
