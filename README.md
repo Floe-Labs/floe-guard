@@ -8,13 +8,18 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 **A local budget guardrail for AI agents.** It hard-stops your agent *before its
-next LLM call* when it would cross a spend ceiling — so a runaway loop dies at
-$0.10 instead of $4,000. No account, no signup, no network, **no telemetry**.
-Runs in your process.
+next LLM or paid tool call* when it would cross a spend ceiling — tokens and
+tool calls under **one local ceiling**, so a runaway loop dies at $0.10 instead
+of $4,000. No account, no signup, no network, **no telemetry**. Runs in your
+process.
 
 Works with [CrewAI](#crewai) · [LiteLLM](#litellm) · [LangChain](#langchain) ·
 [LangGraph](#langgraph) · [OpenAI](#openai) · [Anthropic](#anthropic) ·
 [Vercel AI SDK](#vercel-ai-sdk) — or any stack, via plain `check()` / `record()`.
+The hard-stop is contract-based: gate each call through the guard — adapters do
+it for LLM calls; for paid tools, [`reserve_tool()` / `settle_tool()`](#tool-spend-under-the-same-ceiling)
+block *before* the call runs (`record_tool()` alone meters a call after the
+fact — it can't stop one already made).
 
 ```bash
 pip install floe-guard        # Python
@@ -174,6 +179,35 @@ print(guard.export_log(), end="")   # JSONL, one event per line
 cost_usd, label?, reserved?}` — identical to the TS package's `exportLog()`, so
 every agent produces the same shape regardless of stack and the streams can be
 concatenated and analysed together.
+
+## Tool spend under the same ceiling
+
+Tool-heavy agents often spend more on paid APIs (Apollo lookups, Exa searches,
+scrapers) than on tokens — and those dollars must count against the same cap,
+or the kill-switch guarantee is fiction for them. Tool spend is a first-class
+primitive with the full reserve/settle contract; it's actually **stronger**
+than the LLM path, because the price is known *before* the call:
+
+```python
+# pre-call hard-stop — the crossing call NEVER runs
+handle = guard.reserve_tool(0.02)              # raises BudgetExceeded before Apollo
+result = apollo.people_lookup(...)
+guard.settle_tool("apollo.people_lookup", 0.02, reserved=handle)
+
+guard.record_tool("exa.search", 0.004)         # post-hoc, for metered APIs
+
+guard.tool_costs     # {"apollo.people_lookup": 0.42, "exa.search": 0.11}
+guard.remaining_usd  # tokens + tools, one ceiling
+```
+
+`record_tool` also updates the next-call estimate, so a plain
+`check()`/`record_tool` loop stops *before* the crossing call — a runaway tool
+loop dies exactly like a runaway LLM loop. (Tool and LLM estimates are tracked
+separately; the default prediction is the costlier of the two, so a cheap tool
+call never shrinks the hold ahead of an expensive LLM call.) The caller supplies the USD (there
+is no tool cost-map); every tool call lands in `spend_log` as a
+`kind: "tool"` event. Same API in TS (`reserveTool`/`settleTool`/`recordTool`/
+`toolCosts`). See [`examples/tool_budget.py`](examples/tool_budget.py).
 
 ## LatencyBudget — deadlines, the same way
 

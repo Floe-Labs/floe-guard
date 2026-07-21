@@ -19,6 +19,44 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   on `close` or a bypassed turn. Optional per-second / per-1k-char knobs meter
   STT/TTS spend via `record_tool`. `on_budget_exceeded` async callback for a
   graceful spoken wrap-up instead of a hard cut.
+## py 0.7.0 / js 0.5.0 — 2026-07-21
+
+### Added (py + js)
+
+- **Tool spend as a first-class primitive** with the full reserve/settle
+  contract, sharing the token ceiling: `reserve_tool(estimated_cost)` /
+  `reserveTool` holds a tool call's known price in-flight and raises
+  `BudgetExceeded` BEFORE the call would cross the cap (stronger than the LLM
+  path — the price is exact, not an estimate); `settle_tool(name, cost_usd,
+  reserved=…)` / `settleTool` releases the hold and accrues the actual cost;
+  `record_tool` / `recordTool` remains the post-hoc form. The caller supplies
+  the USD — there is no tool cost-map.
+- **`tool_costs` / `toolCosts`**: per-tool-name running totals (e.g.
+  `{"apollo.people_lookup": 0.42, "exa.search": 0.11}`), so the token/tool
+  split of the one shared ceiling is inspectable. Tool settles land in the
+  spend ledger as `kind: "tool"` events with the reservation recorded.
+- Example: `examples/tool_budget.py` (no API key) — a prospecting loop whose
+  Apollo/Exa spend dies at the ceiling.
+
+### Changed (py + js)
+
+- `record_tool` / `recordTool` (and the new `settle_tool` / `settleTool`) now
+  update the next-call estimate, so a plain `check()` + `record_tool` loop
+  stops BEFORE the crossing tool call — the same stop-one-early contract as
+  tokens. Previously tool costs accrued but did not inform the prediction.
+  LLM and tool costs are tracked as separate last-costs and the default
+  `check()`/`reserve()` prediction is the max of the two, so a cheap tool call
+  can't shrink the estimate ahead of an expensive LLM call (or vice versa).
+
+### Fixed (py + js)
+
+- **Over-release fails loud instead of open**: `settle()`, `settle_tool()`,
+  and `release()` previously clamped the in-flight tally to zero when handed a
+  `reserved` handle larger than everything currently held — silently freeing
+  OTHER callers' reservations and weakening the ceiling under concurrency. A
+  handle exceeding the total in-flight sum (which cannot have come from a
+  matching `reserve()`) now raises `ValueError` / `RangeError` without
+  mutating any state; sub-epsilon float dust still settles cleanly.
 
 ## py 0.6.0 — 2026-07-18
 

@@ -37,7 +37,8 @@ const EPS = 1e-12;
  * One priced spend event in the guard's per-call ledger.
  *
  * Every {@link BudgetGuard.record} / {@link BudgetGuard.settle} /
- * {@link BudgetGuard.recordTool} that accrues spend appends exactly one event, so
+ * {@link BudgetGuard.recordTool} / {@link BudgetGuard.settleTool} that accrues
+ * spend appends exactly one event, so
  * the ledger's costs sum to `spentUsd` (unless a `maxLogEvents` ring buffer has
  * evicted old events). The schema is identical in the Python
  * package (`SpendEvent` in `src/floe_guard/guard.py`) and
@@ -122,13 +123,26 @@ export class BudgetGuard {
   nearLimitBps: number;
 
   private readonly onBlock: (spentUsd: number, limitUsd: number) => void;
-  /** Cost of the most recent priced call, used to predict the next one. */
-  private lastCost = 0;
+  /**
+   * Costs of the most recent priced LLM call and tool call, tracked
+   * SEPARATELY: the default next-call prediction is the max of the two, so a
+   * cheap tool call can't shrink the estimate right before an expensive LLM
+   * call (or vice versa) — conservative beats one-call-too-late.
+   */
+  private lastLlmCost = 0;
+  private lastToolCost = 0;
   /** USD held for in-flight calls (reserved, not yet settled). Counts toward the ceiling. */
   private reserved = 0;
   /** Per-call ledger, oldest first; a ring buffer when maxLogEvents is set. */
   private readonly spendEvents: SpendEvent[] = [];
   private readonly maxLogEvents?: number;
+  /**
+   * Per-tool running totals (settleTool/recordTool) — the tool side of the one
+   * shared ceiling, exposed via the toolCosts getter. null-prototype: tool
+   * names are caller-supplied strings, so a "__proto__" name is stored as
+   * plain data instead of mutating the object's prototype.
+   */
+  private readonly toolCostTotals: Record<string, number> = Object.create(null);
 
   /**
    * @param limitUsd the spend ceiling, in USD. `0` blocks the very first call.
@@ -169,7 +183,8 @@ export class BudgetGuard {
    * Throw {@link BudgetExceeded} if the next call would cross the ceiling.
    *
    * Call this immediately before each LLM request. The "next call" is estimated
-   * from the last recorded call's cost (override with `estimatedNextCost`); the
+   * conservatively as the costlier of the last LLM call and the last tool call
+   * (override with `estimatedNextCost`); the
    * first call is always allowed unless the ceiling is already met. In-flight
    * reservations count toward the total, so this stays correct alongside
    * {@link BudgetGuard.reserve}.
@@ -179,7 +194,7 @@ export class BudgetGuard {
    */
   check(estimatedNextCost?: number): void {
     const rawEstimate =
-      estimatedNextCost === undefined ? this.lastCost : estimatedNextCost;
+      estimatedNextCost === undefined ? this.defaultEstimate() : estimatedNextCost;
     if (!Number.isFinite(rawEstimate)) {
       // NaN/Infinity would poison the comparisons and fail-open — reject it
       // (parity with the constructor's Number.isFinite guard).
@@ -203,10 +218,11 @@ export class BudgetGuard {
    * the same stale total. Throws {@link BudgetExceeded} (without reserving) if
    * the reservation would cross the ceiling. Returns the reservation handle to
    * pass to {@link BudgetGuard.settle} (or {@link BudgetGuard.release} on error).
-   * `estimatedCost` defaults to the last call's cost.
+   * `estimatedCost` defaults to the costlier of the last LLM call and the last
+   * tool call.
    */
   reserve(estimatedCost?: number): number {
-    const rawEstimate = estimatedCost === undefined ? this.lastCost : estimatedCost;
+    const rawEstimate = estimatedCost === undefined ? this.defaultEstimate() : estimatedCost;
     if (!Number.isFinite(rawEstimate)) {
       // NaN would poison this.reserved and fail-open the ceiling — reject it.
       throw new RangeError(
@@ -277,7 +293,7 @@ export class BudgetGuard {
       throw err;
     }
     if (reserved) {
-      this.reserved = Math.max(0, this.reserved - reserved);
+      this.consumeReservation(reserved);
     }
     this.spentUsd += cost;
     // Clamp a sub-epsilon float overshoot back to the limit so the running total
@@ -285,7 +301,7 @@ export class BudgetGuard {
     if (this.spentUsd - this.limitUsd > 0 && this.spentUsd - this.limitUsd < EPS) {
       this.spentUsd = this.limitUsd;
     }
-    this.lastCost = cost;
+    this.lastLlmCost = cost;
     this.appendEvent({
       timestamp: Date.now() / 1000,
       kind: "llm",
@@ -322,19 +338,69 @@ export class BudgetGuard {
   }
 
   /**
-   * Accrue a non-LLM cost (a paid tool/API call) against the same ceiling.
+   * Atomically check the ceiling AND hold a tool call's cost in flight.
    *
-   * Tools with direct dollar costs — search APIs, scrapers, sandboxes — spend the
-   * same budget the LLM calls do; `recordTool` folds them into `spentUsd` (so
-   * `check()` / `reserve()` see them) and appends a `kind: "tool"`
-   * {@link SpendEvent} to {@link BudgetGuard.spendLog}. The caller supplies the
-   * cost: tools have no token usage to price. Deliberately does NOT update the
-   * next-call estimate — that predicts the next *LLM* call, and a tool's price
-   * would skew it. Returns `costUsd`.
+   * The tool-spend counterpart of {@link BudgetGuard.reserve} — and STRONGER
+   * than the LLM path, because a paid tool's price is usually known exactly
+   * before the call, so the pre-call hard-stop is precise rather than
+   * estimated:
+   *
+   *     const handle = guard.reserveTool(0.02);   // throws BEFORE Apollo runs
+   *     const result = await apollo.peopleLookup(...);
+   *     guard.settleTool("apollo.people_lookup", 0.02, { reserved: handle });
+   *
+   * Throws {@link BudgetExceeded} (without reserving) if the call would cross
+   * the ceiling. The estimate is required — tools have no last-cost prediction
+   * worth falling back to. Pass the returned handle to
+   * {@link BudgetGuard.settleTool}, or {@link BudgetGuard.release} on failure.
    */
-  recordTool(tool: string, costUsd: number, options: { label?: string } = {}): number {
+  reserveTool(estimatedCost: number): number {
+    if (estimatedCost === undefined) {
+      // reserve(undefined) would silently fall back to the last-cost prediction
+      // (0 on a fresh guard) — an unguarded tool call. A missing price must
+      // fail loudly, e.g. guard.reserveTool(priceTable[tool]).
+      throw new RangeError("reserveTool requires an estimated cost, got undefined");
+    }
+    if (!Number.isFinite(estimatedCost) || estimatedCost < 0) {
+      // reserve() clamps a negative estimate to 0 (lenient LLM contract) — for
+      // a tool that would reserve nothing: the same unguarded call.
+      throw new RangeError(
+        `estimatedCost must be a finite, non-negative number, got ${estimatedCost}`,
+      );
+    }
+    return this.reserve(estimatedCost);
+  }
+
+  /**
+   * Release a reservation and record a tool call's actual cost.
+   *
+   * `recordTool` is `settleTool` with no reservation. The caller supplies the
+   * cost — tools have no token usage to price. Accrues into the same
+   * `spentUsd` ceiling as tokens, tallies the per-tool total
+   * ({@link BudgetGuard.toolCosts}), updates the tool side of the next-call
+   * estimate (tracked separately from the LLM side; the default prediction is
+   * the max of the two, so a tool-hammering loop's plain `check()` stops
+   * BEFORE the crossing call without a cheap tool shrinking the LLM
+   * prediction), and appends
+   * a `kind: "tool"` {@link SpendEvent} to {@link BudgetGuard.spendLog}.
+   * Returns `costUsd`.
+   */
+  settleTool(
+    tool: string,
+    costUsd: number,
+    options: { reserved?: number; label?: string } = {},
+  ): number {
     if (!Number.isFinite(costUsd) || costUsd < 0) {
       throw new RangeError(`costUsd must be a finite, non-negative number, got ${costUsd}`);
+    }
+    const reserved = options.reserved ?? 0;
+    // A bad reserved handle would corrupt the in-flight tally and break the
+    // ceiling for OTHER calls — same contract as settle().
+    if (!Number.isFinite(reserved) || reserved < 0) {
+      throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
+    }
+    if (reserved) {
+      this.consumeReservation(reserved);
     }
     this.spentUsd += costUsd;
     // Same sub-epsilon clamp as settle(): never report a rounding-artifact
@@ -342,6 +408,8 @@ export class BudgetGuard {
     if (this.spentUsd - this.limitUsd > 0 && this.spentUsd - this.limitUsd < EPS) {
       this.spentUsd = this.limitUsd;
     }
+    this.lastToolCost = costUsd;
+    this.toolCostTotals[tool] = (this.toolCostTotals[tool] ?? 0) + costUsd;
     this.appendEvent({
       timestamp: Date.now() / 1000,
       kind: "tool",
@@ -350,8 +418,21 @@ export class BudgetGuard {
       completionTokens: null,
       costUsd,
       ...(options.label !== undefined ? { label: options.label } : {}),
+      ...(reserved ? { reserved } : {}),
     });
     return costUsd;
+  }
+
+  /**
+   * Accrue a non-LLM cost (a paid tool/API call) against the same ceiling.
+   *
+   * Post-hoc accrual for costs only known after the call (metered APIs); when
+   * the price is known up front, {@link BudgetGuard.reserveTool} /
+   * {@link BudgetGuard.settleTool} give the stronger pre-call hard-stop. See
+   * `settleTool` for the full contract. Returns `costUsd`.
+   */
+  recordTool(tool: string, costUsd: number, options: { label?: string } = {}): number {
+    return this.settleTool(tool, costUsd, { reserved: 0, label: options.label });
   }
 
   /**
@@ -365,7 +446,7 @@ export class BudgetGuard {
       throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
     }
     if (!reserved) return;
-    this.reserved = Math.max(0, this.reserved - reserved);
+    this.consumeReservation(reserved);
   }
 
   /** USD left before the ceiling, net of in-flight reservations (never negative). */
@@ -374,9 +455,19 @@ export class BudgetGuard {
   }
 
   /**
+   * Per-tool running USD totals, keyed by the name given to `settleTool()` /
+   * `recordTool()` — e.g. `{"apollo.people_lookup": 0.42, "exa.search": 0.11}`.
+   * Makes the token/tool split of the one shared ceiling inspectable
+   * (`spentUsd - sum of toolCosts` is the token side). Returns a snapshot copy.
+   */
+  get toolCosts(): Record<string, number> {
+    return { ...this.toolCostTotals };
+  }
+
+  /**
    * The per-call spend ledger, oldest first — one {@link SpendEvent} per priced
-   * `record()` / `settle()` / `recordTool()`. Returns a snapshot copy: mutating
-   * it cannot corrupt the ledger.
+   * `record()` / `settle()` / `recordTool()` / `settleTool()`. Returns a
+   * snapshot copy: mutating it cannot corrupt the ledger.
    */
   get spendLog(): SpendEvent[] {
     return [...this.spendEvents];
@@ -409,6 +500,37 @@ export class BudgetGuard {
         return `${JSON.stringify(row)}\n`;
       })
       .join("");
+  }
+
+  /**
+   * The default next-call prediction when the caller supplies no estimate.
+   * Conservative: the costlier of the last LLM call and the last tool call — a
+   * mixed loop predicts the pricier kind, which at worst blocks one call early
+   * (fail-closed) rather than letting a crossing call through because the LAST
+   * event happened to be cheap.
+   */
+  private defaultEstimate(): number {
+    return Math.max(this.lastLlmCost, this.lastToolCost);
+  }
+
+  /**
+   * Subtract a settled/released hold from the in-flight tally. A handle larger
+   * than EVERYTHING currently held cannot have come from a matching
+   * `reserve()` — throwing beats silently clamping, which would free OTHER
+   * callers' holds and fail the ceiling open. The epsilon absorbs float dust
+   * from accumulating and draining many holds; per-caller over-release (a
+   * handle within the total but larger than the caller's own hold) is
+   * undetectable without per-handle tracking and remains the caller's
+   * responsibility.
+   */
+  private consumeReservation(reserved: number): void {
+    if (reserved > this.reserved + EPS) {
+      throw new RangeError(
+        `reserved handle (${reserved}) exceeds total in-flight reservations ` +
+          `(${this.reserved}) — a handle must come from a matching reserve()`,
+      );
+    }
+    this.reserved = Math.max(0, this.reserved - reserved);
   }
 
   private appendEvent(event: SpendEvent): void {

@@ -182,6 +182,7 @@ def test_usageless_response_releases_the_reservation() -> None:
     # A response that reports no usage must free the in-flight reservation, or
     # remaining_usd would shrink permanently for later calls.
     guard = BudgetGuard(limit_usd=1.0)
-    _record_response(guard, {}, _Response("gpt-4o", _Usage(0, 0)), reserved=0.5)
+    handle = guard.reserve(0.5)  # a real hold, as the adapter would have taken
+    _record_response(guard, {}, _Response("gpt-4o", _Usage(0, 0)), reserved=handle)
     assert guard.spent_usd == 0.0
     assert guard.remaining_usd == pytest.approx(1.0)

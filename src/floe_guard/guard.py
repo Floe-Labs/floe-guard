@@ -78,7 +78,8 @@ class SpendEvent:
     """One priced spend event in the guard's per-call ledger.
 
     Every :meth:`BudgetGuard.record` / :meth:`BudgetGuard.settle` /
-    :meth:`BudgetGuard.record_tool` that accrues spend appends exactly one event,
+    :meth:`BudgetGuard.record_tool` / :meth:`BudgetGuard.settle_tool`
+    that accrues spend appends exactly one event,
     so ``sum(e.cost_usd for e in guard.spend_log)`` equals ``guard.spent_usd``
     (unless a ``max_log_events`` ring buffer has evicted old events).
     The schema is identical in the TS package (``SpendEvent`` in ``js/src/guard.ts``)
@@ -120,7 +121,7 @@ class SpendEvent:
 
 
 class BudgetGuard:
-    """Hard-stop an agent before its next LLM call crosses a USD ceiling.
+    """Hard-stop an agent before its next LLM or tool call crosses a USD ceiling.
 
     Args:
         limit_usd: the spend ceiling, in USD. ``0`` blocks the very first call.
@@ -176,9 +177,12 @@ class BudgetGuard:
         self._on_block = on_block or _default_on_block
         self.near_limit_bps = near_limit_bps
         self.spent_usd = 0.0
-        # Cost of the most recent priced call, used to predict the next one so we
-        # can block BEFORE the crossing call runs (not one call too late).
-        self._last_cost = 0.0
+        # Costs of the most recent priced LLM call and tool call, tracked
+        # SEPARATELY: the default next-call prediction is the max of the two, so
+        # a cheap tool call can't shrink the estimate right before an expensive
+        # LLM call (or vice versa) — conservative beats one-call-too-late.
+        self._last_llm_cost = 0.0
+        self._last_tool_cost = 0.0
         # USD held for calls that are in flight (reserved but not yet settled).
         # Counted against the ceiling so concurrent callers can't overshoot.
         self._reserved = 0.0
@@ -197,6 +201,9 @@ class BudgetGuard:
         # see _stream_register(). Lets parallel streams count each other's
         # in-flight accrual against the ceiling before anything settles.
         self._stream_costs: dict[object, tuple[float, float]] = {}
+        # Per-tool running totals (settle_tool/record_tool) — the tool side of
+        # the one shared ceiling, exposed via the tool_costs property.
+        self._tool_costs: dict[str, float] = {}
         self._lock = threading.Lock()
 
     # ── enforcement ───────────────────────────────────────────────────────────
@@ -205,11 +212,12 @@ class BudgetGuard:
         """Raise :class:`BudgetExceeded` if the next call would cross the ceiling.
 
         Call this immediately before each LLM request. The "next call" is
-        estimated from the last recorded call's cost (override with
-        ``estimated_next_cost``); the first call is always allowed unless the
-        ceiling is already met. A belt-and-suspenders check on the running total
-        catches an overshoot if the estimate was too low. In-flight reservations
-        count toward the total, so this stays correct alongside :meth:`reserve`.
+        estimated conservatively as the costlier of the last LLM call and the
+        last tool call (override with ``estimated_next_cost``); the first call
+        is always allowed unless the ceiling is already met. A belt-and-suspenders
+        check on the running total catches an overshoot if the estimate was too
+        low. In-flight reservations count toward the total, so this stays
+        correct alongside :meth:`reserve`.
 
         Note: ``check`` is a non-binding peek. For parallel calls, use
         :meth:`reserve` / :meth:`settle`, which hold the estimate atomically.
@@ -258,11 +266,16 @@ class BudgetGuard:
 
         Returns a reservation handle (the USD amount held) to pass to
         :meth:`settle` after the response, or to :meth:`release` if the call
-        fails. ``estimated_cost`` defaults to the last call's cost.
+        fails. ``estimated_cost`` defaults to the costlier of the last LLM call
+        and the last tool call.
         """
         self._validate_estimate(estimated_cost)
         with self._lock:
-            estimate = self._last_cost if estimated_cost is None else max(0.0, estimated_cost)
+            estimate = (
+                self._default_estimate_locked()
+                if estimated_cost is None
+                else max(0.0, estimated_cost)
+            )
             committed = self.spent_usd + self._reserved
             if committed > self.limit_usd - _EPS or committed + estimate > self.limit_usd + _EPS:
                 spent, limit = self.spent_usd, self.limit_usd
@@ -336,13 +349,13 @@ class BudgetGuard:
             raise
         with self._lock:
             if reserved:
-                self._reserved = max(0.0, self._reserved - reserved)
+                self._consume_reservation_locked(reserved)
             self.spent_usd += cost
             # Clamp a sub-epsilon float overshoot back to the limit so the running
             # total never reports as having crossed the ceiling by a rounding artifact.
             if 0.0 < self.spent_usd - self.limit_usd < _EPS:
                 self.spent_usd = self.limit_usd
-            self._last_cost = cost
+            self._last_llm_cost = cost
             self._spend_log.append(
                 SpendEvent(
                     timestamp=time.time(),
@@ -389,28 +402,74 @@ class BudgetGuard:
             label=label,
         )
 
-    def record_tool(self, tool: str, cost_usd: float, *, label: str | None = None) -> float:
-        """Accrue a non-LLM cost (a paid tool/API call) against the same ceiling.
+    def reserve_tool(self, estimated_cost: float) -> float:
+        """Atomically check the ceiling AND hold a tool call's cost in-flight.
 
-        Tools with direct dollar costs — search APIs, scrapers, sandboxes — spend
-        the same budget the LLM calls do; ``record_tool`` folds them into
-        ``spent_usd`` (so :meth:`check` / :meth:`reserve` see them) and appends a
-        ``kind="tool"`` :class:`SpendEvent` to :attr:`spend_log`. The caller
-        supplies the cost: tools have no token usage to price. Deliberately does
-        NOT update the next-call estimate — that predicts the next *LLM* call, and
-        a tool's price would skew it. Returns ``cost_usd``.
+        The tool-spend counterpart of :meth:`reserve` — and STRONGER than the
+        LLM path, because a paid tool's price is usually known exactly before
+        the call, so the pre-call hard-stop is precise rather than estimated::
+
+            handle = guard.reserve_tool(0.02)      # raises BEFORE Apollo runs
+            result = apollo.people_lookup(...)
+            guard.settle_tool("apollo.people_lookup", 0.02, reserved=handle)
+
+        Raises :class:`BudgetExceeded` (without reserving) if the call would
+        cross the ceiling. The estimate is required — tools have no last-cost
+        prediction worth falling back to. Pass the returned handle to
+        :meth:`settle_tool`, or :meth:`release` if the call fails.
+        """
+        if estimated_cost is None:
+            # reserve(None) would silently fall back to the last-cost prediction
+            # (0 on a fresh guard) — an unguarded tool call. A missing price must
+            # fail loudly, e.g. guard.reserve_tool(price_table.get(tool)).
+            raise ValueError("reserve_tool requires an estimated cost, got None")
+        if not math.isfinite(estimated_cost) or estimated_cost < 0:
+            # reserve() clamps a negative estimate to 0 (lenient LLM contract) —
+            # for a tool that would reserve nothing: the same unguarded call.
+            raise ValueError(
+                f"estimated_cost must be a finite, non-negative number, got {estimated_cost!r}"
+            )
+        return self.reserve(estimated_cost)
+
+    def settle_tool(
+        self,
+        tool: str,
+        cost_usd: float,
+        *,
+        reserved: float = 0.0,
+        label: str | None = None,
+    ) -> float:
+        """Release a reservation and record a tool call's actual cost.
+
+        Concurrency-safe; ``record_tool`` is ``settle_tool`` with no
+        reservation. The caller supplies the cost — tools have no token usage
+        to price. Accrues into the same ``spent_usd`` ceiling as tokens,
+        tallies the per-tool total (:attr:`tool_costs`), updates the tool side
+        of the next-call estimate (tracked separately from the LLM side; the
+        default prediction is the max of the two, so a tool-hammering loop's
+        plain :meth:`check` stops BEFORE the crossing call without a cheap tool
+        shrinking the LLM prediction), and appends a ``kind="tool"`` :class:`SpendEvent` to
+        :attr:`spend_log`. Returns ``cost_usd``.
         """
         if not math.isfinite(cost_usd) or cost_usd < 0:
             raise ValueError(f"cost_usd must be a finite, non-negative number, got {cost_usd!r}")
+        # A bad reserved handle would corrupt _reserved and break the ceiling for
+        # OTHER in-flight calls — same contract as settle().
+        if not math.isfinite(reserved) or reserved < 0:
+            raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
         # int (and bool) are valid inputs; coerce so the logged event and the
         # return value are always float, like every other cost in the guard.
         cost_usd = float(cost_usd)
         with self._lock:
+            if reserved:
+                self._consume_reservation_locked(reserved)
             self.spent_usd += cost_usd
             # Same sub-epsilon clamp as settle(): never report a rounding-artifact
             # crossing of the ceiling.
             if 0.0 < self.spent_usd - self.limit_usd < _EPS:
                 self.spent_usd = self.limit_usd
+            self._last_tool_cost = cost_usd
+            self._tool_costs[tool] = self._tool_costs.get(tool, 0.0) + cost_usd
             self._spend_log.append(
                 SpendEvent(
                     timestamp=time.time(),
@@ -420,9 +479,20 @@ class BudgetGuard:
                     completion_tokens=None,
                     cost_usd=cost_usd,
                     label=label,
+                    reserved=reserved if reserved else None,
                 )
             )
         return cost_usd
+
+    def record_tool(self, tool: str, cost_usd: float, *, label: str | None = None) -> float:
+        """Accrue a non-LLM cost (a paid tool/API call) against the same ceiling.
+
+        Post-hoc accrual for costs only known after the call (metered APIs);
+        when the price is known up front, :meth:`reserve_tool` /
+        :meth:`settle_tool` give the stronger pre-call hard-stop. See
+        :meth:`settle_tool` for the full contract. Returns ``cost_usd``.
+        """
+        return self.settle_tool(tool, cost_usd, reserved=0.0, label=label)
 
     def release(self, reserved: float) -> None:
         """Drop an in-flight reservation without recording spend (e.g. the call
@@ -435,7 +505,7 @@ class BudgetGuard:
         if not reserved:
             return
         with self._lock:
-            self._reserved = max(0.0, self._reserved - reserved)
+            self._consume_reservation_locked(reserved)
 
     @property
     def remaining_usd(self) -> float:
@@ -444,9 +514,21 @@ class BudgetGuard:
             return max(0.0, self.limit_usd - self.spent_usd - self._reserved)
 
     @property
+    def tool_costs(self) -> dict[str, float]:
+        """Per-tool running USD totals, keyed by the name given to
+        :meth:`settle_tool` / :meth:`record_tool` — e.g.
+        ``{"apollo.people_lookup": 0.42, "exa.search": 0.11}``. Makes the
+        token/tool split of the one shared ceiling inspectable
+        (``spent_usd - sum(tool_costs.values())`` is the token side).
+        Returns a snapshot copy."""
+        with self._lock:
+            return dict(self._tool_costs)
+
+    @property
     def spend_log(self) -> list[SpendEvent]:
         """The per-call spend ledger, oldest first — one :class:`SpendEvent` per
-        priced :meth:`record` / :meth:`settle` / :meth:`record_tool`.
+        priced :meth:`record` / :meth:`settle` / :meth:`record_tool` /
+        :meth:`settle_tool`.
 
         Returns a snapshot copy: safe to iterate while other threads keep
         recording, and mutating it cannot corrupt the ledger.
@@ -502,6 +584,33 @@ class BudgetGuard:
 
     # ── internals ──────────────────────────────────────────────────────────────
 
+    def _default_estimate_locked(self) -> float:
+        """The default next-call prediction when the caller supplies no
+        estimate. Caller must hold ``self._lock``. Conservative: the costlier
+        of the last LLM call and the last tool call — a mixed loop predicts the
+        pricier kind, which at worst blocks one call early (fail-closed) rather
+        than letting a crossing call through because the LAST event happened to
+        be cheap.
+        """
+        return max(self._last_llm_cost, self._last_tool_cost)
+
+    def _consume_reservation_locked(self, reserved: float) -> None:
+        """Subtract a settled/released hold from the in-flight tally. Caller
+        must hold ``self._lock``. A handle larger than EVERYTHING currently
+        held cannot have come from a matching :meth:`reserve` — raising beats
+        silently clamping, which would free OTHER callers' holds and fail the
+        ceiling open. The epsilon absorbs float dust from accumulating and
+        draining many holds; per-caller over-release (a handle within the
+        total but larger than the caller's own hold) is undetectable without
+        per-handle tracking and remains the caller's responsibility.
+        """
+        if reserved > self._reserved + _EPS:
+            raise ValueError(
+                f"reserved handle ({reserved!r}) exceeds total in-flight reservations "
+                f"({self._reserved!r}) — a handle must come from a matching reserve()"
+            )
+        self._reserved = max(0.0, self._reserved - reserved)
+
     def _validate_estimate(self, estimated: float | None) -> None:
         # NaN/inf would poison the ceiling comparisons and fail-open (or poison
         # _reserved) — reject a non-finite caller-supplied estimate up front,
@@ -547,7 +656,9 @@ class BudgetGuard:
     def _would_cross(self, estimated_next_cost: float | None) -> bool:
         with self._lock:
             estimate = (
-                self._last_cost if estimated_next_cost is None else max(0.0, estimated_next_cost)
+                self._default_estimate_locked()
+                if estimated_next_cost is None
+                else max(0.0, estimated_next_cost)
             )
             committed = self.spent_usd + self._reserved
             return committed > self.limit_usd - _EPS or committed + estimate > self.limit_usd + _EPS
