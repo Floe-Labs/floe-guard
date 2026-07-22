@@ -121,9 +121,9 @@ class LiveKitBudgetGuard:
             self._reserved = 0.0
             self._pending = False
             self._guard.settle(self._model, m.prompt_tokens, m.completion_tokens, reserved=reserved)
-        elif self._stt_usd_per_second and isinstance(m, STTMetrics):
+        elif self._stt_usd_per_second is not None and isinstance(m, STTMetrics):
             self._guard.record_tool("livekit-stt", m.audio_duration * self._stt_usd_per_second)
-        elif self._tts_usd_per_1k_chars and isinstance(m, TTSMetrics):
+        elif self._tts_usd_per_1k_chars is not None and isinstance(m, TTSMetrics):
             self._guard.record_tool(
                 "livekit-tts", m.characters_count / 1000 * self._tts_usd_per_1k_chars
             )
