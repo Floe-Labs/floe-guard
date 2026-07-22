@@ -96,11 +96,18 @@ class LiveKitBudgetGuard:
                     raise
                 await self._on_budget_exceeded(exc)
                 return
-            stream = orig_llm_node(*args, **kwargs)
-            if inspect.isawaitable(stream):
-                stream = await stream
-            async for chunk in stream:
-                yield chunk
+            try:
+                stream = orig_llm_node(*args, **kwargs)
+                if inspect.isawaitable(stream):
+                    stream = await stream
+                async for chunk in stream:
+                    yield chunk
+            except BaseException:
+                # raise / cancellation before metrics settle would leak the hold
+                # until the next turn or close — release it now if still pending.
+                if self._pending:
+                    self._release_pending()
+                raise
 
         agent.llm_node = _guarded_llm_node
         session.on("metrics_collected", self._on_metrics)
