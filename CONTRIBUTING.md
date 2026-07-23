@@ -34,6 +34,7 @@ pip install -e ".[langchain]"   # LangChain adapter
 pip install -e ".[langgraph]"   # LangGraph adapter
 pip install -e ".[openai]"      # OpenAI adapter
 pip install -e ".[anthropic]"   # Anthropic adapter
+pip install -e ".[gemini]"      # Google Gemini adapter
 ```
 
 The core must keep working with **no** extras installed — CI runs the suite

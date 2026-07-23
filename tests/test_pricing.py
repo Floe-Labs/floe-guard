@@ -71,6 +71,84 @@ def test_openai_and_anthropic_prefixes_do_not_bridge_to_groq_keys() -> None:
     assert resolve_price("openai/meta-llama/llama-4-scout-17b-16e-instruct") is None
 
 
+def test_gemini_resolves_from_bare_and_prefixed_ids() -> None:
+    # The map vendors Gemini under the BARE id the google-genai SDK and
+    # @ai-sdk/google actually pass; LiteLLM's "gemini/<id>" and the older
+    # "models/<id>" form reach the same entry via the bare-last-segment
+    # fallback, so no prefix rule is needed for either.
+    bare = resolve_price("gemini-2.5-flash")
+    assert bare is not None
+    assert bare.input_cost_per_token > 0
+    for form in ("gemini/gemini-2.5-flash", "models/gemini-2.5-flash"):
+        priced = resolve_price(form)
+        assert priced is not None, form
+        assert priced.input_cost_per_token == bare.input_cost_per_token, form
+        assert priced.output_cost_per_token == bare.output_cost_per_token, form
+
+
+def test_gemini_vertex_ids_price_at_ai_studio_rates() -> None:
+    # DOCUMENTED LIMITATION, asserted so it cannot change silently.
+    #
+    # Only the AI Studio (Gemini Developer API) prices are vendored. Vertex AI
+    # serves the same ids at its own — sometimes dearer — rates, and the id alone
+    # cannot say which billing path a call took, so a "vertex_ai/<id>" caller
+    # lands on the AI Studio price through the bare-last-segment fallback (the
+    # same way "openrouter/openai/gpt-4o" already resolves to "gpt-4o").
+    #
+    # Vertex callers should pass price_overrides; the Gemini adapter detects them
+    # via `client.vertexai`. If this ever needs to fail closed instead, that is a
+    # change to the shared resolver in BOTH pricing.py and pricing.ts.
+    vertex = resolve_price("vertex_ai/gemini-2.5-flash")
+    ai_studio = resolve_price("gemini-2.5-flash")
+    assert vertex is not None and ai_studio is not None
+    assert vertex.input_cost_per_token == ai_studio.input_cost_per_token
+
+
+def test_no_vendored_chat_model_bills_output_free() -> None:
+    # Regression guard. Upstream mislabels some chat models as mode="embedding"
+    # (gemini-1.5-flash was shipped that way, with output_cost_per_token=0), and
+    # embedding mode zeroes the output rate — so a wrong mode silently bills a chat
+    # model's output at $0, which fail-closed pricing cannot catch because 0 is a
+    # finite, valid price. The refresh script now requires an embedding entry's id
+    # to start with a known embedding family (EMBEDDING_ID_PREFIXES in
+    # scripts/update-cost-map.mjs) — a prefix, not a substring, so a chat model
+    # named "foo-embedding-chat" cannot claim the zeroed rate. Mirrored here as
+    # the invariant that survives the script.
+    from floe_guard.pricing import _COST_MAP
+
+    embedding_prefixes = ("text-embedding-", "gemini-embedding-")
+    for model, entry in _COST_MAP.items():
+        if entry.get("mode") == "embedding":
+            assert model.startswith(embedding_prefixes), (
+                f"{model} claims embedding mode but is not named as a known embedding family"
+            )
+        else:
+            assert entry.get("output_cost_per_token", 0) > 0, f"{model} bills output free"
+        # Zero input bills every call free just as invisibly, embeddings included.
+        assert entry.get("input_cost_per_token", 0) > 0, f"{model} bills input free"
+
+
+def test_mislabelled_chat_model_is_not_vendored_as_an_embedding() -> None:
+    # gemini-1.5-flash is a chat/multimodal model that upstream lists as
+    # mode="embedding" with a 0 output rate. There is no correctly-priced variant
+    # upstream to fall back to, so it stays unpriceable and fails closed rather
+    # than metering chat completions with free output.
+    assert resolve_price("gemini-1.5-flash") is None
+    assert resolve_price("gemini/gemini-1.5-flash") is None
+
+
+def test_gemini_free_tier_models_stay_unpriceable() -> None:
+    # Upstream lists some experimental/free Gemini entries at 0/0. The refresh
+    # script drops zero-priced CHAT models: fail-closed pricing cannot catch them
+    # (0 is finite), so vendoring one would meter every call to it at $0 forever.
+    # gemini-exp-1206 is listed twice upstream — 0/0 and a real price — and must
+    # resolve to the real one.
+    priced = resolve_price("gemini-exp-1206")
+    assert priced is not None
+    assert priced.input_cost_per_token > 0
+    assert priced.output_cost_per_token > 0
+
+
 def test_dated_snapshot_falls_back_to_alias_price() -> None:
     # Anthropic responses carry dated snapshot ids; a snapshot the map doesn't
     # list yet must price at its alias entry instead of failing closed.
