@@ -149,6 +149,39 @@ ignore it; `check()` is what enforces the ceiling. See
 [`examples/budget_aware.py`](examples/budget_aware.py) for a runnable taper demo
 (no API key).
 
+### Budget-aware retry
+
+Blind retries can spend the same expensive path again right when the agent is
+running out of headroom. `with_budget_retry()` composes over the existing guard:
+retry normally while budget is healthy, ask your code for a cheaper retry plan
+when `advisory().near_limit` is true, and call `check(estimated_cost)` before
+each retry so an over-budget retry never runs.
+
+```python
+from floe_guard import BudgetGuard, RetryPlan, with_budget_retry
+
+guard = BudgetGuard(limit_usd=1.00)
+
+def premium_model():
+    return call_model("gpt-4o")
+
+def mini_model():
+    return call_model("gpt-4o-mini")
+
+result = with_budget_retry(
+    guard,
+    premium_model,
+    estimated_cost=0.20,
+    max_attempts=2,
+    on_degrade=lambda exc, adv: RetryPlan(call=mini_model, estimated_cost=0.01),
+)
+```
+
+The helper does not rank models or know provider pricing; the caller defines
+what "cheaper" means in `on_degrade`. TypeScript exposes the same pattern as
+`withBudgetRetry()`. See [`examples/budget_retry.py`](examples/budget_retry.py)
+for a no-network demo.
+
 This is the **same advisory shape** hosted Floe returns on every proxied call
 (the `X-Floe-Budget-Advisory` header), so the logic you write here ports
 unchanged — hosted just answers across *every* vendor and cap with server-truth

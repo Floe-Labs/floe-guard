@@ -33,5 +33,10 @@ export {
   resolvePrice,
   priceTokens,
 } from "./pricing.js";
+export {
+  withBudgetRetry,
+  type BudgetRetryOptions,
+  type RetryPlan,
+} from "./retry.js";
 
 export * as pricing from "./pricing.js";

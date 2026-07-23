@@ -26,6 +26,7 @@ from .guard import BudgetAdvisory, BudgetGuard, SpendEvent
 from .hosted import hosted_enforcement_available, hosted_remaining_usd
 from .latency import LatencyAdvisory, LatencyBudget
 from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
+from .retry import RetryPlan, async_with_budget_retry, with_budget_retry
 from .stream import StreamGuard, guard_stream
 
 __version__ = "0.8.0"  # keep in lockstep with pyproject.toml
@@ -38,6 +39,9 @@ __all__ = [
     "LatencyAdvisory",
     "StreamGuard",
     "guard_stream",
+    "RetryPlan",
+    "with_budget_retry",
+    "async_with_budget_retry",
     "BudgetExceeded",
     "DeadlineExceeded",
     "FloeGuardError",

@@ -10,6 +10,14 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added (py + js)
+
+- **Budget-aware retry helper** (`with_budget_retry` / `withBudgetRetry`,
+  issue #45): retry normally when budget is healthy, ask a caller-supplied
+  degrade callback for a cheaper retry plan when `advisory().near_limit` /
+  `nearLimit` is set, and hard-block an over-budget retry with `check()` before
+  it runs. Ships with a no-network Python example.
+
 ## py 0.8.0 — 2026-07-23
 
 ### Added (py)
