@@ -19,6 +19,7 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   on `close` or a bypassed turn. Optional per-second / per-1k-char knobs meter
   STT/TTS spend via `record_tool`. `on_budget_exceeded` async callback for a
   graceful spoken wrap-up instead of a hard cut.
+
 ## py 0.7.0 / js 0.5.0 — 2026-07-21
 
 ### Added (py + js)
