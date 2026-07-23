@@ -414,7 +414,9 @@ response = guarded_completion(guard, client, model="gpt-4o", messages=[...])
 
 `guarded_completion` reserves the budget before the call (raising
 `BudgetExceeded` so a blocked call never reaches OpenAI) and records spend after.
-Use `guarded_acompletion` with an `AsyncOpenAI` client for async.
+Use `guarded_acompletion` with an `AsyncOpenAI` client for async. See
+[`examples/openai_adapter.py`](examples/openai_adapter.py) for a runnable
+hard-stop demo (no API key needed).
 
 ### Anthropic
 
