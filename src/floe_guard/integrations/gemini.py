@@ -31,6 +31,12 @@ Read ``client.vertexai`` rather than the constructor argument: BOTH
 ``Client(vertexai=True, ...)`` and the newer ``Client(enterprise=True, ...)`` set
 it, and there is no ``.enterprise`` attribute to check instead.
 
+On a Vertex client the override is also the *only* price accepted at settle time.
+Gemini can report a served id (``model_version``) different from the one you
+asked for, and if the bundled map happens to price that snapshot, settling on it
+would silently drop the call back to AI Studio rates — the under-meter the check
+above exists to prevent.
+
 **Token buckets.** Gemini splits usage across five counters, and the SDK's own
 field docs pin down how they compose (``total_token_count`` is documented as
 ``prompt + candidates + tool_use_prompt + thoughts``):
@@ -104,7 +110,9 @@ def _usage_from(response: Any) -> tuple[int, int, int]:
     return max(0, prompt - cached) + tool_use, completion, cached
 
 
-def _settle_model(guard: BudgetGuard, kwargs: dict[str, Any], response: Any) -> str:
+def _settle_model(
+    guard: BudgetGuard, kwargs: dict[str, Any], response: Any, *, overrides_only: bool = False
+) -> str:
     """Pick the model id to settle against.
 
     The served id (``model_version``) is the source of truth, but if it cannot be
@@ -112,16 +120,21 @@ def _settle_model(guard: BudgetGuard, kwargs: dict[str, Any], response: Any) -> 
     provider snapshot newer than the bundled cost map does not fail-close a call
     that would otherwise price cleanly. If neither prices, keep the served id so
     the guard still fail-closes on a real id. (Mirrors the OpenAI adapter.)
+
+    ``overrides_only`` narrows "priceable" to a caller-supplied rate, for a Vertex
+    client that :func:`_check_vertex_pricing` cleared. The bundled map holds AI
+    Studio rates, so a served snapshot the override does not name would otherwise
+    settle against them — under-metering the very call the override was there to
+    meter, and doing it silently because the map does resolve.
     """
+
+    def priced(model: str) -> bool:
+        entry = resolve_price(model, guard.price_overrides)
+        return entry is not None and (not overrides_only or entry.source == "override")
+
     served = _model_from(kwargs, response)
     requested = str(kwargs.get("model") or "")
-    if (
-        served
-        and requested
-        and served != requested
-        and resolve_price(served, guard.price_overrides) is None
-        and resolve_price(requested, guard.price_overrides) is not None
-    ):
+    if served and requested and served != requested and not priced(served) and priced(requested):
         return requested
     return served
 
@@ -155,11 +168,16 @@ def _check_vertex_pricing(guard: BudgetGuard, client: Any, model: str) -> None:
 
 
 def _record_response(
-    guard: BudgetGuard, kwargs: Any, response: Any, *, reserved: float = 0.0
+    guard: BudgetGuard,
+    kwargs: Any,
+    response: Any,
+    *,
+    reserved: float = 0.0,
+    overrides_only: bool = False,
 ) -> None:
     if not isinstance(kwargs, dict):
         kwargs = {}
-    model = _settle_model(guard, kwargs, response)
+    model = _settle_model(guard, kwargs, response, overrides_only=overrides_only)
     prompt_tokens, completion_tokens, cache_read = _usage_from(response)
     if prompt_tokens <= 0 and completion_tokens <= 0 and cache_read <= 0:
         # No tokens spent (e.g. a usage-less response) — free the reservation.
@@ -191,6 +209,7 @@ def guarded_completion(guard: BudgetGuard, client: Any, **kwargs: Any) -> Any:
     unless the model has a ``price_overrides`` entry — see the module docstring.
     Streaming is not supported here; use :func:`~floe_guard.guard_stream`.
     """
+    vertex = bool(getattr(client, "vertexai", False))
     _check_vertex_pricing(guard, client, str(kwargs.get("model") or ""))
     reserved = guard.reserve()
     try:
@@ -198,7 +217,7 @@ def guarded_completion(guard: BudgetGuard, client: Any, **kwargs: Any) -> Any:
     except BaseException:
         guard.release(reserved)
         raise
-    _record_response(guard, kwargs, response, reserved=reserved)
+    _record_response(guard, kwargs, response, reserved=reserved, overrides_only=vertex)
     return response
 
 
@@ -208,6 +227,7 @@ async def guarded_acompletion(guard: BudgetGuard, client: Any, **kwargs: Any) ->
     Calls ``client.aio.models.generate_content`` — the async face of the same
     ``google.genai.Client``, so pass the client itself, not ``client.aio``.
     """
+    vertex = bool(getattr(client, "vertexai", False))
     _check_vertex_pricing(guard, client, str(kwargs.get("model") or ""))
     reserved = guard.reserve()
     try:
@@ -215,7 +235,7 @@ async def guarded_acompletion(guard: BudgetGuard, client: Any, **kwargs: Any) ->
     except BaseException:
         guard.release(reserved)
         raise
-    _record_response(guard, kwargs, response, reserved=reserved)
+    _record_response(guard, kwargs, response, reserved=reserved, overrides_only=vertex)
     return response
 
 

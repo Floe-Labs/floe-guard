@@ -30,7 +30,10 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   The model id cannot reveal the backend but the client can: the adapter reads
   `client.vertexai` (set by both `vertexai=True` and the newer `enterprise=True`)
   and refuses unless the model has a `price_overrides` entry. Honours
-  `fail_closed=False` for callers who accept un-metered spend.
+  `fail_closed=False` for callers who accept un-metered spend. A Vertex call
+  cleared by an override also settles against that override even when Google
+  serves a different snapshot id the bundled map happens to price — otherwise the
+  drift would quietly put the call back on AI Studio rates.
 
 ### Added (py + js)
 
@@ -55,20 +58,23 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   chat/multimodal model — as `mode: "embedding"` with `output_cost_per_token: 0`.
   Vendoring that would meter every `gemini-1.5-flash` completion's output at $0,
   which fail-closed pricing cannot catch because `0` is a finite, valid price. An
-  embedding entry's id must now agree with its declared mode (`text-embedding-*`,
-  `gemini-embedding-*`), so a single wrong field can't zero a price; the same
-  predicate gates both the filter and the writer. `gemini-1.5-flash` has no
+  embedding entry's id must now start with a known embedding family
+  (`text-embedding-*`, `gemini-embedding-*`), so a single wrong field can't zero a
+  price; the same predicate gates both the filter and the writer, and an unknown
+  family is dropped with a warning rather than trusted. `gemini-1.5-flash` has no
   correctly-priced variant upstream, so it stays unpriceable and fails closed.
-- **Zero-priced chat models are no longer vendored.** Upstream lists some
+- **Zero-priced models are no longer vendored.** Upstream lists some
   free/experimental tiers at `0`/`0`, and fail-closed pricing cannot catch them
   (`0` is finite, so the model resolves and every call meters at $0 forever).
-  They are now dropped and fail closed loudly. Embedding entries keep their `0`
-  output rate — that is a real price, not a missing one.
-- **Duplicate upstream keys resolve to the dearer entry.** Several Gemini models
-  are listed both bare and `gemini/`-prefixed; collapsing them onto one vendored
-  key previously depended on iteration order. The refresh now keeps the more
-  expensive of the two — over-pricing stops an agent one call early (safe),
-  under-pricing lets a crossing call through.
+  They are now dropped and fail closed loudly, on either rate. The one exception
+  is an embedding's `0` output rate — that is a real price, not a missing one.
+- **Duplicate upstream keys resolve to the dearer rate in each bucket.** Several
+  Gemini models are listed both bare and `gemini/`-prefixed; collapsing them onto
+  one vendored key previously depended on iteration order. The refresh now takes
+  the higher input rate and the higher output rate independently — picking one
+  whole entry by total cost still under-meters a prompt/completion mix when one
+  duplicate is dearer on input and the other on output. Over-pricing stops an
+  agent one call early (safe), under-pricing lets a crossing call through.
 - **Realtime/audio models are no longer priced at text rates.** Upstream
   reclassified OpenAI's realtime models from `chat` to `realtime` mode, so they
   drop out of the vendored map. This closes a latent under-meter: they bill audio

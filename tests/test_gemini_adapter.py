@@ -19,6 +19,7 @@ from floe_guard import (
     ManualPrice,
     UnpriceableModelError,
     UnpriceableModelWarning,
+    resolve_price,
 )
 from floe_guard.integrations.gemini import (
     _settle_model,
@@ -253,7 +254,21 @@ def test_served_id_wins_when_it_prices() -> None:
     assert _settle_model(guard, {"model": MODEL}, response) == "gemini-2.0-flash"
 
 
-# ── Vertex refusal ────────────────────────────────────────────────────────────
+def test_vertex_settles_on_the_overridden_alias_not_a_map_priced_served_id() -> None:
+    # A Vertex client is cleared by an override on the REQUESTED id. If Google
+    # serves a different snapshot that the bundled map happens to price, settling
+    # on it would meter a Vertex call at AI Studio rates — silently, because the
+    # map resolves. Only the caller's rate counts as priceable on that path.
+    guard = _guard()
+    served = "gemini-2.5-flash-lite"  # priced in the bundled map, not overridden
+    assert resolve_price(served) is not None, "fixture assumes the map prices this id"
+
+    response = _Response(model_version=served)
+    assert _settle_model(guard, {"model": MODEL}, response) == served
+    assert _settle_model(guard, {"model": MODEL}, response, overrides_only=True) == MODEL
+
+
+# ── Vertex refusal & metering ─────────────────────────────────────────────────
 
 
 def test_vertex_client_fails_closed_before_the_call() -> None:
@@ -295,6 +310,23 @@ def test_vertex_client_warns_and_proceeds_when_fail_open() -> None:
     with pytest.warns(UnpriceableModelWarning, match="Vertex"):
         guarded_completion(guard, client, model=MODEL, contents="hi")
     assert client.models.calls  # the call ran
+
+
+def test_vertex_call_meters_against_the_caller_rate_when_served_id_drifts() -> None:
+    # End-to-end counterpart of the _settle_model case above: the override's
+    # 1e-6/2e-6 must win over the bundled (cheaper) gemini-2.5-flash-lite rate.
+    guard = _guard()
+    client = _Client(
+        _Response(
+            model_version="gemini-2.5-flash-lite",
+            usage_metadata=_Usage(prompt_token_count=1000, candidates_token_count=500),
+        ),
+        vertexai=True,
+    )
+
+    guarded_completion(guard, client, model=MODEL, contents="hi")
+    assert guard.spent_usd == pytest.approx(0.002)
+    assert guard.spend_log[0].model_or_tool == MODEL
 
 
 def test_ai_studio_client_is_not_refused() -> None:

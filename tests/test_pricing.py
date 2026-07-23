@@ -110,14 +110,22 @@ def test_no_vendored_chat_model_bills_output_free() -> None:
     # embedding mode zeroes the output rate — so a wrong mode silently bills a chat
     # model's output at $0, which fail-closed pricing cannot catch because 0 is a
     # finite, valid price. The refresh script now requires an embedding entry's id
-    # to agree with its mode; this asserts the invariant that survives it.
+    # to start with a known embedding family (EMBEDDING_ID_PREFIXES in
+    # scripts/update-cost-map.mjs) — a prefix, not a substring, so a chat model
+    # named "foo-embedding-chat" cannot claim the zeroed rate. Mirrored here as
+    # the invariant that survives the script.
     from floe_guard.pricing import _COST_MAP
 
+    embedding_prefixes = ("text-embedding-", "gemini-embedding-")
     for model, entry in _COST_MAP.items():
         if entry.get("mode") == "embedding":
-            assert "embedding" in model, f"{model} claims embedding mode but is not named one"
+            assert model.startswith(embedding_prefixes), (
+                f"{model} claims embedding mode but is not named as a known embedding family"
+            )
         else:
             assert entry.get("output_cost_per_token", 0) > 0, f"{model} bills output free"
+        # Zero input bills every call free just as invisibly, embeddings included.
+        assert entry.get("input_cost_per_token", 0) > 0, f"{model} bills input free"
 
 
 def test_mislabelled_chat_model_is_not_vendored_as_an_embedding() -> None:

@@ -84,6 +84,14 @@ function vendoredKey(k) {
   return k;
 }
 
+// Embedding families vendored under a zeroed output rate. Matched as an id
+// PREFIX, not a substring: `includes("embedding")` would also accept a chat model
+// named e.g. "foo-embedding-chat", re-opening the very hole this list closes.
+// Covers every embedding entry the map ships today (text-embedding-3-*,
+// text-embedding-ada-*, gemini-embedding-*); a new family is dropped, and warned
+// about, until it is added here.
+const EMBEDDING_ID_PREFIXES = ["text-embedding-", "gemini-embedding-"];
+
 /**
  * Embedding mode zeroes the output rate, so trusting a WRONG `mode` ships a chat
  * model that bills output free — the precise hole fail-closed pricing cannot see.
@@ -91,21 +99,41 @@ function vendoredKey(k) {
  * as `mode: "embedding"` with `output_cost_per_token: 0`.
  *
  * So `mode` alone is not enough authority to zero a price. Require the model id to
- * agree with it: a genuine embedding model says so in its name (`text-embedding-*`,
- * `gemini-embedding-*`). A single wrong field then can't produce a free-output chat
- * model, and an embedding whose name doesn't match simply fails closed — the safe
- * direction.
+ * agree with it, by matching a known embedding family (see EMBEDDING_ID_PREFIXES).
+ * A single wrong field then can't produce a free-output chat model, and an
+ * embedding whose name doesn't match simply fails closed — the safe direction.
  */
 function isEmbeddingModel(vendored, v) {
-  return v.mode === "embedding" && vendored.includes("embedding");
+  return (
+    v.mode === "embedding" &&
+    EMBEDDING_ID_PREFIXES.some((prefix) => vendored.startsWith(prefix))
+  );
+}
+
+/** Whether floe-guard prices this provider at all — see the three sets above. */
+function isPricedProvider(k, v) {
+  return (
+    v.litellm_provider !== undefined &&
+    (ROUTABLE_PROVIDERS.has(v.litellm_provider) ||
+      PREFIX_STRIPPED_PROVIDERS.has(v.litellm_provider) ||
+      GROQ_KEY_MAP.has(k))
+  );
 }
 
 /**
- * A model is vendored only if we can fully price it: a numeric input rate, a
+ * A model is vendored only if we can fully price it: a positive input rate, a
  * routable provider, and either a VERIFIED embedding (input-only — see
  * isEmbeddingModel) or chat mode with a non-zero output rate. Coercing a missing
  * or zero output rate would ship a chat model that bills output free, which
  * fail-closed pricing can't catch (0 is finite). An excluded model is simply absent.
+ *
+ * A rate of 0 bills every call free, and fail-closed pricing cannot catch that:
+ * 0 is finite, so resolve_price returns a valid entry and the guard meters the
+ * call at $0 forever. Upstream ships these for free/experimental tiers
+ * (gemini-exp-1206 is listed 0/0 on one of its two keys). Dropping them makes the
+ * model unpriceable, which fails closed loudly — the behaviour a spend guard
+ * wants. The one exception is an embedding's 0 OUTPUT rate: that is a real price,
+ * not a missing one.
  */
 function isUsable(k, v) {
   // Number.isFinite (not typeof === "number") so a NaN, or a huge upstream value
@@ -114,21 +142,11 @@ function isUsable(k, v) {
   return (
     !!v &&
     Number.isFinite(v.input_cost_per_token) &&
-    v.litellm_provider !== undefined &&
-    (ROUTABLE_PROVIDERS.has(v.litellm_provider) ||
-      PREFIX_STRIPPED_PROVIDERS.has(v.litellm_provider) ||
-      GROQ_KEY_MAP.has(k)) &&
+    v.input_cost_per_token > 0 &&
+    isPricedProvider(k, v) &&
     (isEmbeddingModel(vendoredKey(k), v) ||
       (v.mode === "chat" &&
         Number.isFinite(v.output_cost_per_token) &&
-        // A chat model priced at 0 bills every call free, and fail-closed pricing
-        // cannot catch that: 0 is finite, so resolve_price returns a valid entry
-        // and the guard meters the call at $0 forever. Upstream ships these for
-        // free/experimental tiers (gemini-exp-1206 is listed 0/0 on one of its
-        // two keys). Dropping them makes the model unpriceable, which fails
-        // closed loudly — the behaviour a spend guard wants. Embeddings keep
-        // their 0 output rate: that is a real price, not a missing one.
-        v.input_cost_per_token > 0 &&
         v.output_cost_per_token > 0))
   );
 }
@@ -157,6 +175,25 @@ for (const [src, dest] of GROQ_KEY_MAP) {
   }
 }
 
+// The other half of EMBEDDING_ID_PREFIXES: a genuine embedding model from a
+// priced provider whose id doesn't match a known family is dropped (fail-closed,
+// the safe direction) — but silently, so a new Google/OpenAI embedding line would
+// just never appear. Warn so the reviewer knows to extend the prefix list.
+for (const [k, v] of Object.entries(raw)) {
+  const key = vendoredKey(k);
+  if (
+    v?.mode === "embedding" &&
+    isPricedProvider(k, v) &&
+    !isEmbeddingModel(key, v)
+  ) {
+    console.warn(
+      `WARNING: ${k} declares mode="embedding" but ${key} matches no known embedding ` +
+        `family — dropped. Expected when upstream mislabels a chat model; if it ` +
+        `really is an embedding, add its family to EMBEDDING_ID_PREFIXES.`,
+    );
+  }
+}
+
 // null-prototype: model keys come from remote JSON, so a "__proto__" (or similar)
 // key is stored as plain data instead of mutating the object's prototype.
 const out = Object.create(null);
@@ -177,10 +214,12 @@ for (const [k, v] of entries) {
   }
   // Two upstream keys collapsed onto one vendored key — upstream lists several
   // Gemini models BOTH bare and "gemini/"-prefixed. Plain assignment would let
-  // the last one silently win, so resolve deterministically toward the DEARER
-  // entry: over-pricing a model stops the agent one call early (safe), while
-  // under-pricing lets a crossing call through (the failure this package
-  // exists to prevent).
+  // the last one silently win, so resolve deterministically toward the dearer
+  // rate PER BUCKET: picking one whole entry by total cost still under-meters a
+  // prompt/completion mix whenever one duplicate has the higher input rate and
+  // the other the higher output rate. Over-pricing stops the agent one call
+  // early (safe); under-pricing lets a crossing call through (the failure this
+  // package exists to prevent).
   const input_cost_per_token = Math.max(
     existing.input_cost_per_token,
     entry.input_cost_per_token,
@@ -189,16 +228,19 @@ for (const [k, v] of entries) {
     existing.output_cost_per_token,
     entry.output_cost_per_token,
   );
-  const dearer = {
-    ...existing,
+  const merged = {
     input_cost_per_token,
     output_cost_per_token,
+    litellm_provider: existing.litellm_provider,
+    // Both sides already passed isUsable, so a 0 output rate here means both were
+    // VERIFIED embeddings. Anything else took a chat rate on at least one bucket
+    // and must not keep a mode that reads as "output is free".
     mode: output_cost_per_token === 0 ? "embedding" : "chat",
   };
-  out[k] = dearer;
+  out[k] = merged;
   console.warn(
-    `NOTE: ${k} is listed more than once upstream — kept conservative max rates ` +
-      `(${dearer.input_cost_per_token}/${dearer.output_cost_per_token}).`,
+    `NOTE: ${k} is listed more than once upstream — kept the dearer rate in each ` +
+      `bucket (${input_cost_per_token}/${output_cost_per_token}).`,
   );
 }
 
