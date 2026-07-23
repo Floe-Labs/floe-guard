@@ -33,16 +33,26 @@ class RetryPlan(Generic[T]):
     estimated_cost: float | None = None
 
 
-RetryPredicate = Callable[[BaseException], bool]
-DegradeCallback = Callable[[BaseException, BudgetAdvisory], RetryPlan[T] | None]
+RetryPredicate = Callable[[Exception], bool]
+DegradeCallback = Callable[[Exception, BudgetAdvisory], RetryPlan[T] | None]
 AsyncDegradeCallback = Callable[
-    [BaseException, BudgetAdvisory],
+    [Exception, BudgetAdvisory],
     RetryPlan[Awaitable[T]] | Awaitable[RetryPlan[Awaitable[T]] | None] | None,
 ]
 
 
-def _default_retry_if(exc: BaseException) -> bool:
+def _default_retry_if(exc: Exception) -> bool:
     return not isinstance(exc, BudgetExceeded)
+
+
+def _validate_max_attempts(max_attempts: int) -> None:
+    # Same int-not-bool contract as BudgetGuard.near_limit_bps.
+    if (
+        isinstance(max_attempts, bool)
+        or not isinstance(max_attempts, int)
+        or max_attempts < 1
+    ):
+        raise ValueError(f"max_attempts must be an int >= 1, got {max_attempts!r}")
 
 
 def with_budget_retry(
@@ -66,18 +76,18 @@ def with_budget_retry(
       over-budget retry aborts before spending.
 
     ``max_attempts`` includes the first attempt. The last retryable exception is
-    re-raised when attempts are exhausted.
+    re-raised when attempts are exhausted. Control-flow exceptions
+    (``KeyboardInterrupt``, ``SystemExit``, ``CancelledError``) are not caught.
     """
 
-    if max_attempts < 1:
-        raise ValueError(f"max_attempts must be >= 1, got {max_attempts!r}")
+    _validate_max_attempts(max_attempts)
     should_retry = retry_if or _default_retry_if
     plan = RetryPlan(call=call, estimated_cost=estimated_cost)
 
     for attempt in range(1, max_attempts + 1):
         try:
             return plan.call()
-        except BaseException as exc:
+        except Exception as exc:
             if attempt >= max_attempts or not should_retry(exc):
                 raise
             plan = _next_plan(guard, exc, plan, on_degrade)
@@ -96,15 +106,14 @@ async def async_with_budget_retry(
 ) -> T:
     """Async variant of :func:`with_budget_retry`."""
 
-    if max_attempts < 1:
-        raise ValueError(f"max_attempts must be >= 1, got {max_attempts!r}")
+    _validate_max_attempts(max_attempts)
     should_retry = retry_if or _default_retry_if
     plan = RetryPlan(call=call, estimated_cost=estimated_cost)
 
     for attempt in range(1, max_attempts + 1):
         try:
             return await plan.call()
-        except BaseException as exc:
+        except Exception as exc:
             if attempt >= max_attempts or not should_retry(exc):
                 raise
             plan = await _next_async_plan(guard, exc, plan, on_degrade)
@@ -114,7 +123,7 @@ async def async_with_budget_retry(
 
 def _next_plan(
     guard: BudgetGuard,
-    exc: BaseException,
+    exc: Exception,
     current: RetryPlan[T],
     on_degrade: DegradeCallback[T] | None,
 ) -> RetryPlan[T]:
@@ -130,7 +139,7 @@ def _next_plan(
 
 async def _next_async_plan(
     guard: BudgetGuard,
-    exc: BaseException,
+    exc: Exception,
     current: RetryPlan[Awaitable[T]],
     on_degrade: AsyncDegradeCallback[T] | None,
 ) -> RetryPlan[Awaitable[T]]:

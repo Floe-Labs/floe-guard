@@ -10,6 +10,14 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## py 0.9.1 — 2026-07-23
+
+### Fixed (py)
+
+- **Budget-aware retry**: reject non-integer `max_attempts`, and catch
+  `Exception` (not `BaseException`) so `KeyboardInterrupt` /
+  `SystemExit` / `CancelledError` propagate instead of being retried.
+
 ## py 0.9.0 / js 0.6.0 — 2026-07-23
 
 ### Added (py + js)

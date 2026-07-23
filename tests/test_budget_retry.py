@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from floe_guard import (
@@ -97,6 +99,41 @@ def test_non_retryable_failure_is_raised_without_retry() -> None:
 def test_invalid_max_attempts_rejected() -> None:
     with pytest.raises(ValueError, match="max_attempts"):
         with_budget_retry(BudgetGuard(limit_usd=1.00), lambda: "ok", max_attempts=0)
+
+
+@pytest.mark.parametrize("bad", [1.5, True, "2"])
+def test_non_integer_max_attempts_rejected(bad: object) -> None:
+    with pytest.raises(ValueError, match="max_attempts"):
+        with_budget_retry(BudgetGuard(limit_usd=1.00), lambda: "ok", max_attempts=bad)  # type: ignore[arg-type]
+
+
+def test_keyboard_interrupt_is_not_retried() -> None:
+    guard = BudgetGuard(limit_usd=1.00)
+    calls = {"primary": 0}
+
+    def primary() -> str:
+        calls["primary"] += 1
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        with_budget_retry(guard, primary, estimated_cost=0.01, max_attempts=3)
+
+    assert calls == {"primary": 1}
+
+
+@pytest.mark.asyncio
+async def test_async_cancelled_error_is_not_retried() -> None:
+    guard = BudgetGuard(limit_usd=1.00)
+    calls = {"primary": 0}
+
+    async def primary() -> str:
+        calls["primary"] += 1
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_with_budget_retry(guard, primary, estimated_cost=0.01, max_attempts=3)
+
+    assert calls == {"primary": 1}
 
 
 @pytest.mark.asyncio
