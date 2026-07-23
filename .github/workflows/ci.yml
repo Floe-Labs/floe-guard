@@ -65,8 +65,10 @@ jobs:
       # (instead of skipping). langchain-core covers the LangChain handler
       # tests; litellm covers the callback-swallowing regression tests (the
       # CrewAI adapter tests stub crewai itself, so the heavy extra stays out);
-      # langgraph covers the fan-out reserve/settle and advisory-channel tests.
-      - run: pip install -e ".[dev,langchain,litellm,langgraph]"
+      # langgraph covers the fan-out reserve/settle and advisory-channel tests;
+      # livekit covers the LiveKit voice-agent reserve/settle/release tests
+      # (livekit-agents supports Python >=3.10, so it goes in the base install).
+      - run: pip install -e ".[dev,langchain,litellm,langgraph,livekit]"
       # pipecat-ai requires Python >=3.11, so add it (and exercise the Pipecat
       # adapter tests) on every matrix cell except 3.10 — there the tests
       # importorskip cleanly.

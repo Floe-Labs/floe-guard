@@ -10,6 +10,8 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## py 0.8.0 — 2026-07-23
+
 ### Added (py)
 
 - **LiveKit Agents adapter** (`floe-guard[livekit]`, issue #39):

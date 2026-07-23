@@ -52,7 +52,6 @@ class _TurnSlot:
     """
 
     amount: float
-    owner: object
     open: bool = True
 
 
@@ -90,8 +89,6 @@ class LiveKitBudgetGuard:
         self._tts_usd_per_1k_chars = tts_usd_per_1k_chars
         self._reserved: float = 0.0
         self._pending = False
-        # Identity of the invocation that currently owns the open guard hold.
-        self._reservation_owner: object | None = None
         self._active: _TurnSlot | None = None
         # FIFO of turns that may still emit LLMMetrics (including early-released).
         self._slots: deque[_TurnSlot] = deque()
@@ -109,7 +106,6 @@ class LiveKitBudgetGuard:
             # slot so delayed metrics cannot steal this turn's hold.
             if self._pending:
                 self._early_release_active()
-            owner = object()
             try:
                 amount = self._guard.reserve()
             except BudgetExceeded as exc:
@@ -119,10 +115,9 @@ class LiveKitBudgetGuard:
                     raise
                 await self._on_budget_exceeded(exc)
                 return
-            slot = _TurnSlot(amount=amount, owner=owner)
+            slot = _TurnSlot(amount=amount)
             self._slots.append(slot)
             self._active = slot
-            self._reservation_owner = owner
             self._reserved = amount
             self._pending = True
             try:
@@ -132,9 +127,10 @@ class LiveKitBudgetGuard:
                 async for chunk in stream:
                     yield chunk
             except BaseException:
-                # Release only if this invocation still owns the open hold —
-                # a later turn may already have early-released ours and reserved.
-                if self._reservation_owner is owner:
+                # Release only if this invocation still owns the open hold — a
+                # later turn may already have early-released ours and reserved
+                # its own, making its slot (not ours) the active one.
+                if self._active is slot:
                     self._early_release_active()
                 raise
 
@@ -144,7 +140,6 @@ class LiveKitBudgetGuard:
 
     def _clear_active(self) -> None:
         self._active = None
-        self._reservation_owner = None
         self._reserved = 0.0
         self._pending = False
 
