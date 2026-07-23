@@ -10,6 +10,8 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## py 0.9.0 / js 0.6.0 — 2026-07-23
+
 ### Added (py + js)
 
 - **Budget-aware retry helper** (`with_budget_retry` / `withBudgetRetry`,
