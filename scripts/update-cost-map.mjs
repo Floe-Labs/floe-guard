@@ -181,14 +181,23 @@ for (const [k, v] of entries) {
   // entry: over-pricing a model stops the agent one call early (safe), while
   // under-pricing lets a crossing call through (the failure this package
   // exists to prevent).
-  const dearer =
-    entry.input_cost_per_token + entry.output_cost_per_token >
-    existing.input_cost_per_token + existing.output_cost_per_token
-      ? entry
-      : existing;
+  const input_cost_per_token = Math.max(
+    existing.input_cost_per_token,
+    entry.input_cost_per_token,
+  );
+  const output_cost_per_token = Math.max(
+    existing.output_cost_per_token,
+    entry.output_cost_per_token,
+  );
+  const dearer = {
+    ...existing,
+    input_cost_per_token,
+    output_cost_per_token,
+    mode: output_cost_per_token === 0 ? "embedding" : "chat",
+  };
   out[k] = dearer;
   console.warn(
-    `NOTE: ${k} is listed more than once upstream — kept the dearer entry ` +
+    `NOTE: ${k} is listed more than once upstream — kept conservative max rates ` +
       `(${dearer.input_cost_per_token}/${dearer.output_cost_per_token}).`,
   );
 }
