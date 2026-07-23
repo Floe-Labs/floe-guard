@@ -82,6 +82,18 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   audio vs $0.000004 text), which the map had no way to express. They now fail
   closed until given a `price_overrides` entry.
 
+## py 0.8.0 — 2026-07-23
+
+### Added (py)
+
+- **LiveKit Agents adapter** (`floe-guard[livekit]`, issue #39):
+  `LiveKitBudgetGuard.attach(session, agent)` wires the reserve-before /
+  settle-after contract onto a LiveKit `AgentSession` — reserve in the agent's
+  `llm_node`, settle on the session's `metrics_collected` `LLMMetrics`, release
+  on `close` or a bypassed turn. Optional per-second / per-1k-char knobs meter
+  STT/TTS spend via `record_tool`. `on_budget_exceeded` async callback for a
+  graceful spoken wrap-up instead of a hard cut.
+
 ## py 0.7.0 / js 0.5.0 — 2026-07-21
 
 ### Added (py + js)
