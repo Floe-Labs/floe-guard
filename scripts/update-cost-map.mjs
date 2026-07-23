@@ -53,6 +53,37 @@ const GROQ_KEY_MAP = new Map([
   ["groq/openai/gpt-oss-safeguard-20b", "openai/gpt-oss-safeguard-20b"],
 ]);
 
+// Providers vendored under the BARE model id, with their "<provider>/" key
+// prefix stripped (upstream keys Gemini as "gemini/gemini-2.5-flash", but the
+// google-genai SDK and @ai-sdk/google both take "gemini-2.5-flash").
+//
+// A rule rather than a Groq-style allowlist: nothing but Google ships a
+// "gemini-*" model, so there is no generic multi-vendor name to mis-claim here,
+// and hand-listing would go stale on every Google launch. The bare key also
+// serves LiteLLM's "gemini/<id>" convention through the resolver's
+// bare-last-segment fallback, so pricing.py/pricing.ts need no change (and the
+// two stay in lockstep by not moving at all).
+//
+// Vertex AI is deliberately NOT vendored. It serves the SAME model ids under the
+// "vertex_ai-*" providers at DIFFERENT prices (gemini-2.0-flash-001: Vertex is
+// 50% dearer), and a model id alone cannot say which billing path a call took —
+// pricing both from one key would under-meter Vertex users, which is the exact
+// failure a spend guard must not have. Those providers are not routable, so they
+// are already excluded; Vertex callers pass price_overrides, and the Gemini
+// adapter detects them via `client.vertexai`.
+const PREFIX_STRIPPED_PROVIDERS = new Set(["gemini"]);
+
+/** The key a model is vendored under: "gemini/gemini-2.5-flash" -> "gemini-2.5-flash". */
+function vendoredKey(k) {
+  const mapped = GROQ_KEY_MAP.get(k);
+  if (mapped !== undefined) return mapped;
+  const slash = k.indexOf("/");
+  if (slash !== -1 && PREFIX_STRIPPED_PROVIDERS.has(k.slice(0, slash))) {
+    return k.slice(slash + 1);
+  }
+  return k;
+}
+
 /**
  * A model is vendored only if we can fully price it: a numeric input rate, a
  * routable provider, and either embedding mode (input-only) or chat mode WITH a
@@ -68,9 +99,21 @@ function isUsable(k, v) {
     !!v &&
     Number.isFinite(v.input_cost_per_token) &&
     v.litellm_provider !== undefined &&
-    (ROUTABLE_PROVIDERS.has(v.litellm_provider) || GROQ_KEY_MAP.has(k)) &&
+    (ROUTABLE_PROVIDERS.has(v.litellm_provider) ||
+      PREFIX_STRIPPED_PROVIDERS.has(v.litellm_provider) ||
+      GROQ_KEY_MAP.has(k)) &&
     (v.mode === "embedding" ||
-      (v.mode === "chat" && Number.isFinite(v.output_cost_per_token)))
+      (v.mode === "chat" &&
+        Number.isFinite(v.output_cost_per_token) &&
+        // A chat model priced at 0 bills every call free, and fail-closed pricing
+        // cannot catch that: 0 is finite, so resolve_price returns a valid entry
+        // and the guard meters the call at $0 forever. Upstream ships these for
+        // free/experimental tiers (gemini-exp-1206 is listed 0/0 on one of its
+        // two keys). Dropping them makes the model unpriceable, which fails
+        // closed loudly — the behaviour a spend guard wants. Embeddings keep
+        // their 0 output rate: that is a real price, not a missing one.
+        v.input_cost_per_token > 0 &&
+        v.output_cost_per_token > 0))
   );
 }
 
@@ -82,7 +125,7 @@ const raw = await res.json();
 
 const entries = Object.entries(raw)
   .filter(([k, v]) => isUsable(k, v))
-  .map(([k, v]) => [GROQ_KEY_MAP.get(k) ?? k, v])
+  .map(([k, v]) => [vendoredKey(k), v])
   .sort(([a], [b]) => a.localeCompare(b));
 
 // A curated Groq model that upstream dropped (or stopped fully pricing) would
@@ -102,12 +145,33 @@ for (const [src, dest] of GROQ_KEY_MAP) {
 // key is stored as plain data instead of mutating the object's prototype.
 const out = Object.create(null);
 for (const [k, v] of entries) {
-  out[k] = {
+  const entry = {
     input_cost_per_token: v.input_cost_per_token,
     output_cost_per_token: v.mode === "embedding" ? 0 : v.output_cost_per_token,
     litellm_provider: v.litellm_provider,
     mode: v.mode,
   };
+  const existing = out[k];
+  if (existing === undefined) {
+    out[k] = entry;
+    continue;
+  }
+  // Two upstream keys collapsed onto one vendored key — upstream lists several
+  // Gemini models BOTH bare and "gemini/"-prefixed. Plain assignment would let
+  // the last one silently win, so resolve deterministically toward the DEARER
+  // entry: over-pricing a model stops the agent one call early (safe), while
+  // under-pricing lets a crossing call through (the failure this package
+  // exists to prevent).
+  const dearer =
+    entry.input_cost_per_token + entry.output_cost_per_token >
+    existing.input_cost_per_token + existing.output_cost_per_token
+      ? entry
+      : existing;
+  out[k] = dearer;
+  console.warn(
+    `NOTE: ${k} is listed more than once upstream — kept the dearer entry ` +
+      `(${dearer.input_cost_per_token}/${dearer.output_cost_per_token}).`,
+  );
 }
 
 const json = `${JSON.stringify(out, null, 2)}\n`;
@@ -121,5 +185,7 @@ for (const dest of targets) {
 }
 
 console.log(
-  `Wrote ${entries.length} models to ${targets.length} files (source: ${SOURCE_URL}).`,
+  // Object.keys(out), not entries.length: collapsed duplicate keys (see the
+  // collision note above) mean fewer models are vendored than entries survived.
+  `Wrote ${Object.keys(out).length} models to ${targets.length} files (source: ${SOURCE_URL}).`,
 );

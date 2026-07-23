@@ -10,6 +10,63 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added (py)
+
+- **Google Gemini adapter** (`pip install floe-guard[gemini]`) —
+  `floe_guard.integrations.gemini.guarded_completion` / `guarded_acompletion`
+  wrap the `google-genai` SDK's `client.models.generate_content` with the same
+  reserve-before / settle-after contract as the OpenAI and Anthropic adapters, so
+  a blocked call never reaches Google.
+- All five Gemini usage counters are mapped, not just the obvious two:
+  `thoughts_token_count` (thinking-model reasoning, billed as output) and
+  `tool_use_prompt_token_count` (tool results fed back as input) sit *outside*
+  `candidates_token_count` / `prompt_token_count`, so omitting them would
+  under-meter thinking and tool-using agents. `cached_content_token_count` is
+  carved *out* of the prompt count — Gemini documents it as included there — and
+  re-priced at the cache-read rate instead of being charged twice.
+- **Vertex AI callers fail closed unless they supply prices.** One SDK serves
+  both Google AI Studio and Vertex with identical model ids, and the bundled map
+  carries AI Studio rates, so metering a Vertex call against it would under-meter.
+  The model id cannot reveal the backend but the client can: the adapter reads
+  `client.vertexai` (set by both `vertexai=True` and the newer `enterprise=True`)
+  and refuses unless the model has a `price_overrides` entry. Honours
+  `fail_closed=False` for callers who accept un-metered spend.
+
+### Added (py + js)
+
+- **Google Gemini pricing in the bundled cost map** — 37 Gemini models are now
+  priced offline, so `gemini-2.5-flash` and friends are metered instead of
+  failing closed. Vendored under the **bare** ids the `google-genai` SDK and
+  `@ai-sdk/google` pass; LiteLLM's `gemini/<id>` and the older `models/<id>`
+  forms resolve to the same entry through the existing bare-last-segment
+  fallback, so no change to `pricing.py` / `pricing.ts` was needed.
+- Prices are **Google AI Studio (Gemini Developer API)** rates. Vertex AI serves
+  the same ids at its own — sometimes dearer — rates (`gemini-2.0-flash-001`:
+  Vertex is 50% higher), and a model id alone cannot say which billing path a
+  call used, so Vertex is deliberately not vendored; Vertex agents pass
+  `price_overrides`. A `vertex_ai/<id>` caller resolves at AI Studio rates via
+  the same fallback that already maps `openrouter/openai/gpt-4o` → `gpt-4o`;
+  this is asserted in `tests/test_pricing.py` so it cannot change silently.
+
+### Fixed (py + js)
+
+- **Zero-priced chat models are no longer vendored.** Upstream lists some
+  free/experimental tiers at `0`/`0`, and fail-closed pricing cannot catch them
+  (`0` is finite, so the model resolves and every call meters at $0 forever).
+  They are now dropped and fail closed loudly. Embedding entries keep their `0`
+  output rate — that is a real price, not a missing one.
+- **Duplicate upstream keys resolve to the dearer entry.** Several Gemini models
+  are listed both bare and `gemini/`-prefixed; collapsing them onto one vendored
+  key previously depended on iteration order. The refresh now keeps the more
+  expensive of the two — over-pricing stops an agent one call early (safe),
+  under-pricing lets a crossing call through.
+- **Realtime/audio models are no longer priced at text rates.** Upstream
+  reclassified OpenAI's realtime models from `chat` to `realtime` mode, so they
+  drop out of the vendored map. This closes a latent under-meter: they bill audio
+  tokens at up to **8×** their text input rate (`gpt-realtime`: $0.000032/token
+  audio vs $0.000004 text), which the map had no way to express. They now fail
+  closed until given a `price_overrides` entry.
+
 ## py 0.7.0 / js 0.5.0 — 2026-07-21
 
 ### Added (py + js)

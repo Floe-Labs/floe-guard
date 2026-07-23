@@ -15,7 +15,8 @@ process.
 
 Works with [CrewAI](#crewai) · [LiteLLM](#litellm) · [LangChain](#langchain) ·
 [LangGraph](#langgraph) · [OpenAI](#openai) · [Anthropic](#anthropic) ·
-[Vercel AI SDK](#vercel-ai-sdk) — or any stack, via plain `check()` / `record()`.
+[Gemini](#google-gemini) · [Vercel AI SDK](#vercel-ai-sdk) — or any stack, via
+plain `check()` / `record()`.
 The hard-stop is contract-based: gate each call through the guard — adapters do
 it for LLM calls; for paid tools, [`reserve_tool()` / `settle_tool()`](#tool-spend-under-the-same-ceiling)
 block *before* the call runs (`record_tool()` alone meters a call after the
@@ -110,20 +111,29 @@ guard = BudgetGuard(
 
 ### What the bundled map prices
 
-The vendored map deliberately covers **OpenAI, Anthropic, and a curated set of
-Groq models** (the allowlist lives in
+The vendored map deliberately covers **OpenAI, Anthropic, Google Gemini (AI
+Studio), and a curated set of Groq models** (the rules live in
 [`scripts/update-cost-map.mjs`](scripts/update-cost-map.mjs)) — not all of
 LiteLLM's upstream list. Generic open-weights names (`qwen3-32b`,
 `gpt-oss-120b`) are served by many vendors at very different prices, so
 resolving them at one vendor's rate would under-meter a spend guard; they stay
 unpriceable unless you scope them (`groq/…`) or pass a manual price.
 
+**Gemini is priced at Google AI Studio (Gemini Developer API) rates.** Vertex AI
+serves the same model ids at its own — sometimes dearer — rates, and a model id
+alone cannot say which billing path a call used, so a Vertex agent should pass
+`price_overrides` for the models it uses. Experimental Gemini tiers that Google
+lists at $0 stay unpriceable on purpose: a chat model priced at zero would meter
+every call as free, which fail-closed pricing cannot catch.
+
 Model ids resolve flexibly: provider-prefixed forms work
 (`openai/gpt-4o`, `groq/qwen/qwen3-32b` and the ChatGroq `qwen/qwen3-32b` both
-hit the same entry), and a dated snapshot the map doesn't list yet
+hit the same entry; `gemini/gemini-2.5-flash` and the bare `gemini-2.5-flash`
+do too), and a dated snapshot the map doesn't list yet
 (`claude-opus-4-8-<date>`) prices at its alias entry instead of failing closed.
-Everything else — Gemini, Mistral, Cohere, Ollama, Bedrock, self-hosted —
-needs `price_overrides` (or `fail_closed=False` to accept it un-metered).
+Everything else — Mistral, Cohere, Ollama, Bedrock, realtime/audio models,
+self-hosted — needs `price_overrides` (or `fail_closed=False` to accept it
+un-metered).
 
 ## Context-aware budgeting
 
@@ -435,6 +445,49 @@ response = guarded_completion(guard, client, model="claude-3-7-sonnet-20250219",
 Same reserve-before / record-after contract as the OpenAI adapter; Anthropic's
 `input_tokens` / `output_tokens` are mapped onto the guard's prompt/completion
 pricing. Use `guarded_acompletion` with an `AsyncAnthropic` client for async.
+
+### Google Gemini
+
+```bash
+pip install floe-guard[gemini]
+```
+
+```python
+from google import genai
+from floe_guard import BudgetGuard
+from floe_guard.integrations.gemini import guarded_completion
+
+guard = BudgetGuard(limit_usd=1.00)
+client = genai.Client(api_key="...")
+response = guarded_completion(guard, client, model="gemini-2.5-flash", contents="hello")
+```
+
+Same reserve-before / record-after contract as the OpenAI adapter. Gemini splits
+usage across five counters and this adapter maps all of them: thinking tokens
+(`thoughts_token_count`) and tool-result tokens (`tool_use_prompt_token_count`)
+are billed but sit *outside* the obvious prompt/candidates pair, so omitting them
+would under-meter; cached tokens are carved out of the prompt count (Gemini
+includes them there) and re-priced at the cheaper cache-read rate rather than
+charged twice. Use `guarded_acompletion` for async.
+
+**Vertex AI callers must supply prices.** One SDK serves both Google AI Studio
+and Vertex with *identical model ids*, but Vertex bills up to 50% more, and the
+bundled map carries AI Studio rates — so metering a Vertex call against it would
+under-meter. The model id can't reveal the backend, but the client can: the
+adapter reads `client.vertexai` and fails closed unless you pass your own rates.
+
+```python
+from floe_guard import ManualPrice
+
+guard = BudgetGuard(limit_usd=1.00, price_overrides={
+    "gemini-2.5-flash": ManualPrice(3.0e-7, 2.5e-6),   # your Vertex rates
+})
+```
+
+Streaming isn't wrapped — `generate_content_stream` only reports usage on its
+final chunk (or never, if you stop early), so use
+[`guard_stream()`](#request-sized-estimates-and-mid-stream-enforcement) to meter
+a stream chunk-by-chunk instead.
 
 ### Vercel AI SDK
 
