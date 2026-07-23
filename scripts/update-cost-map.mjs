@@ -85,14 +85,6 @@ function vendoredKey(k) {
 }
 
 /**
- * A model is vendored only if we can fully price it: a numeric input rate, a
- * routable provider, and either embedding mode (input-only) or chat mode WITH a
- * numeric output rate. Coercing a missing output rate to 0 would ship a chat
- * model that bills output free, which fail-closed pricing can't catch (0 is
- * finite). An excluded model is simply absent.
- */
-
-/**
  * Embedding mode zeroes the output rate, so trusting a WRONG `mode` ships a chat
  * model that bills output free — the precise hole fail-closed pricing cannot see.
  * Upstream does get this wrong: it lists `gemini/gemini-1.5-flash`, a chat model,
@@ -107,6 +99,14 @@ function vendoredKey(k) {
 function isEmbeddingModel(vendored, v) {
   return v.mode === "embedding" && vendored.includes("embedding");
 }
+
+/**
+ * A model is vendored only if we can fully price it: a numeric input rate, a
+ * routable provider, and either a VERIFIED embedding (input-only — see
+ * isEmbeddingModel) or chat mode with a non-zero output rate. Coercing a missing
+ * or zero output rate would ship a chat model that bills output free, which
+ * fail-closed pricing can't catch (0 is finite). An excluded model is simply absent.
+ */
 function isUsable(k, v) {
   // Number.isFinite (not typeof === "number") so a NaN, or a huge upstream value
   // that JSON.parse turns into Infinity, is treated as unpriceable and dropped —
