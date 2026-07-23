@@ -29,7 +29,9 @@ from __future__ import annotations
 
 import inspect
 import logging
+from collections import deque
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from livekit.agents.metrics import LLMMetrics, STTMetrics, TTSMetrics
 
@@ -37,6 +39,21 @@ from ..errors import BudgetExceeded
 from ..guard import BudgetGuard
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _TurnSlot:
+    """One llm_node invocation awaiting (or already past) its LLMMetrics event.
+
+    ``open`` means the USD amount is still held on the BudgetGuard. Early
+    release (next turn, exception, close) clears the guard hold but leaves the
+    slot in the FIFO queue so a delayed metrics event settles against this
+    turn's slot (with ``amount`` 0) instead of stealing a later turn's hold.
+    """
+
+    amount: float
+    owner: object
+    open: bool = True
 
 
 class LiveKitBudgetGuard:
@@ -73,6 +90,11 @@ class LiveKitBudgetGuard:
         self._tts_usd_per_1k_chars = tts_usd_per_1k_chars
         self._reserved: float = 0.0
         self._pending = False
+        # Identity of the invocation that currently owns the open guard hold.
+        self._reservation_owner: object | None = None
+        self._active: _TurnSlot | None = None
+        # FIFO of turns that may still emit LLMMetrics (including early-released).
+        self._slots: deque[_TurnSlot] = deque()
 
     def attach(self, session, agent) -> None:
         """Wire reserve (agent.llm_node), settle/meter (metrics_collected) and
@@ -82,20 +104,27 @@ class LiveKitBudgetGuard:
         # forward LiveKit's (chat_ctx, tools, model_settings) unchanged, so an
         # upstream signature change can't break the wrapper.
         async def _guarded_llm_node(*args, **kwargs):
-            # A previous turn that never settled (no metrics emitted) still holds
-            # its reservation — release before opening this one, or it leaks.
+            # A previous turn that never settled still holds its reservation —
+            # release the guard hold before opening this one, but keep a queue
+            # slot so delayed metrics cannot steal this turn's hold.
             if self._pending:
-                self._release_pending()
+                self._early_release_active()
+            owner = object()
             try:
-                self._reserved = self._guard.reserve()
-                self._pending = True
+                amount = self._guard.reserve()
             except BudgetExceeded as exc:
-                self._pending = False
+                self._clear_active()
                 logger.warning("floe-guard blocked a turn: %s", exc)
                 if self._on_budget_exceeded is None:
                     raise
                 await self._on_budget_exceeded(exc)
                 return
+            slot = _TurnSlot(amount=amount, owner=owner)
+            self._slots.append(slot)
+            self._active = slot
+            self._reservation_owner = owner
+            self._reserved = amount
+            self._pending = True
             try:
                 stream = orig_llm_node(*args, **kwargs)
                 if inspect.isawaitable(stream):
@@ -103,30 +132,48 @@ class LiveKitBudgetGuard:
                 async for chunk in stream:
                     yield chunk
             except BaseException:
-                # raise / cancellation before metrics settle would leak the hold
-                # until the next turn or close — release it now if still pending.
-                if self._pending:
-                    self._release_pending()
+                # Release only if this invocation still owns the open hold —
+                # a later turn may already have early-released ours and reserved.
+                if self._reservation_owner is owner:
+                    self._early_release_active()
                 raise
 
         agent.llm_node = _guarded_llm_node
         session.on("metrics_collected", self._on_metrics)
         session.on("close", self._on_close)
 
-    def _release_pending(self) -> None:
-        self._guard.release(self._reserved)
+    def _clear_active(self) -> None:
+        self._active = None
+        self._reservation_owner = None
         self._reserved = 0.0
         self._pending = False
+
+    def _early_release_active(self) -> None:
+        """Drop the open guard hold; leave a zeroed queue slot for delayed metrics."""
+        slot = self._active
+        if slot is None or not slot.open:
+            self._clear_active()
+            return
+        self._guard.release(slot.amount)
+        slot.open = False
+        slot.amount = 0.0
+        self._clear_active()
 
     def _on_metrics(self, ev) -> None:
         m = ev.metrics
         if isinstance(m, LLMMetrics):
-            # Settle whenever usage arrives, even if the reserve hook was bypassed
-            # (then _reserved is 0.0, i.e. a plain record()). A cancelled turn
-            # still reports its partial tokens and releases the reservation here.
-            reserved = self._reserved
-            self._reserved = 0.0
-            self._pending = False
+            # Pop the oldest turn slot. Early-released turns contribute 0 so a
+            # delayed metrics event meters usage without consuming a later hold.
+            # An empty queue (reserve hook bypassed) settles as a plain record().
+            if self._slots:
+                slot = self._slots.popleft()
+                reserved = slot.amount if slot.open else 0.0
+                if slot.open:
+                    slot.open = False
+                if self._active is slot:
+                    self._clear_active()
+            else:
+                reserved = 0.0
             self._guard.settle(self._model, m.prompt_tokens, m.completion_tokens, reserved=reserved)
         elif self._stt_usd_per_second is not None and isinstance(m, STTMetrics):
             self._guard.record_tool("livekit-stt", m.audio_duration * self._stt_usd_per_second)
@@ -136,10 +183,11 @@ class LiveKitBudgetGuard:
             )
 
     def _on_close(self, ev) -> None:
-        # Session torn down with a turn still reserved and no usage ever reported
-        # — release it so the reservation doesn't leak against the ceiling.
+        # Session torn down with a turn still reserved — release it. Drop any
+        # leftover slots so a post-close metrics event cannot touch a stale hold.
         if self._pending:
-            self._release_pending()
+            self._early_release_active()
+        self._slots.clear()
 
 
 __all__ = ["LiveKitBudgetGuard"]
