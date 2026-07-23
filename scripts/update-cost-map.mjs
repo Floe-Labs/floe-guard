@@ -53,12 +53,87 @@ const GROQ_KEY_MAP = new Map([
   ["groq/openai/gpt-oss-safeguard-20b", "openai/gpt-oss-safeguard-20b"],
 ]);
 
+// Providers vendored under the BARE model id, with their "<provider>/" key
+// prefix stripped (upstream keys Gemini as "gemini/gemini-2.5-flash", but the
+// google-genai SDK and @ai-sdk/google both take "gemini-2.5-flash").
+//
+// A rule rather than a Groq-style allowlist: nothing but Google ships a
+// "gemini-*" model, so there is no generic multi-vendor name to mis-claim here,
+// and hand-listing would go stale on every Google launch. The bare key also
+// serves LiteLLM's "gemini/<id>" convention through the resolver's
+// bare-last-segment fallback, so pricing.py/pricing.ts need no change (and the
+// two stay in lockstep by not moving at all).
+//
+// Vertex AI is deliberately NOT vendored. It serves the SAME model ids under the
+// "vertex_ai-*" providers at DIFFERENT prices (gemini-2.0-flash-001: Vertex is
+// 50% dearer), and a model id alone cannot say which billing path a call took —
+// pricing both from one key would under-meter Vertex users, which is the exact
+// failure a spend guard must not have. Those providers are not routable, so they
+// are already excluded; Vertex callers pass price_overrides, and the Gemini
+// adapter detects them via `client.vertexai`.
+const PREFIX_STRIPPED_PROVIDERS = new Set(["gemini"]);
+
+/** The key a model is vendored under: "gemini/gemini-2.5-flash" -> "gemini-2.5-flash". */
+function vendoredKey(k) {
+  const mapped = GROQ_KEY_MAP.get(k);
+  if (mapped !== undefined) return mapped;
+  const slash = k.indexOf("/");
+  if (slash !== -1 && PREFIX_STRIPPED_PROVIDERS.has(k.slice(0, slash))) {
+    return k.slice(slash + 1);
+  }
+  return k;
+}
+
+// Embedding families vendored under a zeroed output rate. Matched as an id
+// PREFIX, not a substring: `includes("embedding")` would also accept a chat model
+// named e.g. "foo-embedding-chat", re-opening the very hole this list closes.
+// Covers every embedding entry the map ships today (text-embedding-3-*,
+// text-embedding-ada-*, gemini-embedding-*); a new family is dropped, and warned
+// about, until it is added here.
+const EMBEDDING_ID_PREFIXES = ["text-embedding-", "gemini-embedding-"];
+
 /**
- * A model is vendored only if we can fully price it: a numeric input rate, a
- * routable provider, and either embedding mode (input-only) or chat mode WITH a
- * numeric output rate. Coercing a missing output rate to 0 would ship a chat
- * model that bills output free, which fail-closed pricing can't catch (0 is
- * finite). An excluded model is simply absent.
+ * Embedding mode zeroes the output rate, so trusting a WRONG `mode` ships a chat
+ * model that bills output free — the precise hole fail-closed pricing cannot see.
+ * Upstream does get this wrong: it lists `gemini/gemini-1.5-flash`, a chat model,
+ * as `mode: "embedding"` with `output_cost_per_token: 0`.
+ *
+ * So `mode` alone is not enough authority to zero a price. Require the model id to
+ * agree with it, by matching a known embedding family (see EMBEDDING_ID_PREFIXES).
+ * A single wrong field then can't produce a free-output chat model, and an
+ * embedding whose name doesn't match simply fails closed — the safe direction.
+ */
+function isEmbeddingModel(vendored, v) {
+  return (
+    v.mode === "embedding" &&
+    EMBEDDING_ID_PREFIXES.some((prefix) => vendored.startsWith(prefix))
+  );
+}
+
+/** Whether floe-guard prices this provider at all — see the three sets above. */
+function isPricedProvider(k, v) {
+  return (
+    v.litellm_provider !== undefined &&
+    (ROUTABLE_PROVIDERS.has(v.litellm_provider) ||
+      PREFIX_STRIPPED_PROVIDERS.has(v.litellm_provider) ||
+      GROQ_KEY_MAP.has(k))
+  );
+}
+
+/**
+ * A model is vendored only if we can fully price it: a positive input rate, a
+ * routable provider, and either a VERIFIED embedding (input-only — see
+ * isEmbeddingModel) or chat mode with a non-zero output rate. Coercing a missing
+ * or zero output rate would ship a chat model that bills output free, which
+ * fail-closed pricing can't catch (0 is finite). An excluded model is simply absent.
+ *
+ * A rate of 0 bills every call free, and fail-closed pricing cannot catch that:
+ * 0 is finite, so resolve_price returns a valid entry and the guard meters the
+ * call at $0 forever. Upstream ships these for free/experimental tiers
+ * (gemini-exp-1206 is listed 0/0 on one of its two keys). Dropping them makes the
+ * model unpriceable, which fails closed loudly — the behaviour a spend guard
+ * wants. The one exception is an embedding's 0 OUTPUT rate: that is a real price,
+ * not a missing one.
  */
 function isUsable(k, v) {
   // Number.isFinite (not typeof === "number") so a NaN, or a huge upstream value
@@ -67,10 +142,12 @@ function isUsable(k, v) {
   return (
     !!v &&
     Number.isFinite(v.input_cost_per_token) &&
-    v.litellm_provider !== undefined &&
-    (ROUTABLE_PROVIDERS.has(v.litellm_provider) || GROQ_KEY_MAP.has(k)) &&
-    (v.mode === "embedding" ||
-      (v.mode === "chat" && Number.isFinite(v.output_cost_per_token)))
+    v.input_cost_per_token > 0 &&
+    isPricedProvider(k, v) &&
+    (isEmbeddingModel(vendoredKey(k), v) ||
+      (v.mode === "chat" &&
+        Number.isFinite(v.output_cost_per_token) &&
+        v.output_cost_per_token > 0))
   );
 }
 
@@ -82,7 +159,7 @@ const raw = await res.json();
 
 const entries = Object.entries(raw)
   .filter(([k, v]) => isUsable(k, v))
-  .map(([k, v]) => [GROQ_KEY_MAP.get(k) ?? k, v])
+  .map(([k, v]) => [vendoredKey(k), v])
   .sort(([a], [b]) => a.localeCompare(b));
 
 // A curated Groq model that upstream dropped (or stopped fully pricing) would
@@ -98,16 +175,73 @@ for (const [src, dest] of GROQ_KEY_MAP) {
   }
 }
 
+// The other half of EMBEDDING_ID_PREFIXES: a genuine embedding model from a
+// priced provider whose id doesn't match a known family is dropped (fail-closed,
+// the safe direction) — but silently, so a new Google/OpenAI embedding line would
+// just never appear. Warn so the reviewer knows to extend the prefix list.
+for (const [k, v] of Object.entries(raw)) {
+  const key = vendoredKey(k);
+  if (
+    v?.mode === "embedding" &&
+    isPricedProvider(k, v) &&
+    !isEmbeddingModel(key, v)
+  ) {
+    console.warn(
+      `WARNING: ${k} declares mode="embedding" but ${key} matches no known embedding ` +
+        `family — dropped. Expected when upstream mislabels a chat model; if it ` +
+        `really is an embedding, add its family to EMBEDDING_ID_PREFIXES.`,
+    );
+  }
+}
+
 // null-prototype: model keys come from remote JSON, so a "__proto__" (or similar)
 // key is stored as plain data instead of mutating the object's prototype.
 const out = Object.create(null);
 for (const [k, v] of entries) {
-  out[k] = {
+  const entry = {
     input_cost_per_token: v.input_cost_per_token,
-    output_cost_per_token: v.mode === "embedding" ? 0 : v.output_cost_per_token,
+    // Same predicate as the filter — `k` is already the vendored key here. Zeroing
+    // on raw `v.mode` would re-introduce the free-output hole for any entry whose
+    // declared mode and id disagree.
+    output_cost_per_token: isEmbeddingModel(k, v) ? 0 : v.output_cost_per_token,
     litellm_provider: v.litellm_provider,
     mode: v.mode,
   };
+  const existing = out[k];
+  if (existing === undefined) {
+    out[k] = entry;
+    continue;
+  }
+  // Two upstream keys collapsed onto one vendored key — upstream lists several
+  // Gemini models BOTH bare and "gemini/"-prefixed. Plain assignment would let
+  // the last one silently win, so resolve deterministically toward the dearer
+  // rate PER BUCKET: picking one whole entry by total cost still under-meters a
+  // prompt/completion mix whenever one duplicate has the higher input rate and
+  // the other the higher output rate. Over-pricing stops the agent one call
+  // early (safe); under-pricing lets a crossing call through (the failure this
+  // package exists to prevent).
+  const input_cost_per_token = Math.max(
+    existing.input_cost_per_token,
+    entry.input_cost_per_token,
+  );
+  const output_cost_per_token = Math.max(
+    existing.output_cost_per_token,
+    entry.output_cost_per_token,
+  );
+  const merged = {
+    input_cost_per_token,
+    output_cost_per_token,
+    litellm_provider: existing.litellm_provider,
+    // Both sides already passed isUsable, so a 0 output rate here means both were
+    // VERIFIED embeddings. Anything else took a chat rate on at least one bucket
+    // and must not keep a mode that reads as "output is free".
+    mode: output_cost_per_token === 0 ? "embedding" : "chat",
+  };
+  out[k] = merged;
+  console.warn(
+    `NOTE: ${k} is listed more than once upstream — kept the dearer rate in each ` +
+      `bucket (${input_cost_per_token}/${output_cost_per_token}).`,
+  );
 }
 
 const json = `${JSON.stringify(out, null, 2)}\n`;
@@ -121,5 +255,7 @@ for (const dest of targets) {
 }
 
 console.log(
-  `Wrote ${entries.length} models to ${targets.length} files (source: ${SOURCE_URL}).`,
+  // Object.keys(out), not entries.length: collapsed duplicate keys (see the
+  // collision note above) mean fewer models are vendored than entries survived.
+  `Wrote ${Object.keys(out).length} models to ${targets.length} files (source: ${SOURCE_URL}).`,
 );
