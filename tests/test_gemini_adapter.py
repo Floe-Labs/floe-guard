@@ -164,9 +164,7 @@ def test_usage_reads_a_plain_dict_response() -> None:
 
 def test_records_spend_and_returns_response() -> None:
     guard = _guard()
-    response = _Response(
-        usage_metadata=_Usage(prompt_token_count=1000, candidates_token_count=500)
-    )
+    response = _Response(usage_metadata=_Usage(prompt_token_count=1000, candidates_token_count=500))
     client = _Client(response)
 
     assert guarded_completion(guard, client, model=MODEL, contents="hi") is response
