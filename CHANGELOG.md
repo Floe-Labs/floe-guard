@@ -10,6 +10,24 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## py 0.10.0 / js 0.7.0 — 2026-07-23
+
+### Added (py + js)
+
+- **Budget-aware retry helper** (`with_budget_retry` / `withBudgetRetry`,
+  issue #45): retry normally when budget is healthy, ask a caller-supplied
+  degrade callback for a cheaper retry plan when `advisory().near_limit` /
+  `nearLimit` is set, and hard-block an over-budget retry with `check()` before
+  it runs. Ships with a no-network Python example.
+
+### Fixed (py)
+
+- **Budget-aware retry**: reject non-integer `max_attempts`, and catch
+  `Exception` (not `BaseException`) so `KeyboardInterrupt` /
+  `SystemExit` / `CancelledError` propagate instead of being retried.
+
+## py 0.9.0 / js 0.6.0 — 2026-07-23
+
 ### Added (py)
 
 - **Google Gemini adapter** (`pip install floe-guard[gemini]`) —
