@@ -104,6 +104,31 @@ def test_gemini_vertex_ids_price_at_ai_studio_rates() -> None:
     assert vertex.input_cost_per_token == ai_studio.input_cost_per_token
 
 
+def test_no_vendored_chat_model_bills_output_free() -> None:
+    # Regression guard. Upstream mislabels some chat models as mode="embedding"
+    # (gemini-1.5-flash was shipped that way, with output_cost_per_token=0), and
+    # embedding mode zeroes the output rate — so a wrong mode silently bills a chat
+    # model's output at $0, which fail-closed pricing cannot catch because 0 is a
+    # finite, valid price. The refresh script now requires an embedding entry's id
+    # to agree with its mode; this asserts the invariant that survives it.
+    from floe_guard.pricing import _COST_MAP
+
+    for model, entry in _COST_MAP.items():
+        if entry.get("mode") == "embedding":
+            assert "embedding" in model, f"{model} claims embedding mode but is not named one"
+        else:
+            assert entry.get("output_cost_per_token", 0) > 0, f"{model} bills output free"
+
+
+def test_mislabelled_chat_model_is_not_vendored_as_an_embedding() -> None:
+    # gemini-1.5-flash is a chat/multimodal model that upstream lists as
+    # mode="embedding" with a 0 output rate. There is no correctly-priced variant
+    # upstream to fall back to, so it stays unpriceable and fails closed rather
+    # than metering chat completions with free output.
+    assert resolve_price("gemini-1.5-flash") is None
+    assert resolve_price("gemini/gemini-1.5-flash") is None
+
+
 def test_gemini_free_tier_models_stay_unpriceable() -> None:
     # Upstream lists some experimental/free Gemini entries at 0/0. The refresh
     # script drops zero-priced CHAT models: fail-closed pricing cannot catch them

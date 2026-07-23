@@ -449,7 +449,7 @@ pricing. Use `guarded_acompletion` with an `AsyncAnthropic` client for async.
 ### Google Gemini
 
 ```bash
-pip install floe-guard[gemini]
+pip install 'floe-guard[gemini]'
 ```
 
 ```python

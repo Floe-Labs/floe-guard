@@ -91,6 +91,22 @@ function vendoredKey(k) {
  * model that bills output free, which fail-closed pricing can't catch (0 is
  * finite). An excluded model is simply absent.
  */
+
+/**
+ * Embedding mode zeroes the output rate, so trusting a WRONG `mode` ships a chat
+ * model that bills output free — the precise hole fail-closed pricing cannot see.
+ * Upstream does get this wrong: it lists `gemini/gemini-1.5-flash`, a chat model,
+ * as `mode: "embedding"` with `output_cost_per_token: 0`.
+ *
+ * So `mode` alone is not enough authority to zero a price. Require the model id to
+ * agree with it: a genuine embedding model says so in its name (`text-embedding-*`,
+ * `gemini-embedding-*`). A single wrong field then can't produce a free-output chat
+ * model, and an embedding whose name doesn't match simply fails closed — the safe
+ * direction.
+ */
+function isEmbeddingModel(vendored, v) {
+  return v.mode === "embedding" && vendored.includes("embedding");
+}
 function isUsable(k, v) {
   // Number.isFinite (not typeof === "number") so a NaN, or a huge upstream value
   // that JSON.parse turns into Infinity, is treated as unpriceable and dropped —
@@ -102,7 +118,7 @@ function isUsable(k, v) {
     (ROUTABLE_PROVIDERS.has(v.litellm_provider) ||
       PREFIX_STRIPPED_PROVIDERS.has(v.litellm_provider) ||
       GROQ_KEY_MAP.has(k)) &&
-    (v.mode === "embedding" ||
+    (isEmbeddingModel(vendoredKey(k), v) ||
       (v.mode === "chat" &&
         Number.isFinite(v.output_cost_per_token) &&
         // A chat model priced at 0 bills every call free, and fail-closed pricing
@@ -147,7 +163,10 @@ const out = Object.create(null);
 for (const [k, v] of entries) {
   const entry = {
     input_cost_per_token: v.input_cost_per_token,
-    output_cost_per_token: v.mode === "embedding" ? 0 : v.output_cost_per_token,
+    // Same predicate as the filter — `k` is already the vendored key here. Zeroing
+    // on raw `v.mode` would re-introduce the free-output hole for any entry whose
+    // declared mode and id disagree.
+    output_cost_per_token: isEmbeddingModel(k, v) ? 0 : v.output_cost_per_token,
     litellm_provider: v.litellm_provider,
     mode: v.mode,
   };

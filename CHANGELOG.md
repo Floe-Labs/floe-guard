@@ -50,6 +50,15 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ### Fixed (py + js)
 
+- **A wrong upstream `mode` can no longer bill a chat model's output for free.**
+  Embedding mode zeroes the output rate, and upstream lists `gemini-1.5-flash` — a
+  chat/multimodal model — as `mode: "embedding"` with `output_cost_per_token: 0`.
+  Vendoring that would meter every `gemini-1.5-flash` completion's output at $0,
+  which fail-closed pricing cannot catch because `0` is a finite, valid price. An
+  embedding entry's id must now agree with its declared mode (`text-embedding-*`,
+  `gemini-embedding-*`), so a single wrong field can't zero a price; the same
+  predicate gates both the filter and the writer. `gemini-1.5-flash` has no
+  correctly-priced variant upstream, so it stays unpriceable and fails closed.
 - **Zero-priced chat models are no longer vendored.** Upstream lists some
   free/experimental tiers at `0`/`0`, and fail-closed pricing cannot catch them
   (`0` is finite, so the model resolves and every call meters at $0 forever).

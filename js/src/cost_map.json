@@ -215,12 +215,6 @@
     "litellm_provider": "openai",
     "mode": "chat"
   },
-  "gemini-1.5-flash": {
-    "input_cost_per_token": 7.5e-8,
-    "output_cost_per_token": 0,
-    "litellm_provider": "gemini",
-    "mode": "embedding"
-  },
   "gemini-2.0-flash": {
     "input_cost_per_token": 1e-7,
     "output_cost_per_token": 4e-7,
