@@ -8,7 +8,15 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## Unreleased — py 0.11.0 / js 0.8.0
+
+### Added (py + js)
+
+- **`advisory()` exposes `expected_cost` + `est_calls_remaining`** (`expectedCost`
+  / `estCallsRemaining` in TS, issue #49): the guard's own next-call estimate and
+  how many more calls the remaining budget buys, so a planner can see call
+  headroom, not just dollars. `None`/`null` until the first call is recorded.
+  Additive fields — existing advisory consumers are unaffected.
 
 ## py 0.10.0 / js 0.7.0 — 2026-07-23
 

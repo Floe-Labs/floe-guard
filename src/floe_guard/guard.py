@@ -71,6 +71,14 @@ class BudgetAdvisory:
     limit_usd: float
     spent_usd: float
     scope: str = "local"  # hosted reports the tightest cap across all scopes
+    # The guard's own next-call estimate (the costlier of the last LLM and last
+    # tool call — same value the default reservation uses). 0.0 until the first
+    # call is recorded, so a planner can't divide by a cold estimate.
+    expected_cost: float = 0.0
+    # How many more calls the remaining budget buys at expected_cost:
+    # floor(remaining_usd / expected_cost). None when expected_cost is 0.0
+    # (no call recorded yet) — unknown, not zero.
+    est_calls_remaining: int | None = None
 
 
 @dataclass(frozen=True)
@@ -569,6 +577,16 @@ class BudgetGuard:
             # and floor matches JS Math.floor exactly — round() would diverge
             # (Python banker's rounding vs JS ties-up).
             used_bps = max(0, min(10000, int(self.spent_usd / self.limit_usd * 10000 + 1e-9)))
+        remaining = max(0.0, self.limit_usd - self.spent_usd)
+        # Lock-free read of the last-cost fields, consistent with reading
+        # spent_usd above: the estimate is the costlier of the last LLM and tool
+        # call (the guard's own default reservation), 0.0 before any call.
+        expected_cost = max(self._last_llm_cost, self._last_tool_cost)
+        # +1e-9 absorbs float noise so e.g. 0.6/0.2 floors to 3 not 2 (same
+        # epsilon rationale as used_bps above, and keeps JS Math.floor parity).
+        est_calls_remaining = (
+            int(remaining / expected_cost + 1e-9) if expected_cost > 0.0 else None
+        )
         return BudgetAdvisory(
             near_limit=used_bps >= self.near_limit_bps,
             used_bps=used_bps,
@@ -577,9 +595,11 @@ class BudgetGuard:
             # (which subtracts _reserved): the advisory is a soft utilization signal
             # about money already spent, while the property reports what a new call
             # can still claim.
-            remaining_usd=max(0.0, self.limit_usd - self.spent_usd),
+            remaining_usd=remaining,
             limit_usd=self.limit_usd,
             spent_usd=self.spent_usd,
+            expected_cost=expected_cost,
+            est_calls_remaining=est_calls_remaining,
         )
 
     # ── internals ──────────────────────────────────────────────────────────────
