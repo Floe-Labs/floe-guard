@@ -56,6 +56,32 @@ def test_used_bps_floors_not_rounds() -> None:
     assert a.near_limit is False
 
 
+def test_expected_cost_unknown_before_first_call() -> None:
+    # No call recorded yet: estimate is 0.0 and calls-remaining is unknown (None),
+    # not a divide-by-zero and not a misleading 0.
+    a = BudgetGuard(limit_usd=1.00).advisory()
+    assert a.expected_cost == 0.0
+    assert a.est_calls_remaining is None
+
+
+def test_est_calls_remaining_after_a_call() -> None:
+    g = BudgetGuard(limit_usd=1.00)
+    g._last_llm_cost = 0.10   # warm estimate; remaining is 1.00
+    a = g.advisory()
+    assert a.expected_cost == pytest.approx(0.10)
+    assert a.est_calls_remaining == 10  # floor(1.00 / 0.10)
+
+
+def test_est_calls_remaining_uses_costlier_of_llm_and_tool() -> None:
+    g = BudgetGuard(limit_usd=1.00)
+    g._last_llm_cost = 0.05
+    g._last_tool_cost = 0.20   # costlier side wins (conservative)
+    g.spent_usd = 0.40         # remaining 0.60
+    a = g.advisory()
+    assert a.expected_cost == pytest.approx(0.20)
+    assert a.est_calls_remaining == 3  # floor(0.60 / 0.20)
+
+
 def test_invalid_near_limit_bps_rejected() -> None:
     with pytest.raises(ValueError):
         BudgetGuard(limit_usd=1.00, near_limit_bps=-1)

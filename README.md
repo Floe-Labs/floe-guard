@@ -154,7 +154,10 @@ guard.record(model, response.usage.prompt_tokens, response.usage.completion_toke
 ```
 
 `advisory()` returns `near_limit`, `used_bps` (utilization in basis points),
-`remaining_usd`, and the budget totals. It's a **soft** signal — the model may
+`remaining_usd`, and the budget totals. It also reports `expected_cost` (the
+guard's own next-call estimate) and `est_calls_remaining` (how many more calls
+the remaining budget buys, `None` until the first call is recorded) — call
+headroom, not just dollars. It's a **soft** signal — the model may
 ignore it; `check()` is what enforces the ceiling. See
 [`examples/budget_aware.py`](examples/budget_aware.py) for a runnable taper demo
 (no API key).

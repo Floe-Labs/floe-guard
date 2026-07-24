@@ -50,6 +50,22 @@ describe("BudgetGuard.advisory", () => {
     expect(a.nearLimit).toBe(false); // 80% not actually reached yet
   });
 
+  it("expectedCost is 0 and estCallsRemaining is null before any call", () => {
+    // No call recorded: no estimate yet, so calls-remaining is unknown (null),
+    // never a divide-by-zero or a misleading 0.
+    const a = new BudgetGuard(1.0).advisory();
+    expect(a.expectedCost).toBe(0);
+    expect(a.estCallsRemaining).toBeNull();
+  });
+
+  it("estCallsRemaining is floor(remaining / expectedCost) after a call", () => {
+    const g = new BudgetGuard(1.0);
+    g.recordTool("apollo.people_lookup", 0.1); // spent 0.10, remaining 0.90
+    const a = g.advisory();
+    expect(a.expectedCost).toBeCloseTo(0.1, 9);
+    expect(a.estCallsRemaining).toBe(9); // floor(0.90 / 0.10)
+  });
+
   it("rejects an out-of-range or non-integer nearLimitBps", () => {
     expect(() => new BudgetGuard(1.0, { nearLimitBps: -1 })).toThrow(RangeError);
     expect(() => new BudgetGuard(1.0, { nearLimitBps: 10001 })).toThrow(RangeError);

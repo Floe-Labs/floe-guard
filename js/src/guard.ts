@@ -113,6 +113,18 @@ export interface BudgetAdvisory {
   spentUsd: number;
   /** Hosted reports the tightest cap across all scopes; local is always "local". */
   scope: "local";
+  /**
+   * The guard's own next-call estimate (the costlier of the last LLM and last
+   * tool call — the same value the default reservation uses). 0 until the first
+   * call is recorded, so a planner can't divide by a cold estimate.
+   */
+  expectedCost: number;
+  /**
+   * How many more calls the remaining budget buys at expectedCost:
+   * floor(remainingUsd / expectedCost). null when expectedCost is 0 (no call
+   * recorded yet) — unknown, not zero.
+   */
+  estCallsRemaining: number | null;
 }
 
 export class BudgetGuard {
@@ -559,6 +571,14 @@ export class BudgetGuard {
       this.limitUsd <= 0
         ? 10000
         : Math.max(0, Math.min(10000, Math.floor((this.spentUsd / this.limitUsd) * 10000 + 1e-9)));
+    const remainingUsd = Math.max(0, this.limitUsd - this.spentUsd);
+    // The costlier of the last LLM and tool call — the guard's own default
+    // reservation estimate; 0 before any call is recorded.
+    const expectedCost = Math.max(this.lastLlmCost, this.lastToolCost);
+    // +1e-9 absorbs float noise so e.g. 0.6/0.2 floors to 3 not 2 (same epsilon
+    // rationale as usedBps above, and keeps Python int() parity).
+    const estCallsRemaining =
+      expectedCost > 0 ? Math.floor(remainingUsd / expectedCost + 1e-9) : null;
     return {
       nearLimit: usedBps >= this.nearLimitBps,
       usedBps,
@@ -566,10 +586,12 @@ export class BudgetGuard {
       // in-flight reservations. Unlike the remainingUsd getter (which subtracts
       // `reserved`), the advisory is a soft utilization signal about money already
       // spent, while the getter reports what a new call can still claim.
-      remainingUsd: Math.max(0, this.limitUsd - this.spentUsd),
+      remainingUsd,
       limitUsd: this.limitUsd,
       spentUsd: this.spentUsd,
       scope: "local",
+      expectedCost,
+      estCallsRemaining,
     };
   }
 }
