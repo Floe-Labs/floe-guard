@@ -66,6 +66,18 @@ describe("BudgetGuard.advisory", () => {
     expect(a.estCallsRemaining).toBe(9); // floor(0.90 / 0.10)
   });
 
+  it("expectedCost is the costlier of the last LLM and tool call", () => {
+    // Parity with the Python suite: a cheap tool after an expensive LLM call
+    // must not shrink the estimate — the max wins (conservative).
+    const g = new BudgetGuard(1.0);
+    g.record("gpt-4o", 1_000, 1_000); // $0.0125 LLM
+    g.recordTool("exa.search", 0.001); // cheaper tool, spent = $0.0135
+    const a = g.advisory();
+    expect(a.expectedCost).toBeCloseTo(0.0125, 9); // LLM side, not the cheaper tool
+    // floor((1.0 - 0.0135) / 0.0125) = floor(78.92) = 78
+    expect(a.estCallsRemaining).toBe(78);
+  });
+
   it("rejects an out-of-range or non-integer nearLimitBps", () => {
     expect(() => new BudgetGuard(1.0, { nearLimitBps: -1 })).toThrow(RangeError);
     expect(() => new BudgetGuard(1.0, { nearLimitBps: 10001 })).toThrow(RangeError);

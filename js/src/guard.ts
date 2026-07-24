@@ -117,14 +117,18 @@ export interface BudgetAdvisory {
    * The guard's own next-call estimate (the costlier of the last LLM and last
    * tool call — the same value the default reservation uses). 0 until the first
    * call is recorded, so a planner can't divide by a cold estimate.
+   *
+   * Optional so adding it stays a non-breaking, additive change for any code
+   * that constructs a `BudgetAdvisory` literal; `advisory()` always sets it.
    */
-  expectedCost: number;
+  expectedCost?: number;
   /**
    * How many more calls the remaining budget buys at expectedCost:
    * floor(remainingUsd / expectedCost). null when expectedCost is 0 (no call
-   * recorded yet) — unknown, not zero.
+   * recorded yet) — unknown, not zero. Optional for the same additive reason as
+   * expectedCost; `advisory()` always sets it.
    */
-  estCallsRemaining: number | null;
+  estCallsRemaining?: number | null;
 }
 
 export class BudgetGuard {
