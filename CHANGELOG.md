@@ -15,7 +15,9 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 - **`advisory()` exposes `expected_cost` + `est_calls_remaining`** (`expectedCost`
   / `estCallsRemaining` in TS, issue #49): the guard's own next-call estimate and
   how many more calls the remaining budget buys, so a planner can see call
-  headroom, not just dollars. `None`/`null` until the first call is recorded.
+  headroom, not just dollars. `expected_cost` / `expectedCost` is `0.0` / `0`
+  before the first call is recorded; `est_calls_remaining` / `estCallsRemaining`
+  is `None` / `null` until then (unknown, not zero).
   Additive fields — existing advisory consumers are unaffected.
 
 ## py 0.10.0 / js 0.7.0 — 2026-07-23
