@@ -50,6 +50,37 @@ describe("BudgetGuard.advisory", () => {
     expect(a.nearLimit).toBe(false); // 80% not actually reached yet
   });
 
+  it("expectedCost is 0 and estCallsRemaining is null before any call", () => {
+    // No call recorded: no estimate yet, so calls-remaining is unknown (null),
+    // never a divide-by-zero or a misleading 0.
+    const a = new BudgetGuard(1.0).advisory();
+    expect(a.expectedCost).toBe(0);
+    expect(a.estCallsRemaining).toBeNull();
+  });
+
+  it("estCallsRemaining is floor(remaining / expectedCost) after a call", () => {
+    const g = new BudgetGuard(1.0);
+    g.recordTool("apollo.people_lookup", 0.1); // spent 0.10, remaining 0.90
+    const a = g.advisory();
+    expect(a.expectedCost).toBeCloseTo(0.1, 9);
+    expect(a.estCallsRemaining).toBe(9); // floor(0.90 / 0.10)
+  });
+
+  it("expectedCost is the costlier of the last LLM and tool call", () => {
+    // Parity with the Python suite: a cheap tool after an expensive LLM call
+    // must not shrink the estimate — the max wins (conservative). A ManualPrice
+    // literal keeps the LLM cost deterministic (no dependency on cost_map.json,
+    // which drifts when refreshed).
+    const g = new BudgetGuard(1.0);
+    g.record("m", 1_000, 0, {
+      price: { inputCostPerToken: 2e-4, outputCostPerToken: 0.0 },
+    }); // $0.20 LLM (costlier)
+    g.recordTool("db.query", 0.05); // $0.05 tool (cheaper), spent = $0.25
+    const a = g.advisory(); // remaining 0.75
+    expect(a.expectedCost).toBeCloseTo(0.2, 9); // LLM side, not the cheaper tool
+    expect(a.estCallsRemaining).toBe(3); // floor(0.75 / 0.20)
+  });
+
   it("rejects an out-of-range or non-integer nearLimitBps", () => {
     expect(() => new BudgetGuard(1.0, { nearLimitBps: -1 })).toThrow(RangeError);
     expect(() => new BudgetGuard(1.0, { nearLimitBps: 10001 })).toThrow(RangeError);
