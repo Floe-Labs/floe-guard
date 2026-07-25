@@ -15,8 +15,10 @@ process.
 
 Works with [CrewAI](#crewai) · [LiteLLM](#litellm) · [LangChain](#langchain) ·
 [LangGraph](#langgraph) · [OpenAI](#openai) · [Anthropic](#anthropic) ·
-[Gemini](#google-gemini) · [Vercel AI SDK](#vercel-ai-sdk) — or any stack, via
-plain `check()` / `record()`.
+[Gemini](#google-gemini) · [Vercel AI SDK](#vercel-ai-sdk) — and voice pipelines
+via [Pipecat](#pipecat-voice) · [LiveKit](#livekit-voice) — or any stack, via
+plain `check()` / `record()`. See the [adapter matrix](#adapter-matrix) for what
+ships in Python vs TypeScript.
 The hard-stop is contract-based: gate each call through the guard — adapters do
 it for LLM calls; for paid tools, [`reserve_tool()` / `settle_tool()`](#tool-spend-under-the-same-ceiling)
 block *before* the call runs (`record_tool()` alone meters a call after the
@@ -551,6 +553,129 @@ const model = wrapLanguageModel({
 The middleware `check()`s before each call (throwing `BudgetExceeded` to halt the
 run) and `record()`s priced usage after — same semantics as the Python guard. See
 [`js/README.md`](js/README.md).
+
+## Voice adapters (STT → LLM → TTS)
+
+A voice pipeline has no single call site to wrap: the LLM sits inside a running
+session and turns fire continuously for the life of a call. So instead of a
+function wrapper, these adapters enforce **per turn** — reserve before the LLM
+call (so a turn is blocked *before* its TTS/audio spend piles on top of a call
+that would already cross the ceiling), settle on the real usage the pipeline
+reports, and release a turn that ends without ever reporting usage (an
+interrupted turn) so the reservation never leaks against the ceiling. The token
+cost map is LLM-only, so STT/TTS spend is metered only when you supply per-unit
+prices. Both voice adapters are **Python-only** today.
+
+### Pipecat (voice)
+
+```bash
+pip install floe-guard[pipecat]
+```
+
+Drop a `FloeBudgetGuardProcessor` into the pipeline directly after the LLM
+service. It reserves on each turn's `LLMFullResponseStartFrame` and settles from
+the `LLMUsageMetricsData` Pipecat emits — so the pipeline's `PipelineTask` must
+be created with `enable_metrics=True, enable_usage_metrics=True`.
+
+```python
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.task import PipelineTask, PipelineParams
+from floe_guard import BudgetGuard
+from floe_guard.integrations.pipecat import FloeBudgetGuardProcessor
+
+guard = BudgetGuard(limit_usd=1.00)
+
+pipeline = Pipeline([
+    transport.input(),
+    stt,
+    context_aggregator.user(),
+    llm,
+    FloeBudgetGuardProcessor(guard, model="gpt-4o"),   # meters AND hard-stops
+    tts,
+    transport.output(),
+    context_aggregator.assistant(),
+])
+task = PipelineTask(
+    pipeline,
+    params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+)
+```
+
+> **Fragment** — `transport`, `stt`, `llm`, `tts`, and `context_aggregator` are your existing Pipecat objects; this shows only where the guard sits in a pipeline you already have. For a complete, runnable demo (no API key, no network), see [`examples/voice_turn_budget.py`](examples/voice_turn_budget.py).
+
+By default a blocked turn pushes a fatal `ErrorFrame` that terminates the
+pipeline — the hard-stop every other adapter gives you. Pass an
+`on_budget_exceeded` async callback to speak a graceful "wrapping up" line first
+instead of cutting the call dead.
+
+### LiveKit (voice)
+
+```bash
+pip install floe-guard[livekit]
+```
+
+`LiveKitBudgetGuard.attach(session, agent)` wires the reserve-before /
+settle-after contract onto a LiveKit `AgentSession`: it reserves in the agent's
+`llm_node` and settles on the session's `metrics_collected` `LLMMetrics`.
+LiveKit's `LLMMetrics` doesn't report the served model, so cost settles against
+the `model` you pass here.
+
+```python
+from livekit.agents import AgentSession
+from floe_guard import BudgetGuard, ManualPrice
+from floe_guard.integrations.livekit import LiveKitBudgetGuard
+
+guard = BudgetGuard(
+    limit_usd=1.00,
+    price_overrides={"gemini-2.0-flash": ManualPrice(0.30e-6, 2.50e-6)},
+)
+budget = LiveKitBudgetGuard(guard, model="gemini-2.0-flash")
+
+session = AgentSession(...)
+budget.attach(session, agent)      # wire reserve / settle / release
+await session.start(agent=agent, room=ctx.room)
+```
+
+> **Fragment** — `session`, `agent`, and `ctx.room` come from your LiveKit agent entrypoint (`JobContext`); this shows only where the guard attaches.
+
+Pass `stt_usd_per_second` / `tts_usd_per_1k_chars` to also meter STT/TTS spend
+(often a voice agent's larger bill) via `record_tool`, and an `on_budget_exceeded`
+async callback to speak a wrap-up line before a turn ends. See
+[`examples/voice_turn_budget.py`](examples/voice_turn_budget.py).
+
+## Adapter matrix
+
+| Adapter | Python | TypeScript |
+|---|---|---|
+| OpenAI | ✅ | via [Vercel AI SDK](#vercel-ai-sdk) |
+| Anthropic | ✅ | via [Vercel AI SDK](#vercel-ai-sdk) |
+| Google Gemini | ✅ | via [Vercel AI SDK](#vercel-ai-sdk) |
+| LangChain | ✅ | — |
+| LangGraph | ✅ | — |
+| CrewAI | ✅ | — |
+| LiteLLM | ✅ | — |
+| Vercel AI SDK | — | ✅ |
+| **Pipecat** (voice) | ✅ | — |
+| **LiveKit** (voice) | ✅ | — |
+
+The TypeScript package is a single Vercel AI SDK middleware that guards any model
+the AI SDK wraps (OpenAI, Anthropic, Gemini, …) — it is not a per-framework
+adapter set like the Python package.
+
+### TypeScript voice parity
+
+**This release ships no TypeScript voice adapter.** The JS package
+([`js/`](js/)) ships one surface — the Vercel AI SDK middleware — and it is
+**text-only**: it guards a wrapped `LanguageModel`, not a running STT → LLM → TTS
+session. A voice/telephony builder on a Node stack should either drive the LLM
+turn through the Vercel AI middleware and meter STT/TTS spend by hand via
+`recordTool`, or run the LLM leg through the **hosted [Floe proxy](#upgrade-to-hosted-floe)**
+(un-bypassable, cross-vendor) — or use the Python Pipecat / LiveKit adapters
+above, which enforce the whole turn. No native TypeScript Pipecat/LiveKit voice
+adapter ships in this release.
+
+For wiring floe-guard into an existing voice pipeline, see the Floe docs:
+**[Add Floe to your existing pipeline](https://floe-labs.gitbook.io/docs/getting-started/integrate-existing-pipeline)**.
 
 ## Honest about what this is
 
