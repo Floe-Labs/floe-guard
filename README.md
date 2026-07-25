@@ -601,6 +601,8 @@ task = PipelineTask(
 )
 ```
 
+> **Fragment** — `transport`, `stt`, `llm`, `tts`, and `context_aggregator` are your existing Pipecat objects; this shows only where the guard sits in a pipeline you already have. For a complete, runnable demo (no API key, no network), see [`examples/voice_turn_budget.py`](examples/voice_turn_budget.py).
+
 By default a blocked turn pushes a fatal `ErrorFrame` that terminates the
 pipeline — the hard-stop every other adapter gives you. Pass an
 `on_budget_exceeded` async callback to speak a graceful "wrapping up" line first
@@ -634,6 +636,8 @@ budget.attach(session, agent)      # wire reserve / settle / release
 await session.start(agent=agent, room=ctx.room)
 ```
 
+> **Fragment** — `session`, `agent`, and `ctx.room` come from your LiveKit agent entrypoint (`JobContext`); this shows only where the guard attaches.
+
 Pass `stt_usd_per_second` / `tts_usd_per_1k_chars` to also meter STT/TTS spend
 (often a voice agent's larger bill) via `record_tool`, and an `on_budget_exceeded`
 async callback to speak a wrap-up line before a turn ends. See
@@ -660,15 +664,15 @@ adapter set like the Python package.
 
 ### TypeScript voice parity
 
-**There is no TypeScript voice adapter today.** The JS package
+**This release ships no TypeScript voice adapter.** The JS package
 ([`js/`](js/)) ships one surface — the Vercel AI SDK middleware — and it is
 **text-only**: it guards a wrapped `LanguageModel`, not a running STT → LLM → TTS
 session. A voice/telephony builder on a Node stack should either drive the LLM
 turn through the Vercel AI middleware and meter STT/TTS spend by hand via
 `recordTool`, or run the LLM leg through the **hosted [Floe proxy](#upgrade-to-hosted-floe)**
 (un-bypassable, cross-vendor) — or use the Python Pipecat / LiveKit adapters
-above, which enforce the whole turn. A native TS Pipecat/LiveKit adapter is **not
-yet available**; there is no committed roadmap for one.
+above, which enforce the whole turn. No native TypeScript Pipecat/LiveKit voice
+adapter ships in this release.
 
 For wiring floe-guard into an existing voice pipeline, see the Floe docs:
 **[Add Floe to your existing pipeline](https://floe-labs.gitbook.io/docs/getting-started/integrate-existing-pipeline)**.
