@@ -68,14 +68,17 @@ describe("BudgetGuard.advisory", () => {
 
   it("expectedCost is the costlier of the last LLM and tool call", () => {
     // Parity with the Python suite: a cheap tool after an expensive LLM call
-    // must not shrink the estimate — the max wins (conservative).
+    // must not shrink the estimate — the max wins (conservative). A ManualPrice
+    // literal keeps the LLM cost deterministic (no dependency on cost_map.json,
+    // which drifts when refreshed).
     const g = new BudgetGuard(1.0);
-    g.record("gpt-4o", 1_000, 1_000); // $0.0125 LLM
-    g.recordTool("exa.search", 0.001); // cheaper tool, spent = $0.0135
-    const a = g.advisory();
-    expect(a.expectedCost).toBeCloseTo(0.0125, 9); // LLM side, not the cheaper tool
-    // floor((1.0 - 0.0135) / 0.0125) = floor(78.92) = 78
-    expect(a.estCallsRemaining).toBe(78);
+    g.record("m", 1_000, 0, {
+      price: { inputCostPerToken: 2e-4, outputCostPerToken: 0.0 },
+    }); // $0.20 LLM (costlier)
+    g.recordTool("db.query", 0.05); // $0.05 tool (cheaper), spent = $0.25
+    const a = g.advisory(); // remaining 0.75
+    expect(a.expectedCost).toBeCloseTo(0.2, 9); // LLM side, not the cheaper tool
+    expect(a.estCallsRemaining).toBe(3); // floor(0.75 / 0.20)
   });
 
   it("rejects an out-of-range or non-integer nearLimitBps", () => {
