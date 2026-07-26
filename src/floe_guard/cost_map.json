@@ -137,6 +137,12 @@
     "litellm_provider": "anthropic",
     "mode": "chat"
   },
+  "claude-sonnet-5": {
+    "input_cost_per_token": 2e-06,
+    "output_cost_per_token": 1e-05,
+    "litellm_provider": "anthropic",
+    "mode": "chat"
+  },
   "ft:gpt-3.5-turbo": {
     "input_cost_per_token": 3e-06,
     "output_cost_per_token": 6e-06,
@@ -207,6 +213,222 @@
     "input_cost_per_token": 4e-06,
     "output_cost_per_token": 1.6e-05,
     "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "gemini-2.0-flash": {
+    "input_cost_per_token": 1e-07,
+    "output_cost_per_token": 4e-07,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.0-flash-001": {
+    "input_cost_per_token": 1e-07,
+    "output_cost_per_token": 4e-07,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.0-flash-lite": {
+    "input_cost_per_token": 7.5e-08,
+    "output_cost_per_token": 3e-07,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.0-flash-lite-001": {
+    "input_cost_per_token": 7.5e-08,
+    "output_cost_per_token": 3e-07,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.5-computer-use-preview-10-2025": {
+    "input_cost_per_token": 1.25e-06,
+    "output_cost_per_token": 1e-05,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.5-flash": {
+    "input_cost_per_token": 3e-07,
+    "output_cost_per_token": 2.5e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.5-flash-lite": {
+    "input_cost_per_token": 1e-07,
+    "output_cost_per_token": 4e-07,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.5-flash-lite-preview-06-17": {
+    "input_cost_per_token": 1e-07,
+    "output_cost_per_token": 4e-07,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.5-flash-lite-preview-09-2025": {
+    "input_cost_per_token": 1e-07,
+    "output_cost_per_token": 4e-07,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.5-flash-native-audio-latest": {
+    "input_cost_per_token": 3e-07,
+    "output_cost_per_token": 2.5e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.5-flash-native-audio-preview-09-2025": {
+    "input_cost_per_token": 3e-07,
+    "output_cost_per_token": 2.5e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.5-flash-native-audio-preview-12-2025": {
+    "input_cost_per_token": 3e-07,
+    "output_cost_per_token": 2.5e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.5-flash-preview-09-2025": {
+    "input_cost_per_token": 3e-07,
+    "output_cost_per_token": 2.5e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.5-pro": {
+    "input_cost_per_token": 1.25e-06,
+    "output_cost_per_token": 1e-05,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-2.5-pro-preview-tts": {
+    "input_cost_per_token": 1.25e-06,
+    "output_cost_per_token": 1e-05,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-3-flash-preview": {
+    "input_cost_per_token": 5e-07,
+    "output_cost_per_token": 3e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-3-pro-preview": {
+    "input_cost_per_token": 2e-06,
+    "output_cost_per_token": 1.2e-05,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-3.1-flash-lite": {
+    "input_cost_per_token": 2.5e-07,
+    "output_cost_per_token": 1.5e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-3.1-flash-lite-preview": {
+    "input_cost_per_token": 2.5e-07,
+    "output_cost_per_token": 1.5e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-3.1-flash-live-preview": {
+    "input_cost_per_token": 7.5e-07,
+    "output_cost_per_token": 4.5e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-3.1-pro-preview": {
+    "input_cost_per_token": 2e-06,
+    "output_cost_per_token": 1.2e-05,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-3.1-pro-preview-customtools": {
+    "input_cost_per_token": 2e-06,
+    "output_cost_per_token": 1.2e-05,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-3.5-flash": {
+    "input_cost_per_token": 1.5e-06,
+    "output_cost_per_token": 9e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-3.5-flash-lite": {
+    "input_cost_per_token": 3e-07,
+    "output_cost_per_token": 2.5e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-3.6-flash": {
+    "input_cost_per_token": 1.5e-06,
+    "output_cost_per_token": 7.5e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-embedding-001": {
+    "input_cost_per_token": 1.5e-07,
+    "output_cost_per_token": 0,
+    "litellm_provider": "gemini",
+    "mode": "embedding"
+  },
+  "gemini-embedding-2": {
+    "input_cost_per_token": 2e-07,
+    "output_cost_per_token": 0,
+    "litellm_provider": "gemini",
+    "mode": "embedding"
+  },
+  "gemini-embedding-2-preview": {
+    "input_cost_per_token": 2e-07,
+    "output_cost_per_token": 0,
+    "litellm_provider": "gemini",
+    "mode": "embedding"
+  },
+  "gemini-exp-1206": {
+    "input_cost_per_token": 3e-07,
+    "output_cost_per_token": 2.5e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-flash-latest": {
+    "input_cost_per_token": 3e-07,
+    "output_cost_per_token": 2.5e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-flash-lite-latest": {
+    "input_cost_per_token": 1e-07,
+    "output_cost_per_token": 4e-07,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-gemma-2-27b-it": {
+    "input_cost_per_token": 3.5e-07,
+    "output_cost_per_token": 1.05e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-gemma-2-9b-it": {
+    "input_cost_per_token": 3.5e-07,
+    "output_cost_per_token": 1.05e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-omni-flash-preview": {
+    "input_cost_per_token": 1.5e-06,
+    "output_cost_per_token": 9e-06,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-pro-latest": {
+    "input_cost_per_token": 1.25e-06,
+    "output_cost_per_token": 1e-05,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-robotics-er-1.5-preview": {
+    "input_cost_per_token": 3e-07,
+    "output_cost_per_token": 2.5e-06,
+    "litellm_provider": "gemini",
     "mode": "chat"
   },
   "gpt-3.5-turbo": {
@@ -383,18 +605,6 @@
     "litellm_provider": "openai",
     "mode": "chat"
   },
-  "gpt-4o-mini-realtime-preview": {
-    "input_cost_per_token": 6e-07,
-    "output_cost_per_token": 2.4e-06,
-    "litellm_provider": "openai",
-    "mode": "chat"
-  },
-  "gpt-4o-mini-realtime-preview-2024-12-17": {
-    "input_cost_per_token": 6e-07,
-    "output_cost_per_token": 2.4e-06,
-    "litellm_provider": "openai",
-    "mode": "chat"
-  },
   "gpt-4o-mini-search-preview": {
     "input_cost_per_token": 1.5e-07,
     "output_cost_per_token": 6e-07,
@@ -404,24 +614,6 @@
   "gpt-4o-mini-search-preview-2025-03-11": {
     "input_cost_per_token": 1.5e-07,
     "output_cost_per_token": 6e-07,
-    "litellm_provider": "openai",
-    "mode": "chat"
-  },
-  "gpt-4o-realtime-preview": {
-    "input_cost_per_token": 5e-06,
-    "output_cost_per_token": 2e-05,
-    "litellm_provider": "openai",
-    "mode": "chat"
-  },
-  "gpt-4o-realtime-preview-2024-12-17": {
-    "input_cost_per_token": 5e-06,
-    "output_cost_per_token": 2e-05,
-    "litellm_provider": "openai",
-    "mode": "chat"
-  },
-  "gpt-4o-realtime-preview-2025-06-03": {
-    "input_cost_per_token": 5e-06,
-    "output_cost_per_token": 2e-05,
     "litellm_provider": "openai",
     "mode": "chat"
   },
@@ -587,6 +779,30 @@
     "litellm_provider": "openai",
     "mode": "chat"
   },
+  "gpt-5.6": {
+    "input_cost_per_token": 5e-06,
+    "output_cost_per_token": 3e-05,
+    "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "gpt-5.6-luna": {
+    "input_cost_per_token": 1e-06,
+    "output_cost_per_token": 6e-06,
+    "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "gpt-5.6-sol": {
+    "input_cost_per_token": 5e-06,
+    "output_cost_per_token": 3e-05,
+    "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "gpt-5.6-terra": {
+    "input_cost_per_token": 2.5e-06,
+    "output_cost_per_token": 1.5e-05,
+    "litellm_provider": "openai",
+    "mode": "chat"
+  },
   "gpt-audio": {
     "input_cost_per_token": 2.5e-06,
     "output_cost_per_token": 1e-05,
@@ -623,46 +839,22 @@
     "litellm_provider": "openai",
     "mode": "chat"
   },
-  "gpt-realtime": {
-    "input_cost_per_token": 4e-06,
-    "output_cost_per_token": 1.6e-05,
-    "litellm_provider": "openai",
+  "llama-3.1-8b-instant": {
+    "input_cost_per_token": 5e-08,
+    "output_cost_per_token": 8e-08,
+    "litellm_provider": "groq",
     "mode": "chat"
   },
-  "gpt-realtime-1.5": {
-    "input_cost_per_token": 4e-06,
-    "output_cost_per_token": 1.6e-05,
-    "litellm_provider": "openai",
+  "llama-3.3-70b-versatile": {
+    "input_cost_per_token": 5.9e-07,
+    "output_cost_per_token": 7.9e-07,
+    "litellm_provider": "groq",
     "mode": "chat"
   },
-  "gpt-realtime-2": {
-    "input_cost_per_token": 4e-06,
-    "output_cost_per_token": 1.6e-05,
-    "litellm_provider": "openai",
-    "mode": "chat"
-  },
-  "gpt-realtime-2025-08-28": {
-    "input_cost_per_token": 4e-06,
-    "output_cost_per_token": 1.6e-05,
-    "litellm_provider": "openai",
-    "mode": "chat"
-  },
-  "gpt-realtime-mini": {
-    "input_cost_per_token": 6e-07,
-    "output_cost_per_token": 2.4e-06,
-    "litellm_provider": "openai",
-    "mode": "chat"
-  },
-  "gpt-realtime-mini-2025-10-06": {
-    "input_cost_per_token": 6e-07,
-    "output_cost_per_token": 2.4e-06,
-    "litellm_provider": "openai",
-    "mode": "chat"
-  },
-  "gpt-realtime-mini-2025-12-15": {
-    "input_cost_per_token": 6e-07,
-    "output_cost_per_token": 2.4e-06,
-    "litellm_provider": "openai",
+  "meta-llama/llama-4-scout-17b-16e-instruct": {
+    "input_cost_per_token": 1.1e-07,
+    "output_cost_per_token": 3.4e-07,
+    "litellm_provider": "groq",
     "mode": "chat"
   },
   "o1": {
@@ -711,6 +903,30 @@
     "input_cost_per_token": 1.1e-06,
     "output_cost_per_token": 4.4e-06,
     "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "openai/gpt-oss-120b": {
+    "input_cost_per_token": 1.5e-07,
+    "output_cost_per_token": 6e-07,
+    "litellm_provider": "groq",
+    "mode": "chat"
+  },
+  "openai/gpt-oss-20b": {
+    "input_cost_per_token": 7.5e-08,
+    "output_cost_per_token": 3e-07,
+    "litellm_provider": "groq",
+    "mode": "chat"
+  },
+  "openai/gpt-oss-safeguard-20b": {
+    "input_cost_per_token": 7.5e-08,
+    "output_cost_per_token": 3e-07,
+    "litellm_provider": "groq",
+    "mode": "chat"
+  },
+  "qwen/qwen3-32b": {
+    "input_cost_per_token": 2.9e-07,
+    "output_cost_per_token": 5.9e-07,
+    "litellm_provider": "groq",
     "mode": "chat"
   },
   "text-embedding-3-large": {
