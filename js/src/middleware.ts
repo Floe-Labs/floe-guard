@@ -25,7 +25,7 @@
  * The model id used for pricing comes from `model.modelId`.
  */
 
-import type { BudgetGuard } from "./guard.js";
+import type { BudgetGuard, StepBudgetGuard } from "./guard.js";
 
 /**
  * The middleware call surface shared by `ai@4` and `ai@5`. Both majors invoke
@@ -98,7 +98,9 @@ function usageTokens(
  *   middleware: budgetGuardMiddleware(guard),
  * });
  */
-export function budgetGuardMiddleware(guard: BudgetGuard): BudgetGuardMiddleware {
+export function budgetGuardMiddleware(
+  guard: BudgetGuard<number | undefined> | StepBudgetGuard,
+): BudgetGuardMiddleware {
   return {
     async wrapGenerate({ doGenerate, model }) {
       const reserved = guard.reserve(); // throws BudgetExceeded before the call runs

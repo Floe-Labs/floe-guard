@@ -1,5 +1,9 @@
-import { BudgetExceeded } from "./errors.js";
-import { type BudgetAdvisory, BudgetGuard } from "./guard.js";
+import { BudgetExceeded, TokenBudgetExceeded } from "./errors.js";
+import {
+  type BudgetAdvisory,
+  BudgetGuard,
+  type StepBudgetGuard,
+} from "./guard.js";
 
 export interface RetryPlan<T> {
   /** Operation to run for this retry attempt. */
@@ -26,7 +30,10 @@ export interface BudgetRetryOptions<T> {
 }
 
 function defaultRetryIf(error: unknown): boolean {
-  return !(error instanceof BudgetExceeded);
+  return !(
+    error instanceof BudgetExceeded ||
+    error instanceof TokenBudgetExceeded
+  );
 }
 
 /**
@@ -38,7 +45,7 @@ function defaultRetryIf(error: unknown): boolean {
  * retry so an over-budget retry is blocked before it runs.
  */
 export async function withBudgetRetry<T>(
-  guard: BudgetGuard,
+  guard: BudgetGuard<number | undefined> | StepBudgetGuard,
   call: () => T | Promise<T>,
   options: BudgetRetryOptions<T> = {},
 ): Promise<T> {
@@ -64,7 +71,7 @@ export async function withBudgetRetry<T>(
 }
 
 async function nextPlan<T>(
-  guard: BudgetGuard,
+  guard: BudgetGuard<number | undefined> | StepBudgetGuard,
   error: unknown,
   current: RetryPlan<T>,
   onDegrade: BudgetRetryOptions<T>["onDegrade"],

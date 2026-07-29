@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { BudgetExceeded, BudgetGuard, type RetryPlan, withBudgetRetry } from "../src/index.js";
+import {
+  BudgetExceeded,
+  BudgetGuard,
+  type RetryPlan,
+  TokenBudgetExceeded,
+  withBudgetRetry,
+} from "../src/index.js";
 
 class RetryableError extends Error {}
 
@@ -91,6 +97,27 @@ describe("withBudgetRetry", () => {
         },
       ),
     ).rejects.toThrow("bad request");
+    expect(primaryCalls).toBe(1);
+  });
+
+  it("does not retry token budget errors by default", async () => {
+    const guard = new BudgetGuard(1.0, {
+      tokenLimit: 0,
+      onTokenBlock: () => undefined,
+    });
+    let primaryCalls = 0;
+
+    await expect(
+      withBudgetRetry(
+        guard,
+        () => {
+          primaryCalls += 1;
+          guard.check(0, 1);
+          return "unreachable";
+        },
+        { maxAttempts: 3 },
+      ),
+    ).rejects.toBeInstanceOf(TokenBudgetExceeded);
     expect(primaryCalls).toBe(1);
   });
 

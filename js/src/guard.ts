@@ -23,7 +23,11 @@
  * same epsilon handling, same fail-closed default.
  */
 
-import { BudgetExceeded, UnpriceableModelError } from "./errors.js";
+import {
+  BudgetExceeded,
+  TokenBudgetExceeded,
+  UnpriceableModelError,
+} from "./errors.js";
 import {
   type ManualPrice,
   priceTokens,
@@ -32,6 +36,47 @@ import {
 
 /** Tolerance for float rounding in the running spend total (well below $0.000001). */
 const EPS = 1e-12;
+
+interface StepState {
+  limitUsd: number | null;
+  tokenLimit: number | null;
+  spentUsd: number;
+  spentTokens: number;
+  reservedUsd: number;
+  reservedTokens: number;
+  active: boolean;
+}
+
+interface ReservationParts {
+  usd: number;
+  tokens: number;
+  step: StepState | null;
+}
+
+type BlockingLimit = {
+  metric: "usd" | "tokens";
+  scope: "aggregate" | "step";
+  spent: number;
+  limit: number;
+};
+
+export interface BudgetReservation {
+  readonly usd: number;
+  readonly tokens: number;
+  /** @internal */
+  _owner: BudgetGuard<number | undefined>;
+  /** @internal */
+  _step: StepState | null;
+  /** @internal */
+  _active: boolean;
+}
+
+export type ReservationHandle = number | BudgetReservation;
+
+export interface StepBudgetOptions {
+  maxUsd?: number;
+  maxTokens?: number;
+}
 
 /**
  * One priced spend event in the guard's per-call ledger.
@@ -61,7 +106,11 @@ export interface SpendEvent {
   readonly reserved?: number;
 }
 
-export interface BudgetGuardOptions {
+export interface BudgetGuardOptions<
+  TokenLimit extends number | undefined = number | undefined,
+> {
+  /** Optional aggregate token ceiling. */
+  tokenLimit?: TokenLimit;
   /** Per-model manual prices for models the bundled cost map cannot price. */
   priceOverrides?: Record<string, ManualPrice>;
   /**
@@ -76,6 +125,8 @@ export interface BudgetGuardOptions {
    * `BUDGET EXCEEDED — call blocked` banner to stderr.
    */
   onBlock?: (spentUsd: number, limitUsd: number) => void;
+  /** Callback invoked immediately before a token ceiling blocks a call. */
+  onTokenBlock?: (spentTokens: number, limitTokens: number) => void;
   /**
    * Utilization (basis points, 0..10000) at which {@link BudgetGuard.advisory}
    * flags `nearLimit` so an agent can taper before the hard-stop. Default 8000.
@@ -129,16 +180,35 @@ export interface BudgetAdvisory {
    * expectedCost; `advisory()` always sets it.
    */
   estCallsRemaining?: number | null;
+  /** Token and step fields are always set by advisory(); optional for additive compatibility. */
+  tokenLimit?: number | null;
+  spentTokens?: number;
+  remainingTokens?: number | null;
+  tokenUsedBps?: number | null;
+  nearTokenLimit?: boolean;
+  stepLimitUsd?: number | null;
+  stepSpentUsd?: number | null;
+  stepRemainingUsd?: number | null;
+  stepTokenLimit?: number | null;
+  stepSpentTokens?: number | null;
+  stepRemainingTokens?: number | null;
+  stepUsedBps?: number | null;
+  stepNearLimit?: boolean;
 }
 
-export class BudgetGuard {
+export class BudgetGuard<
+  TokenLimit extends number | undefined = undefined,
+> {
   readonly limitUsd: number;
+  readonly tokenLimit: number | null;
   spentUsd = 0;
+  spentTokens = 0;
   priceOverrides?: Record<string, ManualPrice>;
   failClosed: boolean;
   nearLimitBps: number;
 
   private readonly onBlock: (spentUsd: number, limitUsd: number) => void;
+  private readonly onTokenBlock: (spentTokens: number, limitTokens: number) => void;
   /**
    * Costs of the most recent priced LLM call and tool call, tracked
    * SEPARATELY: the default next-call prediction is the max of the two, so a
@@ -147,8 +217,10 @@ export class BudgetGuard {
    */
   private lastLlmCost = 0;
   private lastToolCost = 0;
+  private lastLlmTokens = 0;
   /** USD held for in-flight calls (reserved, not yet settled). Counts toward the ceiling. */
   private reserved = 0;
+  private reservedTokens = 0;
   /** Per-call ledger, oldest first; a ring buffer when maxLogEvents is set. */
   private readonly spendEvents: SpendEvent[] = [];
   private readonly maxLogEvents?: number;
@@ -163,7 +235,10 @@ export class BudgetGuard {
   /**
    * @param limitUsd the spend ceiling, in USD. `0` blocks the very first call.
    */
-  constructor(limitUsd: number, options: BudgetGuardOptions = {}) {
+  constructor(
+    limitUsd: number,
+    options: BudgetGuardOptions<TokenLimit> = {} as BudgetGuardOptions<TokenLimit>,
+  ) {
     if (!Number.isFinite(limitUsd) || limitUsd < 0) {
       // NaN/Infinity would make every check() comparison fail-open, silently
       // disabling the guard — reject them up front.
@@ -171,6 +246,7 @@ export class BudgetGuard {
         `limitUsd must be a finite, non-negative number, got ${limitUsd}`,
       );
     }
+    validateOptionalTokens("tokenLimit", options.tokenLimit);
     // `=== undefined` (not `??`) so an explicit null is rejected by validation
     // rather than silently defaulting — matches Python, which rejects None.
     const nearLimitBps = options.nearLimitBps === undefined ? 8000 : options.nearLimitBps;
@@ -188,10 +264,12 @@ export class BudgetGuard {
       );
     }
     this.limitUsd = limitUsd;
+    this.tokenLimit = options.tokenLimit ?? null;
     this.maxLogEvents = options.maxLogEvents;
     this.priceOverrides = options.priceOverrides;
     this.failClosed = options.failClosed ?? true;
     this.onBlock = options.onBlock ?? defaultOnBlock;
+    this.onTokenBlock = options.onTokenBlock ?? defaultOnTokenBlock;
     this.nearLimitBps = nearLimitBps;
   }
 
@@ -208,22 +286,8 @@ export class BudgetGuard {
    * Note: `check` is a non-binding peek. For parallel calls, use `reserve()` /
    * `settle()`, which hold the estimate across the await.
    */
-  check(estimatedNextCost?: number): void {
-    const rawEstimate =
-      estimatedNextCost === undefined ? this.defaultEstimate() : estimatedNextCost;
-    if (!Number.isFinite(rawEstimate)) {
-      // NaN/Infinity would poison the comparisons and fail-open — reject it
-      // (parity with the constructor's Number.isFinite guard).
-      throw new RangeError(
-        `estimatedNextCost must be a finite number, got ${rawEstimate}`,
-      );
-    }
-    const estimate = Math.max(0, rawEstimate);
-    const committed = this.spentUsd + this.reserved;
-    if (committed > this.limitUsd - EPS || committed + estimate > this.limitUsd + EPS) {
-      this.onBlock(this.spentUsd, this.limitUsd);
-      throw new BudgetExceeded(this.spentUsd, this.limitUsd);
-    }
+  check(estimatedNextCost?: number, estimatedNextTokens?: number): void {
+    this.checkForStep(estimatedNextCost, estimatedNextTokens, null);
   }
 
   /**
@@ -237,22 +301,15 @@ export class BudgetGuard {
    * `estimatedCost` defaults to the costlier of the last LLM call and the last
    * tool call.
    */
-  reserve(estimatedCost?: number): number {
-    const rawEstimate = estimatedCost === undefined ? this.defaultEstimate() : estimatedCost;
-    if (!Number.isFinite(rawEstimate)) {
-      // NaN would poison this.reserved and fail-open the ceiling — reject it.
-      throw new RangeError(
-        `estimatedCost must be a finite number, got ${rawEstimate}`,
-      );
-    }
-    const estimate = Math.max(0, rawEstimate);
-    const committed = this.spentUsd + this.reserved;
-    if (committed > this.limitUsd - EPS || committed + estimate > this.limitUsd + EPS) {
-      this.onBlock(this.spentUsd, this.limitUsd);
-      throw new BudgetExceeded(this.spentUsd, this.limitUsd);
-    }
-    this.reserved += estimate;
-    return estimate;
+  reserve(
+    estimatedCost?: number,
+  ): TokenLimit extends number ? BudgetReservation : number;
+  reserve(
+    estimatedCost: number | undefined,
+    estimatedTokens: number,
+  ): TokenLimit extends number ? BudgetReservation : number;
+  reserve(estimatedCost?: number, estimatedTokens?: number): ReservationHandle {
+    return this.reserveForStep(estimatedCost, estimatedTokens, null);
   }
 
   /**
@@ -268,13 +325,16 @@ export class BudgetGuard {
     model: string,
     promptTokens: number,
     completionTokens: number,
-    options: { reserved?: number; price?: ManualPrice; label?: string } = {},
+    options: { reserved?: ReservationHandle; price?: ManualPrice; label?: string } = {},
   ): number {
     const reserved = options.reserved ?? 0;
-    // A bad reserved handle would corrupt this.reserved and break the ceiling for
-    // OTHER in-flight calls (negative → phantom hold; Infinity → clears all holds).
-    if (!Number.isFinite(reserved) || reserved < 0) {
-      throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
+    const parts = this.reservationParts(reserved);
+    let totalTokens: number;
+    try {
+      totalTokens = actualTokenCount(promptTokens, completionTokens);
+    } catch (error) {
+      this.release(reserved);
+      throw error;
     }
     let overrides = this.priceOverrides;
     if (options.price !== undefined) {
@@ -283,15 +343,13 @@ export class BudgetGuard {
 
     const priced = resolvePrice(model, overrides);
     if (priced === null) {
+      this.consumeHandle(reserved, parts);
+      this.accrueTokens(totalTokens, parts.step);
       console.warn(
         `Cannot price model '${model}': not in the bundled cost map and no ` +
           `manual price given. The budget guard cannot enforce a ceiling on ` +
           `spend it cannot measure — pass { price } or set it in priceOverrides.`,
       );
-      // Release any held reservation on BOTH paths. Fail-closed must not leak
-      // the in-flight hold, or reserved grows permanently and remainingUsd
-      // shrinks until reserve() starts blocking everything.
-      this.release(reserved);
       if (this.failClosed) {
         throw new UnpriceableModelError(model);
       }
@@ -308,16 +366,18 @@ export class BudgetGuard {
       this.release(reserved);
       throw err;
     }
-    if (reserved) {
-      this.consumeReservation(reserved);
-    }
+    this.consumeHandle(reserved, parts);
     this.spentUsd += cost;
+    this.accrueTokens(totalTokens, parts.step);
     // Clamp a sub-epsilon float overshoot back to the limit so the running total
     // never reports as having crossed the ceiling by a rounding artifact.
     if (this.spentUsd - this.limitUsd > 0 && this.spentUsd - this.limitUsd < EPS) {
       this.spentUsd = this.limitUsd;
     }
     this.lastLlmCost = cost;
+    if (parts.step !== null) {
+      parts.step.spentUsd += cost;
+    }
     this.appendEvent({
       timestamp: Date.now() / 1000,
       kind: "llm",
@@ -328,7 +388,7 @@ export class BudgetGuard {
       ...(options.label !== undefined ? { label: options.label } : {}),
       // 0 means "no reservation" (the plain record() path) — omit rather than
       // log a meaningless zero.
-      ...(reserved ? { reserved } : {}),
+      ...(parts.usd ? { reserved: parts.usd } : {}),
     });
     return cost;
   }
@@ -370,7 +430,9 @@ export class BudgetGuard {
    * worth falling back to. Pass the returned handle to
    * {@link BudgetGuard.settleTool}, or {@link BudgetGuard.release} on failure.
    */
-  reserveTool(estimatedCost: number): number {
+  reserveTool(
+    estimatedCost: number,
+  ): TokenLimit extends number ? BudgetReservation : number {
     if (estimatedCost === undefined) {
       // reserve(undefined) would silently fall back to the last-cost prediction
       // (0 on a fresh guard) — an unguarded tool call. A missing price must
@@ -384,7 +446,12 @@ export class BudgetGuard {
         `estimatedCost must be a finite, non-negative number, got ${estimatedCost}`,
       );
     }
-    return this.reserve(estimatedCost);
+    return this.reserveForStep(
+      estimatedCost,
+      0,
+      null,
+      false,
+    ) as TokenLimit extends number ? BudgetReservation : number;
   }
 
   /**
@@ -404,21 +471,16 @@ export class BudgetGuard {
   settleTool(
     tool: string,
     costUsd: number,
-    options: { reserved?: number; label?: string } = {},
+    options: { reserved?: ReservationHandle; label?: string } = {},
   ): number {
     if (!Number.isFinite(costUsd) || costUsd < 0) {
       throw new RangeError(`costUsd must be a finite, non-negative number, got ${costUsd}`);
     }
     const reserved = options.reserved ?? 0;
-    // A bad reserved handle would corrupt the in-flight tally and break the
-    // ceiling for OTHER calls — same contract as settle().
-    if (!Number.isFinite(reserved) || reserved < 0) {
-      throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
-    }
-    if (reserved) {
-      this.consumeReservation(reserved);
-    }
+    const parts = this.reservationParts(reserved);
+    this.consumeHandle(reserved, parts);
     this.spentUsd += costUsd;
+    if (parts.step !== null) parts.step.spentUsd += costUsd;
     // Same sub-epsilon clamp as settle(): never report a rounding-artifact
     // crossing of the ceiling.
     if (this.spentUsd - this.limitUsd > 0 && this.spentUsd - this.limitUsd < EPS) {
@@ -434,7 +496,7 @@ export class BudgetGuard {
       completionTokens: null,
       costUsd,
       ...(options.label !== undefined ? { label: options.label } : {}),
-      ...(reserved ? { reserved } : {}),
+      ...(parts.usd ? { reserved: parts.usd } : {}),
     });
     return costUsd;
   }
@@ -455,19 +517,23 @@ export class BudgetGuard {
    * Drop an in-flight reservation without recording spend (e.g. the call failed
    * before producing usage). Safe to call with `0`.
    */
-  release(reserved: number): void {
+  release(reserved: ReservationHandle): void {
     // Validate before the zero-check so a NaN handle throws instead of being
     // silently dropped (a leak); a bad handle corrupts the in-flight tally.
-    if (!Number.isFinite(reserved) || reserved < 0) {
-      throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
-    }
-    if (!reserved) return;
-    this.consumeReservation(reserved);
+    const parts = this.reservationParts(reserved);
+    this.consumeHandle(reserved, parts);
   }
 
   /** USD left before the ceiling, net of in-flight reservations (never negative). */
   get remainingUsd(): number {
     return Math.max(0, this.limitUsd - this.spentUsd - this.reserved);
+  }
+
+  /** Tokens left before the aggregate ceiling, net of in-flight reservations. */
+  get remainingTokens(): number | null {
+    return this.tokenLimit === null
+      ? null
+      : Math.max(0, this.tokenLimit - this.spentTokens - this.reservedTokens);
   }
 
   /**
@@ -516,6 +582,249 @@ export class BudgetGuard {
         return `${JSON.stringify(row)}\n`;
       })
       .join("");
+  }
+
+  /**
+   * Run work through a fresh explicit per-step guard. The callback may be sync
+   * or async; overlapping steps remain isolated while sharing aggregate totals.
+   */
+  step<T>(
+    options: StepBudgetOptions,
+    callback: (step: StepBudgetGuard) => T,
+  ): T {
+    if (options.maxUsd === undefined && options.maxTokens === undefined) {
+      throw new RangeError("step requires maxUsd, maxTokens, or both");
+    }
+    if (
+      options.maxUsd !== undefined &&
+      (!Number.isFinite(options.maxUsd) || options.maxUsd < 0)
+    ) {
+      throw new RangeError(
+        `maxUsd must be a finite, non-negative number, got ${options.maxUsd}`,
+      );
+    }
+    validateOptionalTokens("maxTokens", options.maxTokens);
+    const state: StepState = {
+      limitUsd: options.maxUsd ?? null,
+      tokenLimit: options.maxTokens ?? null,
+      spentUsd: 0,
+      spentTokens: 0,
+      reservedUsd: 0,
+      reservedTokens: 0,
+      active: true,
+    };
+    const scoped = new StepBudgetGuard(this, state);
+    let result: T;
+    try {
+      result = callback(scoped);
+    } catch (error) {
+      state.active = false;
+      throw error;
+    }
+    if (isPromiseLike(result)) {
+      return Promise.resolve(result).then(
+        (value) => {
+          this.closeStep(state);
+          return value;
+        },
+        (error) => {
+          state.active = false;
+          throw error;
+        },
+      ) as T;
+    }
+    this.closeStep(state);
+    return result;
+  }
+
+  checkForStep(
+    estimatedCost: number | undefined,
+    estimatedTokens: number | undefined,
+    step: StepState | null,
+  ): void {
+    const cost = this.normalizedCostEstimate(estimatedCost);
+    const tokens = this.normalizedTokenEstimate(estimatedTokens);
+    const blocked = this.blockingLimit(cost, tokens, step);
+    if (blocked !== null) this.raiseBlock(blocked);
+  }
+
+  reserveForStep(
+    estimatedCost: number | undefined,
+    estimatedTokens: number | undefined,
+    step: StepState | null,
+    enforceTokens = true,
+  ): ReservationHandle {
+    if (step !== null && !step.active) {
+      throw new Error("step budget is no longer active");
+    }
+    const cost = this.normalizedCostEstimate(estimatedCost);
+    const tokens = this.normalizedTokenEstimate(estimatedTokens);
+    const blocked = this.blockingLimit(cost, tokens, step, enforceTokens);
+    if (blocked !== null) this.raiseBlock(blocked);
+    this.reserved += cost;
+    this.reservedTokens += tokens;
+    if (step !== null) {
+      step.reservedUsd += cost;
+      step.reservedTokens += tokens;
+    }
+    if (this.tokenLimit === null && step === null) return cost;
+    return { usd: cost, tokens, _owner: this, _step: step, _active: true };
+  }
+
+  private normalizedCostEstimate(estimate: number | undefined): number {
+    const raw = estimate === undefined ? this.defaultEstimate() : estimate;
+    if (!Number.isFinite(raw)) {
+      throw new RangeError(`estimated cost must be a finite number, got ${raw}`);
+    }
+    return Math.max(0, raw);
+  }
+
+  private normalizedTokenEstimate(estimate: number | undefined): number {
+    validateOptionalTokens("estimated tokens", estimate);
+    return estimate === undefined ? this.lastLlmTokens : estimate;
+  }
+
+  private blockingLimit(
+    cost: number,
+    tokens: number,
+    step: StepState | null,
+    enforceTokens = true,
+  ): BlockingLimit | null {
+    const committedUsd = this.spentUsd + this.reserved;
+    if (
+      committedUsd > this.limitUsd - EPS ||
+      committedUsd + cost > this.limitUsd + EPS
+    ) {
+      return {
+        metric: "usd",
+        scope: "aggregate",
+        spent: this.spentUsd,
+        limit: this.limitUsd,
+      };
+    }
+    const committedTokens = this.spentTokens + this.reservedTokens;
+    if (
+      enforceTokens &&
+      this.tokenLimit !== null &&
+      (committedTokens >= this.tokenLimit ||
+        committedTokens + tokens > this.tokenLimit)
+    ) {
+      return {
+        metric: "tokens",
+        scope: "aggregate",
+        spent: this.spentTokens,
+        limit: this.tokenLimit,
+      };
+    }
+    if (step !== null) {
+      const stepUsd = step.spentUsd + step.reservedUsd;
+      if (
+        step.limitUsd !== null &&
+        (stepUsd > step.limitUsd - EPS || stepUsd + cost > step.limitUsd + EPS)
+      ) {
+        return {
+          metric: "usd",
+          scope: "step",
+          spent: step.spentUsd,
+          limit: step.limitUsd,
+        };
+      }
+      const stepTokens = step.spentTokens + step.reservedTokens;
+      if (
+        enforceTokens &&
+        step.tokenLimit !== null &&
+        (stepTokens >= step.tokenLimit ||
+          stepTokens + tokens > step.tokenLimit)
+      ) {
+        return {
+          metric: "tokens",
+          scope: "step",
+          spent: step.spentTokens,
+          limit: step.tokenLimit,
+        };
+      }
+    }
+    return null;
+  }
+
+  private raiseBlock(blocked: BlockingLimit): never {
+    if (blocked.metric === "usd") {
+      this.onBlock(blocked.spent, blocked.limit);
+      throw new BudgetExceeded(blocked.spent, blocked.limit, blocked.scope);
+    }
+    this.onTokenBlock(blocked.spent, blocked.limit);
+    throw new TokenBudgetExceeded(
+      blocked.spent,
+      blocked.limit,
+      blocked.scope,
+    );
+  }
+
+  private reservationParts(handle: ReservationHandle): ReservationParts {
+    if (typeof handle === "number") {
+      if (!Number.isFinite(handle) || handle < 0) {
+        throw new RangeError(
+          `reserved must be a finite, non-negative number, got ${handle}`,
+        );
+      }
+      return { usd: handle, tokens: 0, step: null };
+    }
+    if (handle._owner !== this) {
+      throw new RangeError("reservation belongs to a different BudgetGuard");
+    }
+    if (!handle._active) {
+      throw new RangeError("reservation has already been settled or released");
+    }
+    if (
+      !Number.isFinite(handle.usd) ||
+      handle.usd < 0 ||
+      !Number.isInteger(handle.tokens) ||
+      handle.tokens < 0
+    ) {
+      throw new RangeError("reservation contains invalid USD or token values");
+    }
+    return { usd: handle.usd, tokens: handle.tokens, step: handle._step };
+  }
+
+  private consumeHandle(
+    handle: ReservationHandle,
+    parts: ReservationParts,
+  ): void {
+    if (
+      parts.usd > this.reserved + EPS ||
+      parts.tokens > this.reservedTokens
+    ) {
+      throw new RangeError("reservation exceeds total in-flight reservations");
+    }
+    if (
+      parts.step !== null &&
+      (parts.usd > parts.step.reservedUsd + EPS ||
+        parts.tokens > parts.step.reservedTokens)
+    ) {
+      throw new RangeError("reservation exceeds its step's in-flight totals");
+    }
+    this.consumeReservation(parts.usd);
+    this.reservedTokens -= parts.tokens;
+    if (parts.step !== null) {
+      parts.step.reservedUsd = Math.max(0, parts.step.reservedUsd - parts.usd);
+      parts.step.reservedTokens -= parts.tokens;
+    }
+    if (typeof handle !== "number") handle._active = false;
+  }
+
+  private accrueTokens(tokens: number, step: StepState | null): void {
+    this.spentTokens += tokens;
+    this.lastLlmTokens = tokens;
+    if (step !== null) step.spentTokens += tokens;
+  }
+
+  private closeStep(step: StepState): void {
+    step.active = false;
+    if (step.reservedUsd > EPS || step.reservedTokens > 0) {
+      throw new Error(
+        "step exited with an active reservation; settle or release every handle",
+      );
+    }
   }
 
   /**
@@ -568,6 +877,10 @@ export class BudgetGuard {
    * {@link BudgetGuard.check} is what enforces the ceiling.
    */
   advisory(): BudgetAdvisory {
+    return this.advisoryForStep(null);
+  }
+
+  advisoryForStep(step: StepState | null): BudgetAdvisory {
     // Floor (not round) so usedBps never over-reports utilization and nearLimit
     // flips exactly when the threshold is reached; the epsilon absorbs float noise
     // and Math.floor matches Python's int() exactly (round() would diverge).
@@ -576,6 +889,30 @@ export class BudgetGuard {
         ? 10000
         : Math.max(0, Math.min(10000, Math.floor((this.spentUsd / this.limitUsd) * 10000 + 1e-9)));
     const remainingUsd = Math.max(0, this.limitUsd - this.spentUsd);
+    const tokenUsedBps =
+      this.tokenLimit === null
+        ? null
+        : usedBasisPoints(this.spentTokens, this.tokenLimit);
+    const remainingTokens =
+      this.tokenLimit === null
+        ? null
+        : Math.max(0, this.tokenLimit - this.spentTokens);
+    const nearTokenLimit =
+      tokenUsedBps !== null && tokenUsedBps >= this.nearLimitBps;
+    const stepUsdBps =
+      step?.limitUsd != null
+        ? usedBasisPoints(step.spentUsd, step.limitUsd)
+        : null;
+    const stepTokenBps =
+      step?.tokenLimit != null
+        ? usedBasisPoints(step.spentTokens, step.tokenLimit)
+        : null;
+    const stepUsedBps =
+      step === null
+        ? null
+        : Math.max(...[stepUsdBps, stepTokenBps].filter((v): v is number => v !== null));
+    const stepNearLimit =
+      stepUsedBps !== null && stepUsedBps >= this.nearLimitBps;
     // The costlier of the last LLM and tool call — the guard's own default
     // reservation estimate; 0 before any call is recorded.
     const expectedCost = Math.max(this.lastLlmCost, this.lastToolCost);
@@ -584,7 +921,8 @@ export class BudgetGuard {
     const estCallsRemaining =
       expectedCost > 0 ? Math.floor(remainingUsd / expectedCost + 1e-9) : null;
     return {
-      nearLimit: usedBps >= this.nearLimitBps,
+      nearLimit:
+        usedBps >= this.nearLimitBps || nearTokenLimit || stepNearLimit,
       usedBps,
       // Settled budget: limit minus accrued spend, deliberately NOT net of
       // in-flight reservations. Unlike the remainingUsd getter (which subtracts
@@ -596,8 +934,147 @@ export class BudgetGuard {
       scope: "local",
       expectedCost,
       estCallsRemaining,
+      tokenLimit: this.tokenLimit,
+      spentTokens: this.spentTokens,
+      remainingTokens,
+      tokenUsedBps,
+      nearTokenLimit,
+      stepLimitUsd: step?.limitUsd ?? null,
+      stepSpentUsd: step?.spentUsd ?? null,
+      stepRemainingUsd:
+        step?.limitUsd != null
+          ? Math.max(0, step.limitUsd - step.spentUsd)
+          : null,
+      stepTokenLimit: step?.tokenLimit ?? null,
+      stepSpentTokens: step?.spentTokens ?? null,
+      stepRemainingTokens:
+        step?.tokenLimit != null
+          ? Math.max(0, step.tokenLimit - step.spentTokens)
+          : null,
+      stepUsedBps,
+      stepNearLimit,
     };
   }
+}
+
+/** Scoped view over a parent guard with independent per-step ceilings. */
+export class StepBudgetGuard {
+  constructor(
+    private readonly parent: BudgetGuard<number | undefined>,
+    private readonly state: StepState,
+  ) {}
+
+  get limitUsd(): number { return this.parent.limitUsd; }
+  get tokenLimit(): number | null { return this.parent.tokenLimit; }
+  get spentUsd(): number { return this.parent.spentUsd; }
+  get spentTokens(): number { return this.parent.spentTokens; }
+  get remainingUsd(): number { return this.parent.remainingUsd; }
+  get remainingTokens(): number | null { return this.parent.remainingTokens; }
+  get priceOverrides(): Record<string, ManualPrice> | undefined {
+    return this.parent.priceOverrides;
+  }
+  get failClosed(): boolean { return this.parent.failClosed; }
+
+  check(estimatedCost?: number, estimatedTokens?: number): void {
+    this.ensureActive();
+    this.parent.checkForStep(estimatedCost, estimatedTokens, this.state);
+  }
+
+  reserve(estimatedCost?: number, estimatedTokens?: number): ReservationHandle {
+    this.ensureActive();
+    return this.parent.reserveForStep(estimatedCost, estimatedTokens, this.state);
+  }
+
+  settle(
+    model: string,
+    promptTokens: number,
+    completionTokens: number,
+    options: { reserved?: ReservationHandle; price?: ManualPrice; label?: string } = {},
+  ): number {
+    this.ensureActive();
+    const reserved =
+      options.reserved ??
+      {
+        usd: 0,
+        tokens: 0,
+        _owner: this.parent,
+        _step: this.state,
+        _active: true,
+      };
+    return this.parent.settle(model, promptTokens, completionTokens, {
+      ...options,
+      reserved,
+    });
+  }
+
+  record(
+    model: string,
+    promptTokens: number,
+    completionTokens: number,
+    options: { price?: ManualPrice; label?: string } = {},
+  ): number {
+    return this.settle(model, promptTokens, completionTokens, options);
+  }
+
+  reserveTool(estimatedCost: number): ReservationHandle {
+    this.ensureActive();
+    return this.parent.reserveForStep(estimatedCost, 0, this.state, false);
+  }
+
+  settleTool(
+    tool: string,
+    costUsd: number,
+    options: { reserved?: ReservationHandle; label?: string } = {},
+  ): number {
+    this.ensureActive();
+    const reserved =
+      options.reserved ??
+      {
+        usd: 0,
+        tokens: 0,
+        _owner: this.parent,
+        _step: this.state,
+        _active: true,
+      };
+    return this.parent.settleTool(tool, costUsd, { ...options, reserved });
+  }
+
+  recordTool(tool: string, costUsd: number, options: { label?: string } = {}): number {
+    return this.settleTool(tool, costUsd, options);
+  }
+
+  release(reserved: ReservationHandle): void {
+    this.parent.release(reserved);
+  }
+
+  advisory(): BudgetAdvisory {
+    return this.parent.advisoryForStep(this.state);
+  }
+
+  private ensureActive(): void {
+    if (!this.state.active) throw new Error("step budget is no longer active");
+  }
+}
+
+function usedBasisPoints(used: number, limit: number): number {
+  if (limit <= 0) return 10000;
+  return Math.max(0, Math.min(10000, Math.floor((used / limit) * 10000 + 1e-9)));
+}
+
+function validateOptionalTokens(name: string, value: number | undefined): void {
+  if (
+    value !== undefined &&
+    (!Number.isInteger(value) || !Number.isFinite(value) || value < 0)
+  ) {
+    throw new RangeError(`${name} must be a non-negative integer, got ${value}`);
+  }
+}
+
+function actualTokenCount(promptTokens: number, completionTokens: number): number {
+  if (!Number.isFinite(promptTokens) || !Number.isFinite(completionTokens)) {
+    throw new RangeError("token counts must be finite numbers");
+  }
+  return Math.trunc(Math.max(0, promptTokens)) + Math.trunc(Math.max(0, completionTokens));
 }
 
 function defaultOnBlock(spentUsd: number, limitUsd: number): void {
@@ -607,4 +1084,23 @@ function defaultOnBlock(spentUsd: number, limitUsd: number): void {
       "  The next call would cross your budget; floe-guard stopped your agent " +
       "before it ran.",
   );
+}
+
+function defaultOnTokenBlock(spentTokens: number, limitTokens: number): void {
+  console.error(
+    "TOKEN BUDGET EXCEEDED — call blocked\n" +
+      `  tokens so far: ${spentTokens}  |  ceiling: ${limitTokens}\n` +
+      "  The next call would cross your token budget; floe-guard stopped your " +
+      "agent before it ran.",
+  );
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  if (
+    value === null ||
+    (typeof value !== "object" && typeof value !== "function")
+  ) {
+    return false;
+  }
+  return typeof (value as { then?: unknown }).then === "function";
 }

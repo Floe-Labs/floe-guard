@@ -50,6 +50,47 @@ const guard = new BudgetGuard(5.0, {
 });
 ```
 
+## Token ceilings and per-step budgets
+
+Add `tokenLimit` to enforce aggregate LLM tokens alongside dollars:
+
+```ts
+const guard = new BudgetGuard(5.0, { tokenLimit: 100_000 });
+const handle = guard.reserve(0.02, 4_096);
+const response = await callModel();
+guard.settle(response.model, response.promptTokens, response.completionTokens, {
+  reserved: handle,
+});
+```
+
+An omitted token estimate falls back to the previous LLM call's token count
+(`0` on a fresh guard). A projected crossing throws `TokenBudgetExceeded`
+before the provider runs. Tool calls consume USD, not tokens.
+
+Use `step()` for a fresh scoped sub-budget while retaining aggregate totals:
+
+```ts
+await guard.step({ maxUsd: 0.1, maxTokens: 4_000 }, async (step) => {
+  const advisory = step.advisory();
+  const model = advisory.nearLimit ? flashModel : premiumModel;
+  const handle = step.reserve(0.01, 800);
+  const response = await callModel(model);
+  step.settle(response.model, response.promptTokens, response.completionTokens, {
+    reserved: handle,
+  });
+});
+```
+
+The callback receives an explicit scoped guard, so overlapping steps stay
+isolated without Node-only async-context APIs. Pass it directly to
+`budgetGuardMiddleware(step)`. Advisory fields include aggregate token
+utilization and step USD/token headroom; `nearLimit` reflects the tightest
+configured aggregate or step ceiling. `advisory()` always returns the complete
+token/step shape; those additive fields are optional in the TypeScript interface
+only so existing aggregate-only advisory literals remain source-compatible.
+The step stays active until returned promise-like work settles, and a rejected
+callback propagates its original error.
+
 ## Context-aware budgeting
 
 `guard.advisory()` returns a soft signal you can act on before a call — `nearLimit`,

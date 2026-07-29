@@ -1,0 +1,290 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  BudgetExceeded,
+  type BudgetAdvisory,
+  BudgetGuard,
+  type BudgetGuardOptions,
+  type StepBudgetGuard,
+  TokenBudgetExceeded,
+  budgetGuardMiddleware,
+  type BudgetReservation,
+} from "../src/index.js";
+
+const quiet = (tokenLimit?: number) =>
+  new BudgetGuard(10, {
+    tokenLimit,
+    onBlock: () => {},
+    onTokenBlock: () => {},
+  });
+
+describe("aggregate token ceilings", () => {
+  it("keeps aggregate-only advisory and options literals source-compatible", () => {
+    const legacyAdvisory: BudgetAdvisory = {
+      nearLimit: false,
+      usedBps: 0,
+      remainingUsd: 10,
+      limitUsd: 10,
+      spentUsd: 0,
+      scope: "local",
+    };
+    const options: BudgetGuardOptions = { tokenLimit: 100 };
+
+    expect(legacyAdvisory.nearLimit).toBe(false);
+    expect(new BudgetGuard(10, options).tokenLimit).toBe(100);
+  });
+
+  it.each([-1, 1.5, NaN, Infinity])("rejects invalid tokenLimit %s", (bad) => {
+    expect(() => quiet(bad)).toThrow(RangeError);
+  });
+
+  it("preserves numeric handles when new limits are absent", () => {
+    const guard = quiet();
+    const handle = guard.reserve(0.1);
+    expect(typeof handle).toBe("number");
+    guard.release(handle);
+    expect(guard.remainingTokens).toBeNull();
+  });
+
+  it("infers a typed handle for an explicitly token-enabled guard", () => {
+    const guard = new BudgetGuard(10, { tokenLimit: 100 });
+    const handle: BudgetReservation = guard.reserve(0);
+    expect(handle.tokens).toBe(0);
+    guard.release(handle);
+  });
+
+  it("accumulates tokens and blocks explicit and fallback estimates", () => {
+    const guard = quiet(100);
+    expect(() => guard.reserve(0, 101)).toThrow(TokenBudgetExceeded);
+    guard.record("manual", 40, 10, {
+      price: { inputCostPerToken: 1e-6, outputCostPerToken: 2e-6 },
+    });
+    expect(guard.spentTokens).toBe(50);
+    const handle = guard.reserve(0);
+    expect(typeof handle).toBe("object");
+    expect((handle as unknown as BudgetReservation).tokens).toBe(50);
+    expect(() => guard.reserve(0)).toThrow(TokenBudgetExceeded);
+    guard.release(handle);
+  });
+
+  it("extends nearLimit with aggregate token utilization", () => {
+    const guard = quiet(100);
+    guard.record("manual", 80, 0, {
+      price: { inputCostPerToken: 1e-6, outputCostPerToken: 2e-6 },
+    });
+    expect(guard.advisory()).toMatchObject({
+      tokenUsedBps: 8000,
+      nearTokenLimit: true,
+      nearLimit: true,
+      remainingTokens: 20,
+    });
+  });
+
+  it("accrues known tokens when unpriceable spend is fail-open", () => {
+    const guard = new BudgetGuard(10, {
+      tokenLimit: 100,
+      failClosed: false,
+      onBlock: () => {},
+      onTokenBlock: () => {},
+    });
+    guard.record("unknown-model", 10, 5);
+    expect(guard.spentTokens).toBe(15);
+    expect(guard.spentUsd).toBe(0);
+  });
+
+  it("enforces typed handle ownership and exactly-once disposal", () => {
+    const first = quiet(100);
+    const second = quiet(100);
+    const handle = first.reserve(0.1, 20);
+    first.release(handle);
+    expect(() => first.release(handle)).toThrow(/already/);
+    const foreign = second.reserve(0.1, 20);
+    expect(() => first.release(foreign)).toThrow(/different/);
+    second.release(foreign);
+  });
+
+  it("holds tokens synchronously across Promise fan-out", async () => {
+    const guard = quiet(100);
+    const launches = Array.from({ length: 5 }, async () => {
+      const handle = guard.reserve(0, 30);
+      await Promise.resolve();
+      return handle;
+    });
+    const results = await Promise.allSettled(launches);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(3);
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(2);
+    for (const result of results) {
+      if (result.status === "fulfilled") guard.release(result.value);
+    }
+    expect(guard.remainingTokens).toBe(100);
+  });
+});
+
+describe("per-step budgets", () => {
+  it("resets each step while retaining aggregate totals", async () => {
+    const guard = quiet(1_000);
+    await guard.step({ maxTokens: 100 }, async (step) => {
+      step.record("manual", 40, 10, {
+        price: { inputCostPerToken: 1e-6, outputCostPerToken: 2e-6 },
+      });
+      expect(step.advisory().stepSpentTokens).toBe(50);
+    });
+    guard.step({ maxTokens: 100 }, (step) => {
+      expect(step.advisory().stepSpentTokens).toBe(0);
+      step.record("manual", 20, 10, {
+        price: { inputCostPerToken: 1e-6, outputCostPerToken: 2e-6 },
+      });
+    });
+    expect(guard.spentTokens).toBe(80);
+  });
+
+  it("reports step scope for the tightest token and USD limits", () => {
+    const guard = quiet(1_000);
+    guard.step({ maxTokens: 50 }, (step) => {
+      step.record("manual", 40, 0, {
+        price: { inputCostPerToken: 1e-6, outputCostPerToken: 2e-6 },
+      });
+      try {
+        step.check(0, 11);
+        throw new Error("expected token block");
+      } catch (error) {
+        expect(error).toBeInstanceOf(TokenBudgetExceeded);
+        expect((error as TokenBudgetExceeded).scope).toBe("step");
+      }
+    });
+    guard.step({ maxUsd: 0.001 }, (step) => {
+      try {
+        step.check(0.002, 0);
+        throw new Error("expected USD block");
+      } catch (error) {
+        expect(error).toBeInstanceOf(BudgetExceeded);
+        expect((error as BudgetExceeded).scope).toBe("step");
+      }
+    });
+  });
+
+  it("counts tools against step USD but not tokens", () => {
+    const guard = quiet(100);
+    guard.step({ maxUsd: 0.02, maxTokens: 0 }, (step) => {
+      const handle = step.reserveTool(0.01);
+      step.settleTool("search", 0.01, { reserved: handle });
+      expect(step.advisory().stepSpentTokens).toBe(0);
+      expect(() => step.reserveTool(0.02)).toThrow(BudgetExceeded);
+    });
+  });
+
+  it("keeps overlapping async step state isolated", async () => {
+    const guard = quiet(1_000);
+    const [first, second] = await Promise.all([
+      guard.step({ maxTokens: 100 }, async (step) => {
+        await Promise.resolve();
+        step.record("manual", 30, 0, {
+          price: { inputCostPerToken: 1e-6, outputCostPerToken: 2e-6 },
+        });
+        return step.advisory().stepSpentTokens;
+      }),
+      guard.step({ maxTokens: 200 }, async (step) => {
+        step.record("manual", 70, 0, {
+          price: { inputCostPerToken: 1e-6, outputCostPerToken: 2e-6 },
+        });
+        return step.advisory().stepSpentTokens;
+      }),
+    ]);
+    expect([first, second]).toEqual([30, 70]);
+    expect(guard.spentTokens).toBe(100);
+  });
+
+  it("keeps a step active until a custom thenable settles", async () => {
+    const guard = quiet(1_000);
+
+    const result = await guard.step(
+      { maxTokens: 100 },
+      (step) => {
+        const thenable: PromiseLike<string> = {
+          then(onfulfilled, onrejected) {
+            const pending = new Promise<string>((resolve) => {
+              queueMicrotask(() => {
+                step.record("manual", 30, 0, {
+                  price: { inputCostPerToken: 1e-6, outputCostPerToken: 2e-6 },
+                });
+                resolve("done");
+              });
+            });
+            return pending.then(onfulfilled, onrejected);
+          },
+        };
+        return thenable;
+      },
+    );
+
+    expect(result).toBe("done");
+    expect(guard.spentTokens).toBe(30);
+  });
+
+  it("detects a leaked reservation on clean exit", () => {
+    const guard = quiet(100);
+    let handle: BudgetReservation | undefined;
+    expect(() =>
+      guard.step({ maxTokens: 50 }, (step) => {
+        handle = step.reserve(0, 10) as BudgetReservation;
+      }),
+    ).toThrow(/active reservation/);
+    guard.release(handle!);
+  });
+
+  it("does not mask a callback failure with leak detection", async () => {
+    const guard = quiet(100);
+    let handle: BudgetReservation | undefined;
+    await expect(
+      guard.step({ maxTokens: 50 }, async (step) => {
+        handle = step.reserve(0, 10) as BudgetReservation;
+        throw new URIError("provider failed");
+      }),
+    ).rejects.toThrow("provider failed");
+    guard.release(handle!);
+  });
+
+  it("does not open new reservations after a step closes", () => {
+    const guard = quiet(100);
+    let scoped: StepBudgetGuard | undefined;
+
+    guard.step({ maxTokens: 50 }, (step) => {
+      scoped = step;
+    });
+
+    expect(() => scoped!.reserve(0, 1)).toThrow(/no longer active/);
+    expect(() => scoped!.reserveTool(0.01)).toThrow(/no longer active/);
+  });
+
+  it("extends nearLimit with step utilization", () => {
+    const guard = quiet(1_000);
+    guard.step({ maxTokens: 100 }, (step) => {
+      step.record("manual", 80, 0, {
+        price: { inputCostPerToken: 1e-6, outputCostPerToken: 2e-6 },
+      });
+      expect(step.advisory()).toMatchObject({
+        stepUsedBps: 8000,
+        stepNearLimit: true,
+        nearLimit: true,
+      });
+    });
+  });
+
+  it("blocks scoped middleware before the provider call", async () => {
+    const guard = quiet(1_000);
+    let called = false;
+    await guard.step({ maxTokens: 0 }, async (step) => {
+      const middleware = budgetGuardMiddleware(step);
+      await expect(
+        middleware.wrapGenerate({
+          model: { modelId: "gpt-4o" },
+          doGenerate: async () => {
+            called = true;
+            return { usage: { promptTokens: 1, completionTokens: 1 } };
+          },
+        }),
+      ).rejects.toBeInstanceOf(TokenBudgetExceeded);
+    });
+    expect(called).toBe(false);
+  });
+});

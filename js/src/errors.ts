@@ -26,14 +26,46 @@ export class FloeGuardError extends Error {
 export class BudgetExceeded extends FloeGuardError {
   readonly spentUsd: number;
   readonly limitUsd: number;
+  readonly scope: "aggregate" | "step";
 
-  constructor(spentUsd: number, limitUsd: number) {
+  constructor(
+    spentUsd: number,
+    limitUsd: number,
+    scope: "aggregate" | "step" = "aggregate",
+  ) {
+    const prefix = scope === "step" ? "STEP BUDGET EXCEEDED" : "BUDGET EXCEEDED";
     super(
-      `BUDGET EXCEEDED — call blocked (spent $${spentUsd.toFixed(6)} of $${limitUsd.toFixed(6)} ceiling)`,
+      `${prefix} — call blocked ` +
+        `(spent $${spentUsd.toFixed(6)} of $${limitUsd.toFixed(6)} ceiling)`,
     );
     this.name = "BudgetExceeded";
     this.spentUsd = spentUsd;
     this.limitUsd = limitUsd;
+    this.scope = scope;
+  }
+}
+
+/** Thrown before an LLM call that would cross a token ceiling. */
+export class TokenBudgetExceeded extends FloeGuardError {
+  readonly spentTokens: number;
+  readonly limitTokens: number;
+  readonly scope: "aggregate" | "step";
+
+  constructor(
+    spentTokens: number,
+    limitTokens: number,
+    scope: "aggregate" | "step" = "aggregate",
+  ) {
+    const prefix =
+      scope === "step" ? "STEP TOKEN BUDGET EXCEEDED" : "TOKEN BUDGET EXCEEDED";
+    super(
+      `${prefix} — call blocked ` +
+        `(spent ${spentTokens} of ${limitTokens} token ceiling)`,
+    );
+    this.name = "TokenBudgetExceeded";
+    this.spentTokens = spentTokens;
+    this.limitTokens = limitTokens;
+    this.scope = scope;
   }
 }
 
