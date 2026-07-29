@@ -1015,10 +1015,12 @@ class StepBudgetGuard:
             limit_usd=float(max_usd) if max_usd is not None else None,
             token_limit=max_tokens,
         )
+        self._entered = False
 
     def __enter__(self) -> StepBudgetGuard:
-        if not self._state.active:
+        if self._entered or not self._state.active:
             raise RuntimeError("step budget cannot be re-entered")
+        self._entered = True
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -1122,8 +1124,7 @@ class StepBudgetGuard:
         return self._parent.settle_tool(tool, cost_usd, reserved=reserved, label=label)
 
     def record_tool(self, tool: str, cost_usd: float, *, label: str | None = None) -> float:
-        handle = BudgetReservation(0.0, 0, self._parent, self._state)
-        return self._parent.settle_tool(tool, cost_usd, reserved=handle, label=label)
+        return self.settle_tool(tool, cost_usd, label=label)
 
     def release(self, reserved: ReservationHandle) -> None:
         self._parent.release(reserved)

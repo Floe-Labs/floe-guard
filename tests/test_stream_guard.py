@@ -81,8 +81,10 @@ class _FakeLiteLLM:
     def __init__(self, tokens: int = 1_000, raise_on_count: bool = False) -> None:
         self._tokens = tokens
         self._raise = raise_on_count
+        self.calls = 0
 
     def token_counter(self, model: str, messages: Any) -> int:
+        self.calls += 1
         if self._raise:
             raise RuntimeError("unknown model")
         return self._tokens
@@ -91,20 +93,26 @@ class _FakeLiteLLM:
 def test_litellm_estimate_prices_model_prompt_and_cap() -> None:
     guard = BudgetGuard(limit_usd=1.00)
     kwargs = {"model": MODEL, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 2_000}
-    est = _estimate_request(_FakeLiteLLM(tokens=1_000), guard, kwargs)
-    assert est == pytest.approx(0.0025 + 0.02)
+    litellm = _FakeLiteLLM(tokens=1_000)
+    estimated_cost, estimated_tokens = _estimate_request(litellm, guard, kwargs)
+    assert estimated_cost == pytest.approx(0.0025 + 0.02)
+    assert estimated_tokens == 3_000
+    assert litellm.calls == 1
 
 
 def test_litellm_estimate_degrades_to_none() -> None:
     guard = BudgetGuard(limit_usd=1.00)
-    assert _estimate_request(_FakeLiteLLM(), guard, {"messages": []}) is None  # no model
-    assert _estimate_request(_FakeLiteLLM(), guard, None) is None  # non-dict kwargs
+    assert _estimate_request(_FakeLiteLLM(), guard, {"messages": []}) == (None, None)
+    assert _estimate_request(_FakeLiteLLM(), guard, None) == (None, None)
     assert (  # token_counter failure
-        _estimate_request(_FakeLiteLLM(raise_on_count=True), guard, {"model": MODEL}) is None
+        _estimate_request(_FakeLiteLLM(raise_on_count=True), guard, {"model": MODEL})
+        == (None, None)
     )
-    assert (  # unpriceable model
-        _estimate_request(_FakeLiteLLM(), guard, {"model": "model-that-does-not-exist"}) is None
-    )
+    assert _estimate_request(
+        _FakeLiteLLM(tokens=25),
+        guard,
+        {"model": "model-that-does-not-exist", "max_tokens": 10},
+    ) == (None, 35)
 
 
 def test_langchain_estimate_uses_serialized_config_and_text_heuristic() -> None:

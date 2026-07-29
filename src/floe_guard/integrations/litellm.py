@@ -75,25 +75,26 @@ def _usage_from(response: Any) -> tuple[int, int]:
 
 def _estimate_request(
     litellm: Any, guard: BudgetGuard | StepBudgetGuard, kwargs: Any
-) -> float | None:
-    """Request-sized cost estimate for the pre-call reservation.
+) -> tuple[float | None, int | None]:
+    """Request-sized USD and token estimates for the pre-call reservation.
 
     Prices the ACTUAL incoming request — prompt tokens via litellm's offline
     ``token_counter`` plus the ``max_tokens`` output cap — so a first call, or
     one much larger than the last, reserves its true worst-case size instead of
-    the last call's cost (which is 0 on call one). Returns ``None`` when
-    anything needed is unavailable (no model, counter failure, unpriceable
-    model); ``reserve(None)`` falls back to the last-cost prediction, so this
-    only ever tightens enforcement, never breaks a call path.
+    the last call's cost (which is 0 on call one). Returns ``(None, None)`` for
+    both estimates when request sizing is unavailable (no model or counter
+    failure). An unpriceable model still returns its token estimate, so a token
+    ceiling remains enforceable while the USD estimate uses the last-call
+    fallback.
 
     Without ``max_tokens`` on the request the output side is unpredictable and
     estimates prompt-only — set a cap for full pre-call sizing.
     """
     if not isinstance(kwargs, dict):
-        return None
+        return None, None
     model = kwargs.get("model")
     if not model:
-        return None
+        return None, None
     try:
         prompt_tokens = int(
             litellm.token_counter(model=model, messages=kwargs.get("messages") or [])
@@ -101,29 +102,13 @@ def _estimate_request(
     except Exception:
         # token_counter can fail on unknown models/shapes — degrade to the
         # guard's default prediction rather than blocking the call path.
-        return None
+        return None, None
     max_out = kwargs.get("max_completion_tokens") or kwargs.get("max_tokens") or 0
     try:
         max_out = max(0, int(max_out))
     except (TypeError, ValueError):
         max_out = 0
-    return guard.estimate_call(str(model), prompt_tokens, max_out)
-
-
-def _estimate_request_tokens(litellm: Any, kwargs: Any) -> int | None:
-    if not isinstance(kwargs, dict) or not kwargs.get("model"):
-        return None
-    try:
-        prompt_tokens = int(
-            litellm.token_counter(model=kwargs["model"], messages=kwargs.get("messages") or [])
-        )
-    except Exception:
-        return None
-    max_out = kwargs.get("max_completion_tokens") or kwargs.get("max_tokens") or 0
-    try:
-        return prompt_tokens + max(0, int(max_out))
-    except (TypeError, ValueError):
-        return prompt_tokens
+    return guard.estimate_call(str(model), prompt_tokens, max_out), prompt_tokens + max_out
 
 
 def _record_response(
@@ -160,10 +145,8 @@ def guarded_completion(guard: BudgetGuard | StepBudgetGuard, **kwargs: Any) -> A
     can be, so even a FIRST call that alone would cross the cap is blocked.
     """
     litellm = _require_litellm()
-    reserved = guard.reserve(
-        _estimate_request(litellm, guard, kwargs),
-        estimated_tokens=_estimate_request_tokens(litellm, kwargs),
-    )
+    estimated_cost, estimated_tokens = _estimate_request(litellm, guard, kwargs)
+    reserved = guard.reserve(estimated_cost, estimated_tokens=estimated_tokens)
     try:
         response = litellm.completion(**kwargs)
     except BaseException:
@@ -176,10 +159,8 @@ def guarded_completion(guard: BudgetGuard | StepBudgetGuard, **kwargs: Any) -> A
 async def guarded_acompletion(guard: BudgetGuard | StepBudgetGuard, **kwargs: Any) -> Any:
     """Async counterpart of :func:`guarded_completion`."""
     litellm = _require_litellm()
-    reserved = guard.reserve(
-        _estimate_request(litellm, guard, kwargs),
-        estimated_tokens=_estimate_request_tokens(litellm, kwargs),
-    )
+    estimated_cost, estimated_tokens = _estimate_request(litellm, guard, kwargs)
+    reserved = guard.reserve(estimated_cost, estimated_tokens=estimated_tokens)
     try:
         response = await litellm.acompletion(**kwargs)
     except BaseException:
@@ -258,10 +239,8 @@ def budget_guard_callback(guard: BudgetGuard | StepBudgetGuard) -> Any:
             try:
                 # Request-sized when possible (see _estimate_request); raises
                 # BudgetExceeded -> aborts the call.
-                reserved = self.guard.reserve(
-                    _estimate_request(litellm, self.guard, kwargs),
-                    estimated_tokens=_estimate_request_tokens(litellm, kwargs),
-                )
+                estimated_cost, estimated_tokens = _estimate_request(litellm, self.guard, kwargs)
+                reserved = self.guard.reserve(estimated_cost, estimated_tokens=estimated_tokens)
             except (BudgetExceeded, TokenBudgetExceeded) as exc:
                 self._trip(exc)
                 raise

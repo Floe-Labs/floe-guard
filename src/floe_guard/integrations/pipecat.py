@@ -7,12 +7,12 @@ and turns fire continuously for the life of a call. So the enforcement
 surface here is a ``FrameProcessor`` placed directly after the LLM service,
 not a function wrapper around a single call.
 
-The contract matches the OpenAI/Anthropic adapters: ``reserve()`` when a turn
-starts (before TTS/audio spend piles on top of a call that would already
-cross the ceiling), ``settle(model, prompt_tokens, completion_tokens,
+The processor sees ``LLMFullResponseStartFrame`` only after the LLM request has
+started. It can therefore stop downstream TTS and terminate the pipeline, but
+it cannot prevent the current provider charge. It ``reserve()``s at that
+post-LLM boundary, ``settle(model, prompt_tokens, completion_tokens,
 reserved=...)`` once real usage is reported, and ``release(reserved)`` if a
-turn ends without ever reporting usage (e.g. an interrupted turn) so the
-reservation doesn't leak against the ceiling forever.
+turn ends without reporting usage so the reservation does not leak forever.
 
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.task import PipelineTask, PipelineParams
@@ -108,9 +108,9 @@ class FloeBudgetGuardProcessor(FrameProcessor):
             ``BudgetExceeded`` or ``TokenBudgetExceeded`` exception when a
             turn is blocked, so the caller can push a graceful "wrapping up"
             TTS frame before the pipeline ends. If omitted, a fatal
-            ``ErrorFrame`` is pushed instead, which terminates the pipeline --
-            this is the "hard stop" default that matches every other
-            floe-guard adapter.
+            ``ErrorFrame`` is pushed instead, which terminates downstream
+            pipeline work. Because this processor sits after the LLM, it
+            cannot prevent the current provider request.
             (A bare raise here would *not* achieve that: Pipecat's
             FrameProcessor catches exceptions raised inside process_frame()
             and downgrades them to a non-fatal, merely-logged ErrorFrame.)
@@ -174,11 +174,10 @@ class FloeBudgetGuardProcessor(FrameProcessor):
                     # stopping the pipeline (confirmed empirically -- see
                     # push_error_frame in frame_processor.py). Simply raising
                     # here would just log a warning and let the pipeline
-                    # keep running, silently defeating floe-guard's whole
-                    # point of being a *hard* stop. Push a fatal ErrorFrame
-                    # ourselves instead, which does actually terminate the
-                    # pipeline, so the default (no-callback) behavior is a
-                    # real hard stop rather than a swallowed log line.
+                    # keep running, silently defeating floe-guard's downstream
+                    # stop. Push a fatal ErrorFrame ourselves instead, which
+                    # terminates the pipeline rather than reducing the block to
+                    # a swallowed log line.
                     await self.push_error(str(exc), exception=exc, fatal=True)
                 return  # don't forward the frame for a call that was blocked
 

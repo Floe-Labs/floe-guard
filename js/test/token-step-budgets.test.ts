@@ -221,6 +221,31 @@ describe("per-step budgets", () => {
     expect(guard.spentTokens).toBe(30);
   });
 
+  it("closes the step when inspecting a thenable throws", () => {
+    const guard = quiet(100);
+    let scoped: StepBudgetGuard | undefined;
+    const failure = new URIError("then getter failed");
+
+    expect(() =>
+      guard.step({ maxTokens: 50 }, (step) => {
+        scoped = step;
+        return Object.defineProperty({}, "then", {
+          get() {
+            throw failure;
+          },
+        }) as PromiseLike<never>;
+      }),
+    ).toThrow(failure);
+
+    expect(() => scoped!.reserve(0, 1)).toThrow(/no longer active/);
+    expect(() =>
+      scoped!.record("manual", 1, 0, {
+        price: { inputCostPerToken: 1e-6, outputCostPerToken: 2e-6 },
+      }),
+    ).toThrow(/no longer active/);
+    expect(() => scoped!.reserveTool(0.01)).toThrow(/no longer active/);
+  });
+
   it("detects a leaked reservation on clean exit", () => {
     const guard = quiet(100);
     let handle: BudgetReservation | undefined;

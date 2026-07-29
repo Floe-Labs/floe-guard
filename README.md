@@ -450,11 +450,13 @@ from floe_guard.integrations.langchain import budget_guard_callback_handler
 
 guard = BudgetGuard(limit_usd=1.00)
 llm = ChatOpenAI(model="gpt-4o", callbacks=[budget_guard_callback_handler(guard)])
-llm.invoke("hello")            # checks budget before the call, records spend after
+llm.invoke("hello")            # reserves before the call, settles spend after
 ```
 
-The handler checks the budget on LLM start (raising `BudgetExceeded` aborts the
-call before it runs) and records token usage on LLM end.
+The handler reserves each LangChain `run_id` on LLM start, settles its token
+usage on LLM end, and releases the hold on error. Parallel calls therefore
+cannot race through the aggregate or scoped-step ceiling. `BudgetExceeded` or
+`TokenBudgetExceeded` aborts a blocked call before it runs.
 
 ### LangGraph
 
@@ -614,14 +616,13 @@ run) and `record()`s priced usage after — same semantics as the Python guard. 
 ## Voice adapters (STT → LLM → TTS)
 
 A voice pipeline has no single call site to wrap: the LLM sits inside a running
-session and turns fire continuously for the life of a call. So instead of a
-function wrapper, these adapters enforce **per turn** — reserve before the LLM
-call (so a turn is blocked *before* its TTS/audio spend piles on top of a call
-that would already cross the ceiling), settle on the real usage the pipeline
-reports, and release a turn that ends without ever reporting usage (an
-interrupted turn) so the reservation never leaks against the ceiling. The token
-cost map is LLM-only, so STT/TTS spend is metered only when you supply per-unit
-prices. Both voice adapters are **Python-only** today.
+session and turns fire continuously for the life of a call. These adapters
+therefore enforce per turn, but their interception points differ. LiveKit can
+check before entering its LLM node. Pipecat's processor sits after the LLM, so
+it can stop downstream TTS and later pipeline work but cannot prevent the
+current provider charge. The token cost map is LLM-only, so STT/TTS spend is
+metered only when you supply per-unit prices. Both voice adapters are
+**Python-only** today.
 
 ### Pipecat (voice)
 
@@ -630,9 +631,10 @@ pip install floe-guard[pipecat]
 ```
 
 Drop a `FloeBudgetGuardProcessor` into the pipeline directly after the LLM
-service. It reserves on each turn's `LLMFullResponseStartFrame` and settles from
-the `LLMUsageMetricsData` Pipecat emits — so the pipeline's `PipelineTask` must
-be created with `enable_metrics=True, enable_usage_metrics=True`.
+service. It reserves when the already-started turn emits
+`LLMFullResponseStartFrame` and settles from the `LLMUsageMetricsData` Pipecat
+emits — so the pipeline's `PipelineTask` must be created with
+`enable_metrics=True, enable_usage_metrics=True`.
 
 ```python
 from pipecat.pipeline.pipeline import Pipeline
@@ -647,7 +649,7 @@ pipeline = Pipeline([
     stt,
     context_aggregator.user(),
     llm,
-    FloeBudgetGuardProcessor(guard, model="gpt-4o"),   # meters AND hard-stops
+    FloeBudgetGuardProcessor(guard, model="gpt-4o"),   # meters; stops downstream work
     tts,
     transport.output(),
     context_aggregator.assistant(),
@@ -661,9 +663,9 @@ task = PipelineTask(
 > **Fragment** — `transport`, `stt`, `llm`, `tts`, and `context_aggregator` are your existing Pipecat objects; this shows only where the guard sits in a pipeline you already have. For a complete, runnable demo (no API key, no network), see [`examples/voice_turn_budget.py`](examples/voice_turn_budget.py).
 
 By default a USD- or token-blocked turn pushes a fatal `ErrorFrame` that
-terminates the
-pipeline — the hard-stop every other adapter gives you. Pass an
-`on_budget_exceeded` async callback to speak a graceful "wrapping up" line first
+terminates downstream pipeline work. The current LLM request has already
+started; this prevents TTS and subsequent turns, not that provider charge. Pass
+an `on_budget_exceeded` async callback to speak a graceful "wrapping up" line
 instead of cutting the call dead.
 
 ### LiveKit (voice)
@@ -730,8 +732,9 @@ session. A voice/telephony builder on a Node stack should either drive the LLM
 turn through the Vercel AI middleware and meter STT/TTS spend by hand via
 `recordTool`, or run the LLM leg through the **hosted [Floe proxy](#upgrade-to-hosted-floe)**
 (un-bypassable, cross-vendor) — or use the Python Pipecat / LiveKit adapters
-above, which enforce the whole turn. No native TypeScript Pipecat/LiveKit voice
-adapter ships in this release.
+above. LiveKit checks before its LLM node; Pipecat meters the turn and stops
+downstream work after the LLM starts. No native TypeScript Pipecat/LiveKit
+voice adapter ships in this release.
 
 For wiring floe-guard into an existing voice pipeline, see the Floe docs:
 **[Add Floe to your existing pipeline](https://floe-labs.gitbook.io/docs/getting-started/integrate-existing-pipeline)**.

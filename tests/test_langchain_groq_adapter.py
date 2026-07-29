@@ -12,6 +12,7 @@ Handler tests require ``langchain_core`` and are skipped without it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 import pytest
 
@@ -24,6 +25,7 @@ from floe_guard.integrations.langchain import (
 )
 
 # Minimal stubs that mirror ChatGroq's LLMResult shape
+
 
 @dataclass
 class _Msg:
@@ -52,9 +54,7 @@ def _groq_result(
     """
     return _Result(
         llm_output={"model": model},
-        generations=[
-            [_Gen(_Msg({"input_tokens": input_tokens, "output_tokens": output_tokens}))]
-        ],
+        generations=[[_Gen(_Msg({"input_tokens": input_tokens, "output_tokens": output_tokens}))]],
     )
 
 
@@ -84,7 +84,6 @@ def test_zero_usage_groq_result_is_noop() -> None:
     assert guard.spent_usd == 0.0
 
 
-
 # Full handler lifecycle — requires langchain_core
 
 
@@ -92,9 +91,10 @@ def test_handler_allows_groq_call_under_budget_and_records() -> None:
     pytest.importorskip("langchain_core")
     guard = BudgetGuard(limit_usd=1.0)
     handler = budget_guard_callback_handler(guard)
+    run_id = uuid4()
 
-    handler.on_chat_model_start({}, [[]])  # under budget — no raise
-    handler.on_llm_end(_groq_result(1_000, 1_000))
+    handler.on_chat_model_start({}, [[]], run_id=run_id)  # under budget — no raise
+    handler.on_llm_end(_groq_result(1_000, 1_000), run_id=run_id)
     assert guard.spent_usd > 0.0
 
 
@@ -104,10 +104,11 @@ def test_handler_blocks_groq_call_before_crossing() -> None:
     handler = budget_guard_callback_handler(guard)
 
     # First call goes through and primes _last_cost.
-    handler.on_chat_model_start({}, [[]])
-    handler.on_llm_end(_groq_result(1_000, 1_000))
+    first_run = uuid4()
+    handler.on_chat_model_start({}, [[]], run_id=first_run)
+    handler.on_llm_end(_groq_result(1_000, 1_000), run_id=first_run)
     assert guard.spent_usd > 0.0
 
     # Second call's projected cost would cross the ceiling.
     with pytest.raises(BudgetExceeded):
-        handler.on_chat_model_start({}, [[]])
+        handler.on_chat_model_start({}, [[]], run_id=uuid4())

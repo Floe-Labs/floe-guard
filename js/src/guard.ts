@@ -621,7 +621,14 @@ export class BudgetGuard<
       state.active = false;
       throw error;
     }
-    if (isPromiseLike(result)) {
+    let promiseLike: boolean;
+    try {
+      promiseLike = isPromiseLike(result);
+    } catch (error) {
+      state.active = false;
+      throw error;
+    }
+    if (promiseLike) {
       return Promise.resolve(result).then(
         (value) => {
           this.closeStep(state);

@@ -1,10 +1,11 @@
 """LangChain adapter (optional extra: ``pip install floe-guard[langchain]``).
 
 :func:`budget_guard_callback_handler` builds a LangChain callback handler you pass
-to any LLM or chat model. It checks the budget *before* the call
+to any LLM or chat model. It reserves the budget *before* the call
 (``on_llm_start`` / ``on_chat_model_start``) — raising
-:class:`~floe_guard.BudgetExceeded` aborts the call so it never runs — and records
-spend *after* the response (``on_llm_end``).
+:class:`~floe_guard.BudgetExceeded` or
+:class:`~floe_guard.TokenBudgetExceeded` aborts the call so it never runs — and
+settles spend *after* the response (``on_llm_end``).
 
     from langchain_openai import ChatOpenAI
     from floe_guard import BudgetGuard
@@ -20,9 +21,11 @@ the other adapters, so token usage is priced via the bundled cost map.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
+from uuid import UUID
 
-from ..guard import BudgetGuard
+from ..guard import BudgetGuard, ReservationHandle, StepBudgetGuard
 from ..stream import approx_tokens
 
 
@@ -37,16 +40,18 @@ def _require_langchain() -> Any:
     return langchain_core
 
 
-def _estimate_start(guard: BudgetGuard, serialized: Any, texts: list[str]) -> float | None:
-    """Request-sized cost estimate for the pre-call check.
+def _estimate_start(
+    guard: BudgetGuard | StepBudgetGuard, serialized: Any, texts: list[str]
+) -> float | None:
+    """Request-sized cost estimate for the pre-call reservation.
 
-    ``check()`` defaults to predicting from the LAST call's cost — blind on the
+    ``reserve()`` defaults to predicting from the LAST call's cost — blind on the
     first call and wrong for a much larger one. Size the prediction to the
     request instead: model id and ``max_tokens`` from the serialized model
     config, prompt tokens via the ~4 chars/token heuristic (langchain-core has
     no tokenizer; a rough request-sized figure still beats a stale or zero
     baseline). Returns ``None`` when the model is unknown/unpriceable —
-    ``check(None)`` keeps the old behaviour.
+    ``reserve(None)`` keeps the old behaviour.
     """
     model_kwargs = serialized.get("kwargs") if isinstance(serialized, dict) else None
     if not isinstance(model_kwargs, dict):
@@ -124,29 +129,39 @@ def _usage_from_result(response: Any) -> tuple[int, int]:
     return prompt, completion
 
 
-def _record_result(guard: BudgetGuard, response: Any) -> None:
-    model = _model_from_result(response)
-    prompt_tokens, completion_tokens = _usage_from_result(response)
+def _record_result(
+    guard: BudgetGuard | StepBudgetGuard,
+    response: Any,
+    *,
+    reserved: ReservationHandle = 0.0,
+) -> None:
+    try:
+        model = _model_from_result(response)
+        prompt_tokens, completion_tokens = _usage_from_result(response)
+    except (TypeError, ValueError, OverflowError):
+        guard.release(reserved)
+        raise
     if prompt_tokens <= 0 and completion_tokens <= 0:
-        # No tokens were spent — nothing to meter.
+        # No tokens were spent — nothing to meter, so free the in-flight hold.
+        guard.release(reserved)
         return
-    # There IS spend to account for. Route it through record() even when the model
+    # There IS spend to account for. Route it through settle() even when the model
     # id is missing, so the guard's configured policy applies (fail-closed → warn +
     # raise; fail-open → warn + skip). Silently skipping here would let a real,
     # completed call go unmetered and skew the next check().
-    guard.record(model, prompt_tokens, completion_tokens)
+    guard.settle(model, prompt_tokens, completion_tokens, reserved=reserved)
 
 
-def budget_guard_callback_handler(guard: BudgetGuard) -> Any:
+def budget_guard_callback_handler(guard: BudgetGuard | StepBudgetGuard) -> Any:
     """Build a LangChain callback handler that enforces ``guard`` on every call.
 
     Pass it to any LLM or chat model::
 
         llm = ChatOpenAI(model="gpt-4o", callbacks=[budget_guard_callback_handler(guard)])
 
-    ``on_llm_start``/``on_chat_model_start`` run ``guard.check()`` (raising
-    :class:`~floe_guard.BudgetExceeded` to abort), and ``on_llm_end`` records the
-    response's token cost.
+    ``on_llm_start``/``on_chat_model_start`` reserve each call by ``run_id``.
+    ``on_llm_end`` settles the matching hold and ``on_llm_error`` releases it,
+    so parallel calls cannot race through the same aggregate or step ceiling.
     """
     _require_langchain()
     from langchain_core.callbacks import BaseCallbackHandler
@@ -160,25 +175,44 @@ def budget_guard_callback_handler(guard: BudgetGuard) -> Any:
         def __init__(self) -> None:
             super().__init__()
             self.guard = guard
+            self._reservations: dict[UUID, ReservationHandle] = {}
+            self._reservation_lock = threading.Lock()
 
-        def on_llm_start(self, serialized: Any, prompts: Any, **kwargs: Any) -> None:
-            # Request-sized when derivable (see _estimate_start); check(None)
-            # falls back to the last-cost prediction.
+        def _hold(self, run_id: UUID, serialized: Any, texts: list[str]) -> None:
+            reserved = self.guard.reserve(
+                _estimate_start(self.guard, serialized, texts),
+                estimated_tokens=_estimate_start_tokens(serialized, texts),
+            )
+            with self._reservation_lock:
+                if run_id in self._reservations:
+                    duplicate = True
+                else:
+                    self._reservations[run_id] = reserved
+                    duplicate = False
+            if duplicate:
+                self.guard.release(reserved)
+                raise RuntimeError(f"duplicate LangChain run_id {run_id}")
+
+        def _pop(self, run_id: UUID) -> ReservationHandle:
+            with self._reservation_lock:
+                return self._reservations.pop(run_id, 0.0)
+
+        def on_llm_start(
+            self, serialized: Any, prompts: Any, *, run_id: UUID, **kwargs: Any
+        ) -> None:
             texts = [p for p in (prompts or []) if isinstance(p, str)]
-            self.guard.check(
-                _estimate_start(self.guard, serialized, texts),
-                estimated_next_tokens=_estimate_start_tokens(serialized, texts),
-            )
+            self._hold(run_id, serialized, texts)
 
-        def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
-            texts = _chat_texts(messages)
-            self.guard.check(
-                _estimate_start(self.guard, serialized, texts),
-                estimated_next_tokens=_estimate_start_tokens(serialized, texts),
-            )
+        def on_chat_model_start(
+            self, serialized: Any, messages: Any, *, run_id: UUID, **kwargs: Any
+        ) -> None:
+            self._hold(run_id, serialized, _chat_texts(messages))
 
-        def on_llm_end(self, response: Any, **kwargs: Any) -> None:
-            _record_result(self.guard, response)
+        def on_llm_end(self, response: Any, *, run_id: UUID, **kwargs: Any) -> None:
+            _record_result(self.guard, response, reserved=self._pop(run_id))
+
+        def on_llm_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
+            self.guard.release(self._pop(run_id))
 
     return BudgetGuardCallbackHandler()
 

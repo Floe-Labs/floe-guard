@@ -37,10 +37,23 @@ from pipecat.metrics.metrics import LLMTokenUsage, LLMUsageMetricsData  # noqa: 
 from pipecat.pipeline.pipeline import Pipeline  # noqa: E402
 from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
 from pipecat.pipeline.task import PipelineParams, PipelineTask  # noqa: E402
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  # noqa: E402
 
 from floe_guard import BudgetGuard  # noqa: E402
 from floe_guard.errors import BudgetExceeded, TokenBudgetExceeded  # noqa: E402
 from floe_guard.integrations.pipecat import FloeBudgetGuardProcessor  # noqa: E402
+
+
+class _FrameProbe(FrameProcessor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.start_frames = 0
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMFullResponseStartFrame):
+            self.start_frames += 1
+        await self.push_frame(frame, direction)
 
 
 def _metrics_frame(prompt_tokens, completion_tokens, model="gpt-4o") -> MetricsFrame:
@@ -128,6 +141,39 @@ async def test_token_block_uses_callback_before_forwarding_start_frame() -> None
 
     assert isinstance(called.get("exc"), TokenBudgetExceeded)
     assert not processor._pending
+
+
+@pytest.mark.asyncio
+async def test_block_stops_downstream_after_upstream_llm_frame_exists() -> None:
+    guard = BudgetGuard(limit_usd=1.0, token_limit=0)
+    upstream = _FrameProbe()
+    downstream = _FrameProbe()
+    called = {}
+
+    async def handle_exceeded(exc):
+        called["exc"] = exc
+
+    processor = FloeBudgetGuardProcessor(
+        guard,
+        model="gpt-4o",
+        on_budget_exceeded=handle_exceeded,
+    )
+    pipeline = Pipeline([upstream, processor, downstream])
+    task = PipelineTask(
+        pipeline, params=PipelineParams(enable_metrics=True, enable_usage_metrics=True)
+    )
+    runner = PipelineRunner()
+
+    async def drive():
+        await task.queue_frame(LLMFullResponseStartFrame())
+        await asyncio.sleep(0.05)
+        await task.queue_frame(EndFrame())
+
+    await asyncio.gather(runner.run(task), drive())
+
+    assert upstream.start_frames == 1
+    assert downstream.start_frames == 0
+    assert isinstance(called.get("exc"), TokenBudgetExceeded)
 
 
 @pytest.mark.asyncio

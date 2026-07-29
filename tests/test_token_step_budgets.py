@@ -225,6 +225,36 @@ def test_step_cannot_open_new_reservations_after_exit() -> None:
         scoped.reserve_tool(0.01)
 
 
+def test_step_record_tool_rejects_spend_after_exit() -> None:
+    guard = quiet_guard(token_limit=100)
+    scoped = guard.step(max_usd=0.05)
+
+    with scoped:
+        scoped.record_tool("search", 0.01)
+    aggregate_spend = guard.spent_usd
+    step_spend = scoped.advisory().step_spent_usd
+
+    with pytest.raises(RuntimeError, match="no longer active"):
+        scoped.record_tool("search", 0.01)
+    assert guard.spent_usd == aggregate_spend
+    assert scoped.advisory().step_spent_usd == step_spend
+
+
+def test_step_rejects_nested_entry_of_the_same_scope() -> None:
+    guard = quiet_guard(token_limit=100)
+    scoped = guard.step(max_tokens=50)
+
+    with scoped:
+        with pytest.raises(RuntimeError, match="cannot be re-entered"):
+            with scoped:
+                pass
+        scoped.check(estimated_next_tokens=1)
+
+    with pytest.raises(RuntimeError, match="cannot be re-entered"):
+        with scoped:
+            pass
+
+
 def test_step_advisory_drives_existing_near_limit_signal() -> None:
     guard = quiet_guard(token_limit=1_000, near_limit_bps=8000)
     with guard.step(max_tokens=100) as step:
