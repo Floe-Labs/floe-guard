@@ -291,3 +291,72 @@ def test_latest_advisory_prefers_higher_utilization() -> None:
     assert latest_advisory(late, early) is late
     assert latest_advisory(None, early) is early
     assert latest_advisory(late, None) is late
+
+
+def test_latest_advisory_merges_cross_dimension_progress() -> None:
+    usd_fresh = BudgetAdvisory(
+        near_limit=False,
+        used_bps=7000,
+        remaining_usd=0.30,
+        limit_usd=1.0,
+        spent_usd=0.70,
+        expected_cost=0.10,
+        est_calls_remaining=3,
+        token_limit=1_000,
+        spent_tokens=100,
+        remaining_tokens=900,
+        token_used_bps=1000,
+        step_limit_usd=1.0,
+        step_spent_usd=0.70,
+        step_remaining_usd=0.30,
+        step_token_limit=1_000,
+        step_spent_tokens=100,
+        step_remaining_tokens=900,
+        step_used_bps=7000,
+    )
+    token_fresh = BudgetAdvisory(
+        near_limit=True,
+        used_bps=4000,
+        remaining_usd=0.60,
+        limit_usd=1.0,
+        spent_usd=0.40,
+        expected_cost=0.05,
+        est_calls_remaining=12,
+        token_limit=1_000,
+        spent_tokens=900,
+        remaining_tokens=100,
+        token_used_bps=9000,
+        near_token_limit=True,
+        step_limit_usd=1.0,
+        step_spent_usd=0.40,
+        step_remaining_usd=0.60,
+        step_token_limit=1_000,
+        step_spent_tokens=900,
+        step_remaining_tokens=100,
+        step_used_bps=9000,
+        step_near_limit=True,
+    )
+
+    expected = BudgetAdvisory(
+        near_limit=True,
+        used_bps=7000,
+        remaining_usd=0.30,
+        limit_usd=1.0,
+        spent_usd=0.70,
+        expected_cost=0.10,
+        est_calls_remaining=3,
+        token_limit=1_000,
+        spent_tokens=900,
+        remaining_tokens=100,
+        token_used_bps=9000,
+        near_token_limit=True,
+        step_limit_usd=1.0,
+        step_spent_usd=0.70,
+        step_remaining_usd=0.30,
+        step_token_limit=1_000,
+        step_spent_tokens=100,
+        step_remaining_tokens=900,
+        step_used_bps=7000,
+    )
+    assert latest_advisory(usd_fresh, token_fresh) == expected
+    assert latest_advisory(token_fresh, usd_fresh) == expected

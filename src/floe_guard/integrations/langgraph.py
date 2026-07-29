@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
+from dataclasses import replace
 from functools import wraps
 from typing import Annotated, Any
 
@@ -76,22 +77,39 @@ def _require_langgraph() -> None:
 def latest_advisory(
     current: BudgetAdvisory | None, update: BudgetAdvisory | None
 ) -> BudgetAdvisory | None:
-    """Reducer for the budget channel: keep the advisory reflecting the most spend.
+    """Reducer for the budget channel: keep the freshest spend in each dimension.
 
     Parallel branches finish in nondeterministic order, so "last write wins"
-    does not mean "latest spend wins". ``used_bps`` is monotone in the guard's
-    running total, so the higher reading is always the fresher truth.
+    does not mean "latest spend wins". Aggregate USD and token totals are each
+    monotone, so merge them independently when updates are incomparable.
     """
     if update is None:
         return current
     if current is None:
         return update
-    # Aggregate settled totals are monotone even when a step budget resets.
-    # Compare both dimensions so a token-only update is not discarded merely
-    # because its USD utilization is unchanged.
-    current_progress = (current.spent_usd, current.spent_tokens)
-    update_progress = (update.spent_usd, update.spent_tokens)
-    return update if update_progress >= current_progress else current
+    if update.spent_usd >= current.spent_usd and update.spent_tokens >= current.spent_tokens:
+        return update
+    if current.spent_usd >= update.spent_usd and current.spent_tokens >= update.spent_tokens:
+        return current
+
+    usd = update if update.spent_usd > current.spent_usd else current
+    tokens = update if update.spent_tokens > current.spent_tokens else current
+    # Keep each total and its derived headroom fields from the same snapshot.
+    return replace(
+        usd,
+        near_limit=current.near_limit or update.near_limit,
+        used_bps=usd.used_bps,
+        remaining_usd=usd.remaining_usd,
+        limit_usd=usd.limit_usd,
+        spent_usd=usd.spent_usd,
+        expected_cost=usd.expected_cost,
+        est_calls_remaining=usd.est_calls_remaining,
+        token_limit=tokens.token_limit,
+        spent_tokens=tokens.spent_tokens,
+        remaining_tokens=tokens.remaining_tokens,
+        token_used_bps=tokens.token_used_bps,
+        near_token_limit=tokens.near_token_limit,
+    )
 
 
 # Declare this on your graph state to receive the advisory after each guarded
