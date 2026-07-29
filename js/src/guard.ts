@@ -53,6 +53,11 @@ interface ReservationParts {
   step: StepState | null;
 }
 
+interface ReservationState extends ReservationParts {
+  owner: object;
+  active: boolean;
+}
+
 type BlockingLimit = {
   metric: "usd" | "tokens";
   scope: "aggregate" | "step";
@@ -60,18 +65,82 @@ type BlockingLimit = {
   limit: number;
 };
 
+declare const reservationBrand: unique symbol;
+
+/**
+ * An opaque, immutable reservation issued by {@link BudgetGuard.reserve}.
+ *
+ * Pass the original object to `settle()` or `release()` exactly once. Do not
+ * construct, clone, or copy reservation handles: the guard validates object
+ * identity against private authoritative state.
+ */
 export interface BudgetReservation {
   readonly usd: number;
   readonly tokens: number;
-  /** @internal */
-  _owner: BudgetGuard<number | undefined>;
-  /** @internal */
-  _step: StepState | null;
-  /** @internal */
-  _active: boolean;
+  /** Nominal brand: reservation handles can only be issued by this module. */
+  readonly [reservationBrand]: never;
 }
 
 export type ReservationHandle = number | BudgetReservation;
+
+/**
+ * Authoritative per-handle state. The public object is only an immutable view;
+ * accounting and lifecycle decisions never trust caller-visible properties.
+ */
+const reservationStates = new WeakMap<BudgetReservation, ReservationState>();
+
+function issueReservation(
+  owner: object,
+  usd: number,
+  tokens: number,
+  step: StepState | null,
+): BudgetReservation {
+  const handle = Object.freeze({
+    usd,
+    tokens,
+  }) as BudgetReservation;
+  reservationStates.set(handle, {
+    owner,
+    usd,
+    tokens,
+    step,
+    active: true,
+  });
+  return handle;
+}
+
+function normalizeStepHandle(
+  owner: object,
+  handle: ReservationHandle,
+  step: StepState,
+): BudgetReservation {
+  if (typeof handle === "number") {
+    if (!Number.isFinite(handle) || handle < 0) {
+      throw new RangeError(
+        `reserved must be a finite, non-negative number, got ${handle}`,
+      );
+    }
+    if (handle !== 0) {
+      throw new RangeError(
+        "scoped budget APIs require a reservation issued by this step",
+      );
+    }
+    return issueReservation(owner, 0, 0, step);
+  }
+  const state = reservationStates.get(handle);
+  if (state === undefined) {
+    throw new RangeError(
+      "invalid reservation handle; use the original object returned by reserve()",
+    );
+  }
+  if (state.owner !== owner) {
+    throw new RangeError("reservation belongs to a different BudgetGuard");
+  }
+  if (state.step !== step) {
+    throw new RangeError("reservation belongs to a different budget step");
+  }
+  return handle;
+}
 
 export interface StepBudgetOptions {
   maxUsd?: number;
@@ -675,7 +744,7 @@ export class BudgetGuard<
       step.reservedTokens += tokens;
     }
     if (this.tokenLimit === null && step === null) return cost;
-    return { usd: cost, tokens, _owner: this, _step: step, _active: true };
+    return issueReservation(this, cost, tokens, step);
   }
 
   private normalizedCostEstimate(estimate: number | undefined): number {
@@ -776,21 +845,29 @@ export class BudgetGuard<
       }
       return { usd: handle, tokens: 0, step: null };
     }
-    if (handle._owner !== this) {
+    const state = reservationStates.get(handle);
+    if (state === undefined) {
+      throw new RangeError(
+        "invalid reservation handle; use the original object returned by reserve()",
+      );
+    }
+    if (state.owner !== this) {
       throw new RangeError("reservation belongs to a different BudgetGuard");
     }
-    if (!handle._active) {
+    if (!state.active) {
       throw new RangeError("reservation has already been settled or released");
     }
     if (
       !Number.isFinite(handle.usd) ||
       handle.usd < 0 ||
       !Number.isInteger(handle.tokens) ||
-      handle.tokens < 0
+      handle.tokens < 0 ||
+      handle.usd !== state.usd ||
+      handle.tokens !== state.tokens
     ) {
       throw new RangeError("reservation contains invalid USD or token values");
     }
-    return { usd: handle.usd, tokens: handle.tokens, step: handle._step };
+    return { usd: state.usd, tokens: state.tokens, step: state.step };
   }
 
   private consumeHandle(
@@ -816,7 +893,14 @@ export class BudgetGuard<
       parts.step.reservedUsd = Math.max(0, parts.step.reservedUsd - parts.usd);
       parts.step.reservedTokens -= parts.tokens;
     }
-    if (typeof handle !== "number") handle._active = false;
+    if (typeof handle !== "number") {
+      const state = reservationStates.get(handle);
+      // reservationParts() validated issuance, ownership, and active state.
+      if (state === undefined || state.owner !== this || !state.active) {
+        throw new RangeError("invalid or already consumed reservation handle");
+      }
+      state.active = false;
+    }
   }
 
   private accrueTokens(tokens: number, step: StepState | null): void {
@@ -999,15 +1083,11 @@ export class StepBudgetGuard {
     options: { reserved?: ReservationHandle; price?: ManualPrice; label?: string } = {},
   ): number {
     this.ensureActive();
-    const reserved =
-      options.reserved ??
-      {
-        usd: 0,
-        tokens: 0,
-        _owner: this.parent,
-        _step: this.state,
-        _active: true,
-      };
+    const reserved = normalizeStepHandle(
+      this.parent,
+      options.reserved ?? 0,
+      this.state,
+    );
     return this.parent.settle(model, promptTokens, completionTokens, {
       ...options,
       reserved,
@@ -1034,15 +1114,11 @@ export class StepBudgetGuard {
     options: { reserved?: ReservationHandle; label?: string } = {},
   ): number {
     this.ensureActive();
-    const reserved =
-      options.reserved ??
-      {
-        usd: 0,
-        tokens: 0,
-        _owner: this.parent,
-        _step: this.state,
-        _active: true,
-      };
+    const reserved = normalizeStepHandle(
+      this.parent,
+      options.reserved ?? 0,
+      this.state,
+    );
     return this.parent.settleTool(tool, costUsd, { ...options, reserved });
   }
 
@@ -1051,7 +1127,7 @@ export class StepBudgetGuard {
   }
 
   release(reserved: ReservationHandle): void {
-    this.parent.release(reserved);
+    this.parent.release(normalizeStepHandle(this.parent, reserved, this.state));
   }
 
   advisory(): BudgetAdvisory {

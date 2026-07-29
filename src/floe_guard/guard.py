@@ -33,6 +33,7 @@ import sys
 import threading
 import time
 import warnings
+import weakref
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -106,15 +107,25 @@ class _StepState:
     active: bool = True
 
 
-@dataclass(eq=False)
+@dataclass(frozen=True, eq=False)
 class BudgetReservation:
-    """Opaque multi-dimensional reservation returned by token/step guards."""
+    """Opaque immutable reservation returned by token/step guards.
+
+    Read ``usd`` and ``tokens`` for diagnostics, but do not construct, copy, or
+    modify handles. Only the issuing guard's private registry is authoritative.
+    """
 
     usd: float
     tokens: int
     _owner: BudgetGuard
-    _step: _StepState | None = None
-    _active: bool = True
+
+
+@dataclass(frozen=True)
+class _ReservationState:
+    issued: weakref.ReferenceType[BudgetReservation]
+    usd: float
+    tokens: int
+    step: _StepState | None
 
 
 ReservationHandle = float | BudgetReservation
@@ -246,6 +257,13 @@ class BudgetGuard:
         # Counted against the ceiling so concurrent callers can't overshoot.
         self._reserved = 0.0
         self._reserved_tokens = 0
+        # Typed handles are immutable caller-visible identities. Accounting and
+        # lifecycle state live here so forged, copied, or modified handles can
+        # never release another caller's hold.
+        self._reservations: weakref.WeakKeyDictionary[BudgetReservation, _ReservationState] = (
+            weakref.WeakKeyDictionary()
+        )
+        self._consumed_reservations: weakref.WeakSet[BudgetReservation] = weakref.WeakSet()
         # Same int-not-bool contract as near_limit_bps (parity with TS Number.isInteger).
         if max_log_events is not None and (
             isinstance(max_log_events, bool)
@@ -564,9 +582,7 @@ class BudgetGuard:
         # silently dropped (which would leak the hold). A bad handle here corrupts
         # _reserved for other in-flight calls.
         reserved_usd, reserved_tokens, step = self._reservation_parts(reserved)
-        if not reserved_usd and not reserved_tokens:
-            if isinstance(reserved, BudgetReservation):
-                reserved._active = False
+        if not isinstance(reserved, BudgetReservation) and not reserved_usd:
             return
         with self._lock:
             self._consume_handle_locked(reserved, reserved_usd, reserved_tokens, step)
@@ -744,7 +760,7 @@ class BudgetGuard:
                     step.reserved_tokens += tokens
                 if self.token_limit is None and step is None:
                     return cost
-                return BudgetReservation(cost, tokens, self, step)
+                return self._make_reservation_locked(cost, tokens, step)
         self._raise_block(blocked)
         raise AssertionError("unreachable")
 
@@ -799,14 +815,66 @@ class BudgetGuard:
         self, reserved: ReservationHandle
     ) -> tuple[float, int, _StepState | None]:
         if isinstance(reserved, BudgetReservation):
-            if reserved._owner is not self:
-                raise ValueError("reservation belongs to a different BudgetGuard")
-            if not reserved._active:
-                raise ValueError("reservation has already been settled or released")
-            return reserved.usd, reserved.tokens, reserved._step
+            with self._lock:
+                state = self._typed_reservation_state_locked(reserved)
+                return state.usd, state.tokens, state.step
         if not math.isfinite(reserved) or reserved < 0:
             raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
         return float(reserved), 0, None
+
+    def _make_reservation_locked(
+        self, usd: float, tokens: int, step: _StepState | None
+    ) -> BudgetReservation:
+        """Create and register a typed handle. Caller must hold ``self._lock``."""
+        handle = BudgetReservation(usd, tokens, self)
+        self._reservations[handle] = _ReservationState(weakref.ref(handle), usd, tokens, step)
+        return handle
+
+    def _make_reservation(
+        self, usd: float, tokens: int, step: _StepState | None
+    ) -> BudgetReservation:
+        """Create a registered zero/default handle for a scoped post-hoc record."""
+        with self._lock:
+            return self._make_reservation_locked(usd, tokens, step)
+
+    def _typed_reservation_state_locked(self, handle: BudgetReservation) -> _ReservationState:
+        """Validate a typed handle without mutating accounting state."""
+        if handle._owner is not self:
+            raise ValueError("reservation belongs to a different BudgetGuard")
+        if handle in self._consumed_reservations:
+            raise ValueError("reservation has already been settled or released")
+        state = self._reservations.get(handle)
+        if state is None or state.issued() is not handle:
+            raise ValueError("reservation handle was not issued by this BudgetGuard")
+        if (
+            not math.isfinite(handle.usd)
+            or handle.usd < 0
+            or isinstance(handle.tokens, bool)
+            or not isinstance(handle.tokens, int)
+            or handle.tokens < 0
+            or type(handle.usd) is not type(state.usd)
+            or type(handle.tokens) is not type(state.tokens)
+            or handle.usd != state.usd
+            or handle.tokens != state.tokens
+        ):
+            raise ValueError("reservation handle has been modified")
+        return state
+
+    def _scoped_reservation(
+        self, reserved: ReservationHandle, step: _StepState
+    ) -> BudgetReservation:
+        """Return a genuine handle for ``step``; numeric scoped handles must be zero."""
+        if isinstance(reserved, BudgetReservation):
+            with self._lock:
+                state = self._typed_reservation_state_locked(reserved)
+                if state.step is not step:
+                    raise ValueError("reservation belongs to a different step budget")
+            return reserved
+        if not math.isfinite(reserved) or reserved < 0:
+            raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
+        if reserved != 0:
+            raise ValueError("scoped numeric reservation handles must be zero")
+        return self._make_reservation(0.0, 0, step)
 
     def _consume_handle_locked(
         self,
@@ -815,9 +883,15 @@ class BudgetGuard:
         reserved_tokens: int,
         step: _StepState | None,
     ) -> None:
-        if not reserved_usd and not reserved_tokens:
-            if isinstance(handle, BudgetReservation):
-                handle._active = False
+        if isinstance(handle, BudgetReservation):
+            state = self._typed_reservation_state_locked(handle)
+            if (
+                reserved_usd != state.usd
+                or reserved_tokens != state.tokens
+                or step is not state.step
+            ):
+                raise ValueError("reservation handle state changed during settlement")
+        elif not reserved_usd and not reserved_tokens:
             return
         if reserved_usd > self._reserved + _EPS:
             raise ValueError("reserved USD handle exceeds total in-flight reservations")
@@ -832,7 +906,8 @@ class BudgetGuard:
             step.reserved_usd = max(0.0, step.reserved_usd - reserved_usd)
             step.reserved_tokens -= reserved_tokens
         if isinstance(handle, BudgetReservation):
-            handle._active = False
+            del self._reservations[handle]
+            self._consumed_reservations.add(handle)
 
     def _accrue_tokens_locked(self, total_tokens: int, step: _StepState | None) -> None:
         self.spent_tokens += total_tokens
@@ -1067,8 +1142,7 @@ class StepBudgetGuard:
         label: str | None = None,
     ) -> float:
         self._ensure_active()
-        if not isinstance(reserved, BudgetReservation):
-            reserved = BudgetReservation(float(reserved), 0, self._parent, self._state)
+        reserved = self._parent._scoped_reservation(reserved, self._state)
         return self._parent.settle(
             model,
             prompt_tokens,
@@ -1093,7 +1167,8 @@ class StepBudgetGuard:
         cache_read_input_tokens: int = 0,
         label: str | None = None,
     ) -> float:
-        handle = BudgetReservation(0.0, 0, self._parent, self._state)
+        self._ensure_active()
+        handle = self._parent._make_reservation(0.0, 0, self._state)
         return self.settle(
             model,
             prompt_tokens,
@@ -1119,14 +1194,16 @@ class StepBudgetGuard:
         label: str | None = None,
     ) -> float:
         self._ensure_active()
-        if not isinstance(reserved, BudgetReservation):
-            reserved = BudgetReservation(float(reserved), 0, self._parent, self._state)
+        reserved = self._parent._scoped_reservation(reserved, self._state)
         return self._parent.settle_tool(tool, cost_usd, reserved=reserved, label=label)
 
     def record_tool(self, tool: str, cost_usd: float, *, label: str | None = None) -> float:
-        return self.settle_tool(tool, cost_usd, label=label)
+        self._ensure_active()
+        handle = self._parent._make_reservation(0.0, 0, self._state)
+        return self.settle_tool(tool, cost_usd, reserved=handle, label=label)
 
     def release(self, reserved: ReservationHandle) -> None:
+        reserved = self._parent._scoped_reservation(reserved, self._state)
         self._parent.release(reserved)
 
     def advisory(self) -> BudgetAdvisory:

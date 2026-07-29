@@ -32,6 +32,9 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ### Fixed (py + js)
 
+- Typed token/step reservation handles are now immutable and identity-validated
+  against guard-owned state, so modified, copied, forged, foreign, or reused
+  handles fail before they can alter another caller's in-flight totals.
 - Token budget errors now follow the existing hard-stop paths in LiteLLM,
   Pipecat, LiveKit, and budget-aware retries. TypeScript step scopes also remain
   active for promise-like callbacks, and the new options/advisory types stay

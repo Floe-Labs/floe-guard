@@ -103,6 +103,115 @@ describe("aggregate token ceilings", () => {
     second.release(foreign);
   });
 
+  it("returns frozen opaque handles with immutable caller-visible values", () => {
+    const guard = quiet(100);
+    const handle = guard.reserve(0.25, 20) as BudgetReservation;
+
+    expect(handle).toMatchObject({ usd: 0.25, tokens: 20 });
+    expect(Object.isFrozen(handle)).toBe(true);
+    expect("_owner" in handle).toBe(false);
+    expect("_step" in handle).toBe(false);
+    expect("_active" in handle).toBe(false);
+    expect(Reflect.set(handle as unknown as object, "usd", 9)).toBe(false);
+    expect(Reflect.set(handle as unknown as object, "tokens", 99)).toBe(false);
+    expect(() =>
+      Object.defineProperty(handle, "tokens", { value: Number.NaN }),
+    ).toThrow(TypeError);
+    expect(handle).toMatchObject({ usd: 0.25, tokens: 20 });
+
+    guard.release(handle);
+    expect(guard.remainingUsd).toBe(10);
+    expect(guard.remainingTokens).toBe(100);
+  });
+
+  it.each([
+    { usd: 0.5, tokens: 10, description: "finite oversized" },
+    { usd: -1, tokens: 10, description: "negative USD" },
+    { usd: Number.NaN, tokens: 10, description: "NaN USD" },
+    { usd: 0.1, tokens: -1, description: "negative tokens" },
+    { usd: 0.1, tokens: 1.5, description: "non-integer tokens" },
+    { usd: 0.1, tokens: Number.NaN, description: "NaN tokens" },
+  ])(
+    "rejects a forged $description handle without changing accounting",
+    ({ usd, tokens }) => {
+      const guard = quiet(100);
+      const legitimate = guard.reserve(0.2, 20);
+      const forged = { usd, tokens } as unknown as BudgetReservation;
+      const before = guard as unknown as {
+        reserved: number;
+        reservedTokens: number;
+      };
+
+      expect(() => guard.release(forged)).toThrow(/invalid reservation handle/);
+      expect(before.reserved).toBe(0.2);
+      expect(before.reservedTokens).toBe(20);
+      expect(guard.remainingUsd).toBeCloseTo(9.8);
+      expect(guard.remainingTokens).toBe(80);
+
+      guard.release(legitimate);
+      expect(before.reserved).toBe(0);
+      expect(before.reservedTokens).toBe(0);
+    },
+  );
+
+  it("rejects copied and cloned handles without consuming the original", () => {
+    const guard = quiet(100);
+    const handle = guard.reserve(0.2, 20) as BudgetReservation;
+    const spreadClone = { ...handle } as unknown as BudgetReservation;
+    const assignedClone = Object.assign({}, handle) as unknown as BudgetReservation;
+    const sameOwnerForgery = {
+      usd: 0.2,
+      tokens: 20,
+      _owner: guard,
+    } as unknown as BudgetReservation;
+
+    expect(() => guard.release(spreadClone)).toThrow(/original object/);
+    expect(() => guard.release(assignedClone)).toThrow(/original object/);
+    expect(() => guard.release(sameOwnerForgery)).toThrow(/original object/);
+    expect(guard.remainingTokens).toBe(80);
+    guard.release(handle);
+    expect(guard.remainingTokens).toBe(100);
+  });
+
+  it("cannot free concurrent holds with a forged larger handle", () => {
+    const guard = new BudgetGuard(10, {
+      tokenLimit: 400,
+      onBlock: () => {},
+      onTokenBlock: () => {},
+    });
+    const first = guard.reserve(0, 100);
+    const second = guard.reserve(0, 100);
+    const forged = { usd: 0, tokens: 300 } as unknown as BudgetReservation;
+
+    expect(() => guard.release(forged)).toThrow(/invalid reservation handle/);
+    expect(guard.remainingTokens).toBe(200);
+    expect(() => guard.reserve(0, 300)).toThrow(TokenBudgetExceeded);
+
+    guard.release(first);
+    expect(guard.remainingTokens).toBe(300);
+    guard.release(second);
+    expect(guard.remainingTokens).toBe(400);
+  });
+
+  it("allows exactly one concurrent terminal operation per handle", async () => {
+    const guard = quiet(100);
+    const contested = guard.reserve(0.2, 20);
+    const unrelated = guard.reserve(0.3, 30);
+
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() => guard.release(contested)),
+      Promise.resolve().then(() => guard.release(contested)),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(guard.remainingUsd).toBeCloseTo(9.7);
+    expect(guard.remainingTokens).toBe(70);
+
+    guard.release(unrelated);
+    expect(guard.remainingUsd).toBe(10);
+    expect(guard.remainingTokens).toBe(100);
+  });
+
   it("holds tokens synchronously across Promise fan-out", async () => {
     const guard = quiet(100);
     const launches = Array.from({ length: 5 }, async () => {
@@ -248,13 +357,54 @@ describe("per-step budgets", () => {
 
   it("detects a leaked reservation on clean exit", () => {
     const guard = quiet(100);
+    let scoped: StepBudgetGuard | undefined;
     let handle: BudgetReservation | undefined;
     expect(() =>
       guard.step({ maxTokens: 50 }, (step) => {
+        scoped = step;
         handle = step.reserve(0, 10) as BudgetReservation;
       }),
     ).toThrow(/active reservation/);
-    guard.release(handle!);
+    scoped!.release(handle!);
+    expect(guard.remainingTokens).toBe(100);
+  });
+
+  it("rejects cloned and sibling-step handles without consuming their holds", () => {
+    const guard = quiet(200);
+
+    guard.step({ maxTokens: 100 }, (firstStep) => {
+      const handle = firstStep.reserve(0.1, 20) as BudgetReservation;
+      const clone = { ...handle } as unknown as BudgetReservation;
+
+      expect(() => firstStep.release(clone)).toThrow(/original object/);
+      guard.step({ maxTokens: 100 }, (secondStep) => {
+        expect(() => secondStep.release(handle)).toThrow(/different budget step/);
+        expect(() => secondStep.release(0.1)).toThrow(/issued by this step/);
+        secondStep.release(0);
+      });
+
+      expect(guard.remainingTokens).toBe(180);
+      firstStep.release(handle);
+      expect(guard.remainingTokens).toBe(200);
+    });
+  });
+
+  it("registers scoped zero handles for record and recordTool", () => {
+    const guard = quiet(100);
+
+    guard.step({ maxUsd: 1, maxTokens: 100 }, (step) => {
+      step.record("manual", 10, 5, {
+        price: { inputCostPerToken: 0.01, outputCostPerToken: 0.02 },
+      });
+      step.recordTool("search", 0.25);
+
+      expect(step.advisory()).toMatchObject({
+        stepSpentUsd: 0.45,
+        stepSpentTokens: 15,
+      });
+    });
+    expect(guard.spentUsd).toBeCloseTo(0.45);
+    expect(guard.spentTokens).toBe(15);
   });
 
   it("does not mask a callback failure with leak detection", async () => {
