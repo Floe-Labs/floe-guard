@@ -174,7 +174,8 @@ def guarded_node(
     Works as a decorator (``@guarded_node(guard)``) or a plain wrapper
     (``guarded_node(guard, fn)``); sync and async nodes are both supported.
 
-    Raises :class:`~floe_guard.BudgetExceeded` before the node runs if the
+    Raises :class:`~floe_guard.BudgetExceeded` or
+    :class:`~floe_guard.TokenBudgetExceeded` before the node runs if the
     reservation would cross the ceiling — the branch never executes. On
     success, the node's ``usage_key`` entry is settled against the reservation
     and the guard's :class:`~floe_guard.BudgetAdvisory` is written to
@@ -188,6 +189,11 @@ def guarded_node(
     guard no call has been recorded yet, so that default is ``0`` — when the
     very first graph step is already a parallel fan-out, pass an explicit
     ``estimated_cost`` per node so each branch holds a realistic slice.
+
+    ``estimated_tokens`` similarly sizes the token reservation and defaults to
+    the last settled LLM token count. That default is ``0`` on a cold guard, so
+    pass an explicit value for first-step or parallel fan-out nodes when a token
+    ceiling is configured.
     """
     _require_langgraph()
 

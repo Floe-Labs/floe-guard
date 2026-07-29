@@ -69,10 +69,10 @@ def _estimate_start(
 
 
 def _estimate_start_tokens(serialized: Any, texts: list[str]) -> int | None:
+    prompt_tokens = sum(approx_tokens(t) for t in texts if isinstance(t, str))
     model_kwargs = serialized.get("kwargs") if isinstance(serialized, dict) else None
     if not isinstance(model_kwargs, dict):
-        return None
-    prompt_tokens = sum(approx_tokens(t) for t in texts if isinstance(t, str))
+        return prompt_tokens or None
     max_out = model_kwargs.get("max_tokens") or model_kwargs.get("max_completion_tokens") or 0
     try:
         return prompt_tokens + max(0, int(max_out))

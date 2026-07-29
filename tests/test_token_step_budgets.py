@@ -65,9 +65,12 @@ def test_explicit_and_last_call_estimates_block_before_call() -> None:
     with pytest.raises(TokenBudgetExceeded):
         guard.reserve(0.0, estimated_tokens=101)
     guard.record("manual", 40, 10, price=PRICE)
-    assert guard.reserve(0.0).tokens == 50
+    held = guard.reserve(0.0)
+    assert isinstance(held, BudgetReservation)
+    assert held.tokens == 50
     with pytest.raises(TokenBudgetExceeded):
         guard.reserve(0.0)
+    guard.release(held)
 
 
 def test_aggregate_token_advisory_flips_overall_near_limit() -> None:
@@ -419,6 +422,71 @@ def test_step_cannot_open_new_reservations_after_exit() -> None:
         scoped.reserve_tool(0.01)
 
 
+def test_step_exit_and_reserve_share_one_lifecycle_boundary() -> None:
+    guard = quiet_guard(token_limit=100)
+    scoped = guard.step(max_tokens=50)
+    scoped.__enter__()
+    reached_reserve = threading.Event()
+    original_ensure_active = scoped._ensure_active
+
+    def signal_before_reserve() -> None:
+        original_ensure_active()
+        reached_reserve.set()
+
+    scoped._ensure_active = signal_before_reserve  # type: ignore[method-assign]
+    reserve_result: list[BudgetReservation] = []
+    reserve_errors: list[BaseException] = []
+    exit_errors: list[BaseException] = []
+
+    def reserve() -> None:
+        try:
+            handle = scoped.reserve(0.0, estimated_tokens=10)
+            assert isinstance(handle, BudgetReservation)
+            reserve_result.append(handle)
+        except BaseException as exc:
+            reserve_errors.append(exc)
+
+    def exit_step() -> None:
+        try:
+            scoped.__exit__(None, None, None)
+        except BaseException as exc:
+            exit_errors.append(exc)
+
+    guard._lock.acquire()
+    reserve_thread = threading.Thread(target=reserve)
+    reserve_thread.start()
+    assert reached_reserve.wait(timeout=1)
+    exit_thread = threading.Thread(target=exit_step)
+    exit_thread.start()
+    guard._lock.release()
+    reserve_thread.join()
+    exit_thread.join()
+
+    if reserve_result:
+        assert len(exit_errors) == 1
+        assert "active reservation" in str(exit_errors[0])
+        guard.release(reserve_result[0])
+    else:
+        assert len(reserve_errors) == 1
+        assert "no longer active" in str(reserve_errors[0])
+        assert exit_errors == []
+    assert guard.remaining_tokens == 100
+
+
+def test_step_exposes_only_deliberate_parent_surface() -> None:
+    guard = quiet_guard(token_limit=100)
+    with guard.step(max_tokens=50) as step:
+        assert step.limit_usd == guard.limit_usd
+        assert step.token_limit == guard.token_limit
+        assert step.remaining_tokens == guard.remaining_tokens
+        assert step.estimate_call("manual", 1, price=PRICE) == pytest.approx(1e-6)
+        assert step.export_log() == guard.export_log()
+        with pytest.raises(AttributeError):
+            step.step(max_tokens=1)  # type: ignore[attr-defined]
+        with pytest.raises(AttributeError):
+            step.unknown_parent_method()  # type: ignore[attr-defined]
+
+
 def test_step_record_tool_rejects_spend_after_exit() -> None:
     guard = quiet_guard(token_limit=100)
     scoped = guard.step(max_usd=0.05)
@@ -473,6 +541,77 @@ def test_stream_hard_stops_on_token_ceiling_and_settles_partial_usage() -> None:
             stream.feed_tokens(3)
             stream.feed_tokens(1)
     assert guard.spent_tokens == 6
+
+
+def test_scoped_stream_rejects_wrong_handles_before_registration() -> None:
+    guard = quiet_guard(token_limit=1_000)
+    first = guard.step(max_tokens=100)
+    second = guard.step(max_tokens=100)
+    with first as step_a, second as step_b:
+        handle = step_a.reserve(0.0, estimated_tokens=10)
+        assert isinstance(handle, BudgetReservation)
+        baseline_streams = len(guard._stream_costs)
+        with pytest.raises(ValueError, match="different step"):
+            StreamGuard(step_b, "manual", reserved=handle, price=PRICE)
+        with pytest.raises(ValueError, match="must be zero"):
+            StreamGuard(step_b, "manual", reserved=0.1, price=PRICE)
+        assert len(guard._stream_costs) == baseline_streams
+        assert guard._reserved_tokens == 10
+        step_a.release(handle)
+
+
+def test_scoped_zero_stream_is_attributed_to_step_ceiling() -> None:
+    guard = quiet_guard(token_limit=1_000)
+    with guard.step(max_tokens=5) as step:
+        with pytest.raises(TokenBudgetExceeded) as caught:
+            with StreamGuard(step, "manual", price=PRICE) as stream:
+                stream.feed_tokens(6)
+        assert caught.value.scope == "step"
+        assert step.advisory().step_spent_tokens == 6
+        assert guard._reserved_tokens == 0
+        assert guard._stream_costs == {}
+
+
+def test_scoped_stream_accepts_same_step_handle_and_settles() -> None:
+    guard = quiet_guard(token_limit=1_000)
+    with guard.step(max_tokens=100) as step:
+        handle = step.reserve(0.0, estimated_tokens=10)
+        assert isinstance(handle, BudgetReservation)
+        stream = StreamGuard(step, "manual", reserved=handle, price=PRICE)
+        stream.feed_tokens(4)
+        assert stream.finish() == pytest.approx(8e-6)
+        assert step.advisory().step_spent_tokens == 4
+        assert guard._reserved_tokens == 0
+        assert guard._stream_costs == {}
+
+
+def test_scoped_stream_counts_same_step_but_not_sibling_streams() -> None:
+    guard = quiet_guard(token_limit=1_000)
+    first = guard.step(max_tokens=5)
+    second = guard.step(max_tokens=5)
+    with first as step_a, second as step_b:
+        stream_a = StreamGuard(step_a, "manual", price=PRICE)
+        stream_b = StreamGuard(step_b, "manual", price=PRICE)
+        stream_a.feed_tokens(4)
+        stream_b.feed_tokens(4)
+
+        sibling_a = StreamGuard(step_a, "manual", price=PRICE)
+        with pytest.raises(TokenBudgetExceeded) as caught:
+            sibling_a.feed_tokens(2)
+        assert caught.value.scope == "step"
+
+        stream_a.finish()
+        stream_b.finish()
+        assert guard._stream_costs == {}
+
+
+def test_scoped_stream_rejects_inactive_step() -> None:
+    guard = quiet_guard(token_limit=100)
+    scoped = guard.step(max_tokens=50)
+    with scoped:
+        pass
+    with pytest.raises(RuntimeError, match="no longer active"):
+        StreamGuard(scoped, "manual", price=PRICE)
 
 
 def test_scoped_guard_blocks_adapter_before_provider_call() -> None:

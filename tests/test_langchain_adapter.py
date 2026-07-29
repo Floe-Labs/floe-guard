@@ -26,6 +26,7 @@ from floe_guard import (
     UnpriceableModelWarning,
 )
 from floe_guard.integrations.langchain import (
+    _estimate_start_tokens,
     _model_from_result,
     _record_result,
     _usage_from_result,
@@ -58,6 +59,22 @@ def _openai_result(prompt: int, completion: int, model: str = "gpt-4o") -> _Resu
             "token_usage": {"prompt_tokens": prompt, "completion_tokens": completion},
         }
     )
+
+
+def test_start_token_estimate_keeps_known_prompt_without_model_kwargs() -> None:
+    assert _estimate_start_tokens({}, ["abcdefgh"]) == 2
+    assert _estimate_start_tokens(None, ["abcdefgh"]) == 2
+    assert _estimate_start_tokens({"kwargs": "invalid"}, ["abcdefgh"]) == 2
+
+
+def test_start_token_estimate_without_known_tokens_remains_unknown() -> None:
+    assert _estimate_start_tokens({}, []) is None
+    assert _estimate_start_tokens({}, [object()]) is None  # type: ignore[list-item]
+
+
+def test_start_token_estimate_adds_valid_output_cap() -> None:
+    serialized = {"kwargs": {"max_completion_tokens": 7}}
+    assert _estimate_start_tokens(serialized, ["abcdefgh"]) == 9
 
 
 def test_model_from_result_reads_llm_output() -> None:

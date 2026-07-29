@@ -77,11 +77,10 @@ class StreamGuard:
     ) -> None:
         # Same contract as settle(): a bad handle would corrupt the guard's
         # in-flight tally. Reject it before the stream starts, not at settle time.
-        guard._reservation_parts(reserved)
+        guard._stream_validate_reservation(reserved)
         self._guard = guard
         self._model = model
         self._prompt_tokens = max(0, int(prompt_tokens))
-        self._reserved = reserved
         self._price = price
         self._label = label
         self._count = count_tokens or approx_tokens
@@ -108,7 +107,7 @@ class StreamGuard:
         # Registered AFTER the fail-closed raise so a refused stream leaves no
         # entry; _settle() unregisters, so entries live exactly as long as the
         # stream. Parallel streams see each other's accrual through this.
-        self._key = guard._stream_register(self._reserved)
+        self._reserved, self._key = guard._stream_prepare(reserved)
 
     def feed_text(self, delta: str) -> None:
         """Meter one text delta (token count via the heuristic/``count_tokens``).

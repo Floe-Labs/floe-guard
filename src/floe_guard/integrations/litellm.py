@@ -244,8 +244,16 @@ def budget_guard_callback(guard: BudgetGuard | StepBudgetGuard) -> Any:
             except (BudgetExceeded, TokenBudgetExceeded) as exc:
                 self._trip(exc)
                 raise
+            key = self._key(kwargs)
             with self._rlock:
-                self._reservations[self._key(kwargs)] = reserved
+                if key in self._reservations:
+                    duplicate = True
+                else:
+                    self._reservations[key] = reserved
+                    duplicate = False
+            if duplicate:
+                self.guard.release(reserved)
+                raise RuntimeError(f"duplicate LiteLLM call id {key}")
 
         def _pop(self, kwargs: Any) -> ReservationHandle:
             with self._rlock:

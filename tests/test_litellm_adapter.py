@@ -39,6 +39,20 @@ class _ObjResponse:
     usage: _Usage
 
 
+def _install_fake_litellm(monkeypatch: pytest.MonkeyPatch, *, tokens: int) -> None:
+    class CustomLogger:
+        pass
+
+    litellm = types.ModuleType("litellm")
+    litellm.token_counter = lambda **_: tokens  # type: ignore[attr-defined]
+    integrations = types.ModuleType("litellm.integrations")
+    custom_logger = types.ModuleType("litellm.integrations.custom_logger")
+    custom_logger.CustomLogger = CustomLogger  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "litellm", litellm)
+    monkeypatch.setitem(sys.modules, "litellm.integrations", integrations)
+    monkeypatch.setitem(sys.modules, "litellm.integrations.custom_logger", custom_logger)
+
+
 def test_model_from_object_response_without_kwargs_model() -> None:
     resp = _ObjResponse(model="gpt-4o", usage=_Usage(1, 1))
     assert _model_from({}, resp) == "gpt-4o"
@@ -122,18 +136,7 @@ def test_callback_latches_token_block_when_hook_exception_is_swallowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The callback latch is the hard-stop bridge when LiteLLM eats hook errors."""
-
-    class CustomLogger:
-        pass
-
-    litellm = types.ModuleType("litellm")
-    litellm.token_counter = lambda **_: 0  # type: ignore[attr-defined]
-    integrations = types.ModuleType("litellm.integrations")
-    custom_logger = types.ModuleType("litellm.integrations.custom_logger")
-    custom_logger.CustomLogger = CustomLogger  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "litellm", litellm)
-    monkeypatch.setitem(sys.modules, "litellm.integrations", integrations)
-    monkeypatch.setitem(sys.modules, "litellm.integrations.custom_logger", custom_logger)
+    _install_fake_litellm(monkeypatch, tokens=0)
 
     guard = BudgetGuard(limit_usd=1.0, token_limit=0, on_token_block=lambda *_: None)
     callback = budget_guard_callback(guard)
@@ -143,3 +146,33 @@ def test_callback_latches_token_block_when_hook_exception_is_swallowed(
         callback.log_pre_api_call("gpt-4o", [], kwargs)
 
     assert isinstance(callback.tripped, TokenBudgetExceeded)
+
+
+@pytest.mark.parametrize("terminal", ["failure", "success"])
+def test_callback_duplicate_call_id_preserves_original_reservation(
+    monkeypatch: pytest.MonkeyPatch, terminal: str
+) -> None:
+    _install_fake_litellm(monkeypatch, tokens=40)
+    guard = BudgetGuard(limit_usd=1.0, token_limit=100, on_token_block=lambda *_: None)
+    callback = budget_guard_callback(guard)
+    kwargs = {"litellm_call_id": "duplicate", "model": "gpt-4o", "messages": []}
+
+    callback.log_pre_api_call("gpt-4o", [], kwargs)
+    assert guard.remaining_tokens == 60
+    with pytest.raises(RuntimeError, match="duplicate LiteLLM call id"):
+        callback.log_pre_api_call("gpt-4o", [], kwargs)
+    assert guard.remaining_tokens == 60
+    assert guard._reserved_tokens == 40
+
+    if terminal == "failure":
+        callback.log_failure_event(kwargs, None, None, None)
+        assert guard.remaining_tokens == 100
+    else:
+        response = {
+            "model": "gpt-4o",
+            "usage": {"prompt_tokens": 20, "completion_tokens": 20},
+        }
+        callback.log_success_event(kwargs, response, None, None)
+        assert guard.remaining_tokens == 60
+        assert guard.spent_tokens == 40
+    assert guard._reserved_tokens == 0

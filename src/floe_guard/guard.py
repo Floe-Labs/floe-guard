@@ -37,7 +37,7 @@ import weakref
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 from .errors import (
     BudgetExceeded,
@@ -276,7 +276,7 @@ class BudgetGuard:
         # Per-call ledger; deque(maxlen=None) is unbounded, otherwise a ring buffer.
         self._spend_log: deque[SpendEvent] = deque(maxlen=max_log_events)
         # Active streams' (accrued_usd, reserved_usd), keyed by registry token —
-        # see _stream_register(). Lets parallel streams count each other's
+        # see _stream_prepare(). Lets parallel streams count each other's
         # in-flight accrual against the ceiling before anything settles.
         self._stream_costs: dict[object, tuple[float, int, float, int, _StepState | None]] = {}
         # Per-tool running totals (settle_tool/record_tool) — the tool side of
@@ -742,9 +742,9 @@ class BudgetGuard:
     ) -> ReservationHandle:
         self._validate_estimate(estimated_cost)
         _validate_optional_tokens("estimated tokens", estimated_tokens)
-        if step is not None and not step.active:
-            raise RuntimeError("step budget is no longer active")
         with self._lock:
+            if step is not None and not step.active:
+                raise RuntimeError("step budget is no longer active")
             cost = (
                 self._default_estimate_locked()
                 if estimated_cost is None
@@ -876,6 +876,23 @@ class BudgetGuard:
             raise ValueError("scoped numeric reservation handles must be zero")
         return self._make_reservation(0.0, 0, step)
 
+    def _validate_scoped_reservation(self, reserved: ReservationHandle, step: _StepState) -> None:
+        """Validate a scoped handle without creating a zero-valued replacement."""
+        with self._lock:
+            if not step.active:
+                raise RuntimeError("step budget is no longer active")
+            if isinstance(reserved, BudgetReservation):
+                state = self._typed_reservation_state_locked(reserved)
+                if state.step is not step:
+                    raise ValueError("reservation belongs to a different step budget")
+                return
+            if not math.isfinite(reserved) or reserved < 0:
+                raise ValueError(
+                    f"reserved must be a finite, non-negative number, got {reserved!r}"
+                )
+            if reserved != 0:
+                raise ValueError("scoped numeric reservation handles must be zero")
+
     def _consume_handle_locked(
         self,
         handle: ReservationHandle,
@@ -949,22 +966,60 @@ class BudgetGuard:
         if estimated is not None and not math.isfinite(estimated):
             raise ValueError(f"estimated cost must be a finite number, got {estimated!r}")
 
-    def _stream_register(self, reserved: ReservationHandle) -> object:
+    def _stream_register_locked(
+        self,
+        reserved_usd: float,
+        reserved_tokens: int,
+        step: _StepState | None,
+    ) -> object:
+        """Register a stream after its handle is validated. Caller holds ``_lock``."""
+        key = object()
+        self._stream_costs[key] = (
+            0.0,
+            0,
+            reserved_usd,
+            reserved_tokens,
+            step,
+        )
+        return key
+
+    def _stream_validate_reservation(self, reserved: ReservationHandle) -> None:
+        """Reject malformed handles before stream construction does any setup."""
+        self._reservation_parts(reserved)
+
+    def _stream_prepare(self, reserved: ReservationHandle) -> tuple[ReservationHandle, object]:
         """Register an active stream (see :class:`~floe_guard.stream.StreamGuard`)
         and return its registry key. Active streams' accrued-but-unsettled costs
         count against the ceiling for each OTHER stream, so parallel unreserved
         streams share the budget instead of each spending the full ceiling."""
         reserved_usd, reserved_tokens, step = self._reservation_parts(reserved)
-        key = object()
         with self._lock:
-            self._stream_costs[key] = (
-                0.0,
-                0,
-                reserved_usd,
-                reserved_tokens,
-                step,
-            )
-        return key
+            key = self._stream_register_locked(reserved_usd, reserved_tokens, step)
+        return reserved, key
+
+    def _stream_prepare_scoped(
+        self, reserved: ReservationHandle, step: _StepState
+    ) -> tuple[BudgetReservation, object]:
+        """Atomically validate scope liveness, normalize its handle, and register."""
+        with self._lock:
+            if not step.active:
+                raise RuntimeError("step budget is no longer active")
+            if isinstance(reserved, BudgetReservation):
+                state = self._typed_reservation_state_locked(reserved)
+                if state.step is not step:
+                    raise ValueError("reservation belongs to a different step budget")
+                normalized = reserved
+            else:
+                if not math.isfinite(reserved) or reserved < 0:
+                    raise ValueError(
+                        f"reserved must be a finite, non-negative number, got {reserved!r}"
+                    )
+                if reserved != 0:
+                    raise ValueError("scoped numeric reservation handles must be zero")
+                normalized = self._make_reservation_locked(0.0, 0, step)
+                state = self._typed_reservation_state_locked(normalized)
+            key = self._stream_register_locked(state.usd, state.tokens, state.step)
+        return normalized, key
 
     def _stream_unregister(self, key: object) -> None:
         """Drop a stream's registry entry once its cost is settled (settle()
@@ -991,16 +1046,29 @@ class BudgetGuard:
                 own_tokens,
                 step,
             )
-            other_usd_overage = sum(
-                max(0.0, accrued_usd - held_usd)
-                for k, (accrued_usd, _, held_usd, _, _) in self._stream_costs.items()
-                if k is not key
-            )
-            other_token_overage = sum(
-                max(0, accrued_tokens - held_tokens)
-                for k, (_, accrued_tokens, _, held_tokens, _) in self._stream_costs.items()
-                if k is not key
-            )
+            other_usd_overage = 0.0
+            other_token_overage = 0
+            same_step_usd_overage = 0.0
+            same_step_token_overage = 0
+            for (
+                other_key,
+                (
+                    accrued_usd,
+                    accrued_tokens,
+                    held_usd,
+                    held_tokens,
+                    other_step,
+                ),
+            ) in self._stream_costs.items():
+                if other_key is key:
+                    continue
+                usd_overage = max(0.0, accrued_usd - held_usd)
+                token_overage = max(0, accrued_tokens - held_tokens)
+                other_usd_overage += usd_overage
+                other_token_overage += token_overage
+                if step is not None and other_step is step:
+                    same_step_usd_overage += usd_overage
+                    same_step_token_overage += token_overage
             aggregate_usd = self.spent_usd + max(0.0, self._reserved - own_usd) + other_usd_overage
             if aggregate_usd + cumulative_call_cost > self.limit_usd + _EPS:
                 return ("usd", "aggregate", self.spent_usd, self.limit_usd)
@@ -1013,11 +1081,6 @@ class BudgetGuard:
             ):
                 return ("tokens", "aggregate", self.spent_tokens, self.token_limit)
             if step is not None:
-                same_step_usd_overage = sum(
-                    max(0.0, accrued_usd - held_usd)
-                    for k, (accrued_usd, _, held_usd, _, other_step) in self._stream_costs.items()
-                    if k is not key and other_step is step
-                )
                 step_usd = (
                     step.spent_usd + max(0.0, step.reserved_usd - own_usd) + same_step_usd_overage
                 )
@@ -1026,17 +1089,6 @@ class BudgetGuard:
                     and step_usd + cumulative_call_cost > step.limit_usd + _EPS
                 ):
                     return ("usd", "step", step.spent_usd, step.limit_usd)
-                same_step_token_overage = sum(
-                    max(0, accrued_tokens - held_tokens)
-                    for k, (
-                        _,
-                        accrued_tokens,
-                        _,
-                        held_tokens,
-                        other_step,
-                    ) in self._stream_costs.items()
-                    if k is not key and other_step is step
-                )
                 step_tokens = (
                     step.spent_tokens
                     + max(0, step.reserved_tokens - own_tokens)
@@ -1099,16 +1151,75 @@ class StepBudgetGuard:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self._state.active = False
-        if exc_type is None and (
-            self._state.reserved_usd > _EPS or self._state.reserved_tokens > 0
-        ):
+        with self._parent._lock:
+            self._state.active = False
+            leaked = self._state.reserved_usd > _EPS or self._state.reserved_tokens > 0
+        if exc_type is None and leaked:
             raise RuntimeError(
                 "step exited with an active reservation; settle or release every handle"
             )
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._parent, name)
+    @property
+    def limit_usd(self) -> float:
+        return self._parent.limit_usd
+
+    @property
+    def token_limit(self) -> int | None:
+        return self._parent.token_limit
+
+    @property
+    def spent_usd(self) -> float:
+        return self._parent.spent_usd
+
+    @property
+    def spent_tokens(self) -> int:
+        return self._parent.spent_tokens
+
+    @property
+    def remaining_usd(self) -> float:
+        return self._parent.remaining_usd
+
+    @property
+    def remaining_tokens(self) -> int | None:
+        return self._parent.remaining_tokens
+
+    @property
+    def price_overrides(self) -> dict[str, ManualPrice] | None:
+        return self._parent.price_overrides
+
+    @property
+    def fail_closed(self) -> bool:
+        return self._parent.fail_closed
+
+    @property
+    def near_limit_bps(self) -> int:
+        return self._parent.near_limit_bps
+
+    @property
+    def tool_costs(self) -> dict[str, float]:
+        return self._parent.tool_costs
+
+    @property
+    def spend_log(self) -> list[SpendEvent]:
+        return self._parent.spend_log
+
+    def estimate_call(
+        self,
+        model: str,
+        prompt_tokens: int,
+        max_completion_tokens: int = 0,
+        *,
+        price: ManualPrice | None = None,
+    ) -> float | None:
+        return self._parent.estimate_call(
+            model,
+            prompt_tokens,
+            max_completion_tokens,
+            price=price,
+        )
+
+    def export_log(self) -> str:
+        return self._parent.export_log()
 
     def check(
         self,
@@ -1208,6 +1319,26 @@ class StepBudgetGuard:
 
     def advisory(self) -> BudgetAdvisory:
         return self._parent._advisory(self._state)
+
+    def _stream_validate_reservation(self, reserved: ReservationHandle) -> None:
+        self._parent._validate_scoped_reservation(reserved, self._state)
+
+    def _stream_prepare(self, reserved: ReservationHandle) -> tuple[BudgetReservation, object]:
+        return self._parent._stream_prepare_scoped(reserved, self._state)
+
+    def _stream_would_cross(
+        self, key: object, cumulative_call_cost: float, cumulative_tokens: int
+    ) -> tuple[str, str, float | int, float | int] | None:
+        return self._parent._stream_would_cross(key, cumulative_call_cost, cumulative_tokens)
+
+    def _stream_unregister(self, key: object) -> None:
+        self._parent._stream_unregister(key)
+
+    def _resolve(self, model: str, price: ManualPrice | None):
+        return self._parent._resolve(model, price)
+
+    def _raise_block(self, blocked: tuple[str, str, float | int, float | int]) -> None:
+        self._parent._raise_block(blocked)
 
     def _ensure_active(self) -> None:
         if not self._state.active:
