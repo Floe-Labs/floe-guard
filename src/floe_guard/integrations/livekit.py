@@ -35,8 +35,8 @@ from dataclasses import dataclass
 
 from livekit.agents.metrics import LLMMetrics, STTMetrics, TTSMetrics
 
-from ..errors import BudgetExceeded
-from ..guard import BudgetGuard
+from ..errors import BudgetExceeded, TokenBudgetExceeded
+from ..guard import BudgetGuard, ReservationHandle, StepBudgetGuard
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +45,13 @@ logger = logging.getLogger(__name__)
 class _TurnSlot:
     """One llm_node invocation awaiting (or already past) its LLMMetrics event.
 
-    ``open`` means the USD amount is still held on the BudgetGuard. Early
+    ``open`` means the USD/token reservation is still held on the BudgetGuard. Early
     release (next turn, exception, close) clears the guard hold but leaves the
     slot in the FIFO queue so a delayed metrics event settles against this
     turn's slot (with ``amount`` 0) instead of stealing a later turn's hold.
     """
 
-    amount: float
+    amount: ReservationHandle
     open: bool = True
 
 
@@ -64,9 +64,10 @@ class LiveKitBudgetGuard:
             no model name). Must be priceable via the cost map or the guard's
             ``price_overrides``.
         on_budget_exceeded: optional async callback invoked with the
-            ``BudgetExceeded`` when a turn is blocked, so a bot can speak a
-            graceful "wrapping up" line before the turn ends silently. If
-            omitted, the ``BudgetExceeded`` propagates out of ``llm_node``.
+            ``BudgetExceeded`` or ``TokenBudgetExceeded`` when a turn is
+            blocked, so a bot can speak a graceful "wrapping up" line before
+            the turn ends silently. If omitted, the budget exception
+            propagates out of ``llm_node``.
         stt_usd_per_second: if set, meter ``STTMetrics.audio_duration`` via
             ``record_tool`` (per-second). Omit to keep the token-only contract.
         tts_usd_per_1k_chars: if set, meter ``TTSMetrics.characters_count`` via
@@ -75,9 +76,10 @@ class LiveKitBudgetGuard:
 
     def __init__(
         self,
-        guard: BudgetGuard,
+        guard: BudgetGuard | StepBudgetGuard,
         model: str,
-        on_budget_exceeded: Callable[[BudgetExceeded], Awaitable[None]] | None = None,
+        on_budget_exceeded: Callable[[BudgetExceeded | TokenBudgetExceeded], Awaitable[None]]
+        | None = None,
         *,
         stt_usd_per_second: float | None = None,
         tts_usd_per_1k_chars: float | None = None,
@@ -87,7 +89,7 @@ class LiveKitBudgetGuard:
         self._on_budget_exceeded = on_budget_exceeded
         self._stt_usd_per_second = stt_usd_per_second
         self._tts_usd_per_1k_chars = tts_usd_per_1k_chars
-        self._reserved: float = 0.0
+        self._reserved: ReservationHandle = 0.0
         self._pending = False
         self._active: _TurnSlot | None = None
         # FIFO of turns that may still emit LLMMetrics (including early-released).
@@ -108,7 +110,7 @@ class LiveKitBudgetGuard:
                 self._early_release_active()
             try:
                 amount = self._guard.reserve()
-            except BudgetExceeded as exc:
+            except (BudgetExceeded, TokenBudgetExceeded) as exc:
                 self._clear_active()
                 logger.warning("floe-guard blocked a turn: %s", exc)
                 if self._on_budget_exceeded is None:

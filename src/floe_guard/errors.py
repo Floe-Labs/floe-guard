@@ -32,11 +32,26 @@ class BudgetExceeded(FloeGuardError):
     loop stops here rather than burning more money.
     """
 
-    def __init__(self, spent_usd: float, limit_usd: float) -> None:
+    def __init__(self, spent_usd: float, limit_usd: float, *, scope: str = "aggregate") -> None:
         self.spent_usd = spent_usd
         self.limit_usd = limit_usd
+        self.scope = scope
+        prefix = "STEP BUDGET EXCEEDED" if scope == "step" else "BUDGET EXCEEDED"
         super().__init__(
-            f"BUDGET EXCEEDED — call blocked (spent ${spent_usd:.6f} of ${limit_usd:.6f} ceiling)"
+            f"{prefix} — call blocked (spent ${spent_usd:.6f} of ${limit_usd:.6f} ceiling)"
+        )
+
+
+class TokenBudgetExceeded(FloeGuardError):
+    """Raised before an LLM call that would cross a token ceiling."""
+
+    def __init__(self, spent_tokens: int, limit_tokens: int, *, scope: str = "aggregate") -> None:
+        self.spent_tokens = spent_tokens
+        self.limit_tokens = limit_tokens
+        self.scope = scope
+        prefix = "STEP TOKEN BUDGET EXCEEDED" if scope == "step" else "TOKEN BUDGET EXCEEDED"
+        super().__init__(
+            f"{prefix} — call blocked (spent {spent_tokens} of {limit_tokens} token ceiling)"
         )
 
 

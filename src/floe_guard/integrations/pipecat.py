@@ -56,8 +56,8 @@ from pipecat.frames.frames import (
 from pipecat.metrics.metrics import LLMUsageMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from ..errors import BudgetExceeded
-from ..guard import BudgetGuard
+from ..errors import BudgetExceeded, TokenBudgetExceeded
+from ..guard import BudgetGuard, ReservationHandle, StepBudgetGuard
 from ..pricing import resolve_price
 
 logger = logging.getLogger(__name__)
@@ -105,11 +105,12 @@ class FloeBudgetGuardProcessor(FrameProcessor):
             cost map doesn't fail-close a call that would otherwise price
             cleanly.
         on_budget_exceeded: optional async callback invoked with the
-            ``BudgetExceeded`` exception when a turn is blocked, so the
-            caller can push a graceful "wrapping up" TTS frame before the
-            pipeline ends. If omitted, a fatal ``ErrorFrame`` is pushed
-            instead, which terminates the pipeline -- this is the "hard
-            stop" default that matches every other floe-guard adapter.
+            ``BudgetExceeded`` or ``TokenBudgetExceeded`` exception when a
+            turn is blocked, so the caller can push a graceful "wrapping up"
+            TTS frame before the pipeline ends. If omitted, a fatal
+            ``ErrorFrame`` is pushed instead, which terminates the pipeline --
+            this is the "hard stop" default that matches every other
+            floe-guard adapter.
             (A bare raise here would *not* achieve that: Pipecat's
             FrameProcessor catches exceptions raised inside process_frame()
             and downgrades them to a non-fatal, merely-logged ErrorFrame.)
@@ -117,16 +118,17 @@ class FloeBudgetGuardProcessor(FrameProcessor):
 
     def __init__(
         self,
-        guard: BudgetGuard,
+        guard: BudgetGuard | StepBudgetGuard,
         model: str,
-        on_budget_exceeded: Callable[[BudgetExceeded], Awaitable[None]] | None = None,
+        on_budget_exceeded: Callable[[BudgetExceeded | TokenBudgetExceeded], Awaitable[None]]
+        | None = None,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
         self._guard = guard
         self._model = model
         self._on_budget_exceeded = on_budget_exceeded
-        self._reserved: float = 0.0
+        self._reserved: ReservationHandle = 0.0
         self._pending = False
 
     def _settle_model(self, reported_model: str | None) -> str:
@@ -160,7 +162,7 @@ class FloeBudgetGuardProcessor(FrameProcessor):
             try:
                 self._reserved = self._guard.reserve()
                 self._pending = True
-            except BudgetExceeded as exc:
+            except (BudgetExceeded, TokenBudgetExceeded) as exc:
                 logger.warning("floe-guard blocked a turn: %s", exc)
                 self._pending = False
                 if self._on_budget_exceeded is not None:

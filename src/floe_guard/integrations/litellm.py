@@ -34,8 +34,8 @@ import logging
 import threading
 from typing import Any
 
-from ..errors import BudgetExceeded, UnpriceableModelError
-from ..guard import BudgetGuard
+from ..errors import BudgetExceeded, TokenBudgetExceeded, UnpriceableModelError
+from ..guard import BudgetGuard, ReservationHandle, StepBudgetGuard
 
 _logger = logging.getLogger("floe_guard")
 
@@ -73,7 +73,9 @@ def _usage_from(response: Any) -> tuple[int, int]:
     return int(get("prompt_tokens", 0) or 0), int(get("completion_tokens", 0) or 0)
 
 
-def _estimate_request(litellm: Any, guard: BudgetGuard, kwargs: Any) -> float | None:
+def _estimate_request(
+    litellm: Any, guard: BudgetGuard | StepBudgetGuard, kwargs: Any
+) -> float | None:
     """Request-sized cost estimate for the pre-call reservation.
 
     Prices the ACTUAL incoming request — prompt tokens via litellm's offline
@@ -108,8 +110,28 @@ def _estimate_request(litellm: Any, guard: BudgetGuard, kwargs: Any) -> float | 
     return guard.estimate_call(str(model), prompt_tokens, max_out)
 
 
+def _estimate_request_tokens(litellm: Any, kwargs: Any) -> int | None:
+    if not isinstance(kwargs, dict) or not kwargs.get("model"):
+        return None
+    try:
+        prompt_tokens = int(
+            litellm.token_counter(model=kwargs["model"], messages=kwargs.get("messages") or [])
+        )
+    except Exception:
+        return None
+    max_out = kwargs.get("max_completion_tokens") or kwargs.get("max_tokens") or 0
+    try:
+        return prompt_tokens + max(0, int(max_out))
+    except (TypeError, ValueError):
+        return prompt_tokens
+
+
 def _record_response(
-    guard: BudgetGuard, kwargs: Any, response: Any, *, reserved: float = 0.0
+    guard: BudgetGuard | StepBudgetGuard,
+    kwargs: Any,
+    response: Any,
+    *,
+    reserved: ReservationHandle = 0.0,
 ) -> None:
     # LiteLLM hooks pass kwargs as Any; normalize so a None/non-dict can't crash
     # the metering callback on .get() (matches the _key() fallback).
@@ -129,7 +151,7 @@ def _record_response(
     guard.settle(model, prompt_tokens, completion_tokens, reserved=reserved)
 
 
-def guarded_completion(guard: BudgetGuard, **kwargs: Any) -> Any:
+def guarded_completion(guard: BudgetGuard | StepBudgetGuard, **kwargs: Any) -> Any:
     """``litellm.completion`` with a pre-call budget reservation and post-call accrual.
 
     Raises :class:`~floe_guard.BudgetExceeded` before the call if the budget
@@ -138,7 +160,10 @@ def guarded_completion(guard: BudgetGuard, **kwargs: Any) -> Any:
     can be, so even a FIRST call that alone would cross the cap is blocked.
     """
     litellm = _require_litellm()
-    reserved = guard.reserve(_estimate_request(litellm, guard, kwargs))
+    reserved = guard.reserve(
+        _estimate_request(litellm, guard, kwargs),
+        estimated_tokens=_estimate_request_tokens(litellm, kwargs),
+    )
     try:
         response = litellm.completion(**kwargs)
     except BaseException:
@@ -148,10 +173,13 @@ def guarded_completion(guard: BudgetGuard, **kwargs: Any) -> Any:
     return response
 
 
-async def guarded_acompletion(guard: BudgetGuard, **kwargs: Any) -> Any:
+async def guarded_acompletion(guard: BudgetGuard | StepBudgetGuard, **kwargs: Any) -> Any:
     """Async counterpart of :func:`guarded_completion`."""
     litellm = _require_litellm()
-    reserved = guard.reserve(_estimate_request(litellm, guard, kwargs))
+    reserved = guard.reserve(
+        _estimate_request(litellm, guard, kwargs),
+        estimated_tokens=_estimate_request_tokens(litellm, kwargs),
+    )
     try:
         response = await litellm.acompletion(**kwargs)
     except BaseException:
@@ -161,7 +189,7 @@ async def guarded_acompletion(guard: BudgetGuard, **kwargs: Any) -> Any:
     return response
 
 
-def budget_guard_callback(guard: BudgetGuard) -> Any:
+def budget_guard_callback(guard: BudgetGuard | StepBudgetGuard) -> Any:
     """Build a LiteLLM ``CustomLogger`` that enforces ``guard`` on every call.
 
     Register it globally::
@@ -170,7 +198,8 @@ def budget_guard_callback(guard: BudgetGuard) -> Any:
         litellm.callbacks = [budget_guard_callback(guard)]
 
     ``log_pre_api_call`` reserves the call's budget (raising
-    :class:`~floe_guard.BudgetExceeded` to abort), ``log_success_event`` settles
+    :class:`~floe_guard.BudgetExceeded` or
+    :class:`~floe_guard.TokenBudgetExceeded` to abort), ``log_success_event`` settles
     the response's actual token cost, and ``log_failure_event`` releases the
     reservation. Reservations are keyed per call, so parallel crew calls each
     hold their own slice of the ceiling instead of racing one shared total.
@@ -189,13 +218,13 @@ def budget_guard_callback(guard: BudgetGuard) -> Any:
         def __init__(self) -> None:
             super().__init__()
             self.guard = guard
-            # The first enforcement violation (BudgetExceeded or fail-closed
+            # The first enforcement violation (USD/token budget or fail-closed
             # UnpriceableModelError). Survives LiteLLM swallowing the raise, so a
             # call-path owner can re-raise it outside the callback machinery.
             # Latches until reset() — a config change on the guard alone does
             # not clear it.
             self.tripped: Exception | None = None
-            self._reservations: dict[Any, float] = {}
+            self._reservations: dict[Any, ReservationHandle] = {}
             self._rlock = threading.Lock()
 
         @staticmethod
@@ -229,14 +258,17 @@ def budget_guard_callback(guard: BudgetGuard) -> Any:
             try:
                 # Request-sized when possible (see _estimate_request); raises
                 # BudgetExceeded -> aborts the call.
-                reserved = self.guard.reserve(_estimate_request(litellm, self.guard, kwargs))
-            except BudgetExceeded as exc:
+                reserved = self.guard.reserve(
+                    _estimate_request(litellm, self.guard, kwargs),
+                    estimated_tokens=_estimate_request_tokens(litellm, kwargs),
+                )
+            except (BudgetExceeded, TokenBudgetExceeded) as exc:
                 self._trip(exc)
                 raise
             with self._rlock:
                 self._reservations[self._key(kwargs)] = reserved
 
-        def _pop(self, kwargs: Any) -> float:
+        def _pop(self, kwargs: Any) -> ReservationHandle:
             with self._rlock:
                 return self._reservations.pop(self._key(kwargs), 0.0)
 

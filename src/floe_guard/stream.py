@@ -25,13 +25,12 @@ See ``examples/streaming_guard.py`` for a runnable demo (no API key).
 
 from __future__ import annotations
 
-import math
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
 from .errors import UnpriceableModelError, UnpriceableModelWarning
-from .guard import BudgetGuard
+from .guard import BudgetGuard, ReservationHandle, StepBudgetGuard
 from .pricing import ManualPrice, price_tokens
 
 
@@ -67,23 +66,22 @@ class StreamGuard:
 
     def __init__(
         self,
-        guard: BudgetGuard,
+        guard: BudgetGuard | StepBudgetGuard,
         model: str,
         *,
         prompt_tokens: int = 0,
-        reserved: float = 0.0,
+        reserved: ReservationHandle = 0.0,
         price: ManualPrice | None = None,
         label: str | None = None,
         count_tokens: Callable[[str], int] | None = None,
     ) -> None:
         # Same contract as settle(): a bad handle would corrupt the guard's
         # in-flight tally. Reject it before the stream starts, not at settle time.
-        if not math.isfinite(reserved) or reserved < 0:
-            raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
+        guard._reservation_parts(reserved)
         self._guard = guard
         self._model = model
         self._prompt_tokens = max(0, int(prompt_tokens))
-        self._reserved = float(reserved)
+        self._reserved = reserved
         self._price = price
         self._label = label
         self._count = count_tokens or approx_tokens
@@ -129,12 +127,14 @@ class StreamGuard:
         if self._priced is None:
             return  # fail-open + unpriceable: nothing to price chunks with
         cumulative = price_tokens(self._priced, self._prompt_tokens, self._completion_tokens)
-        if self._guard._stream_would_cross(self._key, cumulative):
+        total_tokens = self._prompt_tokens + self._completion_tokens
+        blocked = self._guard._stream_would_cross(self._key, cumulative, total_tokens)
+        if blocked is not None:
             # The tokens in this chunk were already generated (and billed) —
             # settle them before raising so spent_usd reflects reality. The
             # overshoot is at most this one chunk, not the rest of the stream.
             self._settle()
-            self._guard._block()
+            self._guard._raise_block(blocked)
 
     def finish(
         self,
@@ -189,13 +189,13 @@ class StreamGuard:
 
 
 def guard_stream(
-    guard: BudgetGuard,
+    guard: BudgetGuard | StepBudgetGuard,
     model: str,
     chunks: Iterable[Any],
     *,
     get_text: Callable[[Any], str] | None = None,
     prompt_tokens: int = 0,
-    reserved: float = 0.0,
+    reserved: ReservationHandle = 0.0,
     price: ManualPrice | None = None,
     label: str | None = None,
     count_tokens: Callable[[str], int] | None = None,

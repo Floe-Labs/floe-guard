@@ -13,8 +13,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from .errors import BudgetExceeded
-from .guard import BudgetAdvisory, BudgetGuard
+from .errors import BudgetExceeded, TokenBudgetExceeded
+from .guard import BudgetAdvisory, BudgetGuard, StepBudgetGuard
 
 T = TypeVar("T")
 
@@ -42,21 +42,17 @@ AsyncDegradeCallback = Callable[
 
 
 def _default_retry_if(exc: Exception) -> bool:
-    return not isinstance(exc, BudgetExceeded)
+    return not isinstance(exc, (BudgetExceeded, TokenBudgetExceeded))
 
 
 def _validate_max_attempts(max_attempts: int) -> None:
     # Same int-not-bool contract as BudgetGuard.near_limit_bps.
-    if (
-        isinstance(max_attempts, bool)
-        or not isinstance(max_attempts, int)
-        or max_attempts < 1
-    ):
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
         raise ValueError(f"max_attempts must be an int >= 1, got {max_attempts!r}")
 
 
 def with_budget_retry(
-    guard: BudgetGuard,
+    guard: BudgetGuard | StepBudgetGuard,
     call: Callable[[], T],
     *,
     estimated_cost: float | None = None,
@@ -96,7 +92,7 @@ def with_budget_retry(
 
 
 async def async_with_budget_retry(
-    guard: BudgetGuard,
+    guard: BudgetGuard | StepBudgetGuard,
     call: Callable[[], Awaitable[T]],
     *,
     estimated_cost: float | None = None,
@@ -122,7 +118,7 @@ async def async_with_budget_retry(
 
 
 def _next_plan(
-    guard: BudgetGuard,
+    guard: BudgetGuard | StepBudgetGuard,
     exc: Exception,
     current: RetryPlan[T],
     on_degrade: DegradeCallback[T] | None,
@@ -138,7 +134,7 @@ def _next_plan(
 
 
 async def _next_async_plan(
-    guard: BudgetGuard,
+    guard: BudgetGuard | StepBudgetGuard,
     exc: Exception,
     current: RetryPlan[Awaitable[T]],
     on_degrade: AsyncDegradeCallback[T] | None,

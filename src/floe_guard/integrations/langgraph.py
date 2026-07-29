@@ -86,7 +86,12 @@ def latest_advisory(
         return current
     if current is None:
         return update
-    return update if update.used_bps >= current.used_bps else current
+    # Aggregate settled totals are monotone even when a step budget resets.
+    # Compare both dimensions so a token-only update is not discarded merely
+    # because its USD utilization is unchanged.
+    current_progress = (current.spent_usd, current.spent_tokens)
+    update_progress = (update.spent_usd, update.spent_tokens)
+    return update if update_progress >= current_progress else current
 
 
 # Declare this on your graph state to receive the advisory after each guarded
@@ -162,6 +167,7 @@ def guarded_node(
     usage_key: str = "usage",
     advisory_key: str | None = "budget",
     estimated_cost: float | None = None,
+    estimated_tokens: int | None = None,
 ) -> Callable[..., Any]:
     """Wrap a LangGraph node with a budget reservation, accrual, and advisory.
 
@@ -190,7 +196,7 @@ def guarded_node(
 
             @wraps(fn)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                reserved = guard.reserve(estimated_cost)
+                reserved = guard.reserve(estimated_cost, estimated_tokens=estimated_tokens)
                 try:
                     update = await fn(*args, **kwargs)
                 except BaseException:
@@ -203,7 +209,7 @@ def guarded_node(
 
         @wraps(fn)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            reserved = guard.reserve(estimated_cost)
+            reserved = guard.reserve(estimated_cost, estimated_tokens=estimated_tokens)
             try:
                 update = fn(*args, **kwargs)
             except BaseException:
