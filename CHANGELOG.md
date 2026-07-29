@@ -8,10 +8,20 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.11.0 / js 0.8.0
+## Unreleased — py 0.12.0 / js 0.9.0
 
 ### Added (py + js)
 
+- **Aggregate token ceilings and per-step USD/token budgets** (issue #46):
+  optional `token_limit` / `tokenLimit` tracks every metered LLM token alongside
+  dollars; request-sized token reservations hard-block before a call and remain
+  safe under parallel fan-out. `guard.step(...)` creates an explicit scoped
+  guard with fresh sub-ceilings while retaining the parent's aggregate totals.
+- **Token and step advisory headroom**: `advisory()` now reports aggregate token
+  utilization plus the active step's USD/token remaining values. The existing
+  `near_limit` / `nearLimit` taper signal also flips for a near token or step
+  ceiling. Token blocks raise `TokenBudgetExceeded`; aggregate-only behavior and
+  numeric reservation handles are unchanged when the new limits are absent.
 - **`advisory()` exposes `expected_cost` + `est_calls_remaining`** (`expectedCost`
   / `estCallsRemaining` in TS, issue #49): the guard's own next-call estimate and
   how many more calls the remaining budget buys, so a planner can see call
@@ -19,6 +29,13 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   before the first call is recorded; `est_calls_remaining` / `estCallsRemaining`
   is `None` / `null` until then (unknown, not zero).
   Additive fields — existing advisory consumers are unaffected.
+
+### Fixed (py + js)
+
+- Token budget errors now follow the existing hard-stop paths in LiteLLM,
+  Pipecat, LiveKit, and budget-aware retries. TypeScript step scopes also remain
+  active for promise-like callbacks, and the new options/advisory types stay
+  source-compatible with aggregate-only consumers.
 
 ## py 0.10.0 / js 0.7.0 — 2026-07-23
 

@@ -39,7 +39,7 @@ from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
 from pipecat.pipeline.task import PipelineParams, PipelineTask  # noqa: E402
 
 from floe_guard import BudgetGuard  # noqa: E402
-from floe_guard.errors import BudgetExceeded  # noqa: E402
+from floe_guard.errors import BudgetExceeded, TokenBudgetExceeded  # noqa: E402
 from floe_guard.integrations.pipecat import FloeBudgetGuardProcessor  # noqa: E402
 
 
@@ -108,6 +108,26 @@ async def test_on_budget_exceeded_callback_used_instead_of_raising():
 
     assert "exc" in called
     assert isinstance(called["exc"], BudgetExceeded)
+
+
+@pytest.mark.asyncio
+async def test_token_block_uses_callback_before_forwarding_start_frame() -> None:
+    guard = BudgetGuard(limit_usd=1.0, token_limit=0)
+    called = {}
+
+    async def handle_exceeded(exc):
+        called["exc"] = exc
+
+    processor = FloeBudgetGuardProcessor(
+        guard,
+        model="gpt-4o",
+        on_budget_exceeded=handle_exceeded,
+    )
+
+    await _run_frames(processor, [LLMFullResponseStartFrame()])
+
+    assert isinstance(called.get("exc"), TokenBudgetExceeded)
+    assert not processor._pending
 
 
 @pytest.mark.asyncio
@@ -197,6 +217,35 @@ async def test_pushes_fatal_error_when_ceiling_crossed_without_callback():
     await asyncio.gather(runner.run(task), drive())
 
     assert len(captured_errors) == 1
+    assert captured_errors[0].fatal is True
+
+
+@pytest.mark.asyncio
+async def test_token_block_pushes_fatal_error_without_callback() -> None:
+    guard = BudgetGuard(limit_usd=1.0, token_limit=0)
+    processor = FloeBudgetGuardProcessor(guard, model="gpt-4o")
+
+    pipeline = Pipeline([processor])
+    task = PipelineTask(
+        pipeline, params=PipelineParams(enable_metrics=True, enable_usage_metrics=True)
+    )
+    runner = PipelineRunner()
+    captured_errors = []
+
+    @task.event_handler("on_pipeline_error")
+    async def _on_pipeline_error(task, frame):
+        captured_errors.append(frame)
+
+    async def drive():
+        await task.queue_frame(LLMFullResponseStartFrame())
+        await asyncio.sleep(0.05)
+        if not task.has_finished():
+            await task.queue_frame(EndFrame())
+
+    await asyncio.gather(runner.run(task), drive())
+
+    assert len(captured_errors) == 1
+    assert isinstance(captured_errors[0].exception, TokenBudgetExceeded)
     assert captured_errors[0].fatal is True
 
 

@@ -137,6 +137,58 @@ Everything else — Mistral, Cohere, Ollama, Bedrock, realtime/audio models,
 self-hosted — needs `price_overrides` (or `fail_closed=False` to accept it
 un-metered).
 
+## Token ceilings and per-step budgets
+
+Dollars are not the only useful hard limit. Add `token_limit` to cap aggregate
+LLM tokens across the run; paid tools still consume the shared USD ceiling but
+do not consume tokens:
+
+```python
+from floe_guard import BudgetGuard
+
+guard = BudgetGuard(limit_usd=5.00, token_limit=100_000)
+
+# Size both dimensions before the call. Omitting the token estimate falls back
+# to the previous LLM call's token count (0 on a fresh guard).
+handle = guard.reserve(estimated_cost=0.02, estimated_tokens=4_096)
+response = call_model()
+guard.settle(
+    response.model,
+    response.usage.prompt_tokens,
+    response.usage.completion_tokens,
+    reserved=handle,
+)
+```
+
+`spent_tokens` counts every metered LLM bucket: prompt, completion, cache
+creation, one-hour cache creation, and cache reads. When a projected call would
+cross the token ceiling, `check()` / `reserve()` raises
+`TokenBudgetExceeded` before the provider runs.
+
+Use a scoped step guard for a fresh sub-budget without resetting aggregate
+totals:
+
+```python
+with guard.step(max_usd=0.10, max_tokens=4_000) as step:
+    advisory = step.advisory()
+    model = "flash-model" if advisory.near_limit else "premium-model"
+    handle = step.reserve(estimated_cost=0.01, estimated_tokens=800)
+    response = call_model(model)
+    step.settle(
+        response.model,
+        response.usage.prompt_tokens,
+        response.usage.completion_tokens,
+        reserved=handle,
+    )
+```
+
+The scoped guard is explicit so overlapping agent steps remain isolated; pass
+`step` anywhere an adapter normally receives `guard`. Its advisory adds
+aggregate token utilization plus step USD/token headroom, and the existing
+`near_limit` signal flips when any configured aggregate or step ceiling reaches
+`near_limit_bps`. See [`examples/step_budget.py`](examples/step_budget.py) for a
+no-network router/downshift demo.
+
 ## Context-aware budgeting
 
 The hard-stop is the guarantee; `advisory()` is the *upside*. Read it before a
@@ -195,7 +247,8 @@ result = with_budget_retry(
 The helper does not rank models or know provider pricing; the caller defines
 what "cheaper" means in `on_degrade`. TypeScript exposes the same pattern as
 `withBudgetRetry()`. See [`examples/budget_retry.py`](examples/budget_retry.py)
-for a no-network demo.
+for a no-network demo. USD and token budget errors are terminal by default and
+are never retried.
 
 This is the **same advisory shape** hosted Floe returns on every proxied call
 (the `X-Floe-Budget-Advisory` header), so the logic you write here ports
@@ -379,7 +432,8 @@ Prefer the LiteLLM-native callback? Register `budget_guard_callback(guard)` on
 `litellm.callbacks` — but know its limit: LiteLLM runs callbacks inside
 `except Exception`, so the callback's enforcement raise can be swallowed and
 your loop keeps going. The callback records any violation on its `tripped`
-attribute and logs it at ERROR level; consult `tripped` in your own loop, or
+attribute and logs it at ERROR level; USD and token violations both latch.
+Consult `tripped` in your own loop, or
 use `guarded_completion` (which enforces at the call site) for the guaranteed
 stop. Wrapper enforcement is tested against litellm 1.91.x.
 
@@ -606,7 +660,8 @@ task = PipelineTask(
 
 > **Fragment** — `transport`, `stt`, `llm`, `tts`, and `context_aggregator` are your existing Pipecat objects; this shows only where the guard sits in a pipeline you already have. For a complete, runnable demo (no API key, no network), see [`examples/voice_turn_budget.py`](examples/voice_turn_budget.py).
 
-By default a blocked turn pushes a fatal `ErrorFrame` that terminates the
+By default a USD- or token-blocked turn pushes a fatal `ErrorFrame` that
+terminates the
 pipeline — the hard-stop every other adapter gives you. Pass an
 `on_budget_exceeded` async callback to speak a graceful "wrapping up" line first
 instead of cutting the call dead.
@@ -643,7 +698,8 @@ await session.start(agent=agent, room=ctx.room)
 
 Pass `stt_usd_per_second` / `tts_usd_per_1k_chars` to also meter STT/TTS spend
 (often a voice agent's larger bill) via `record_tool`, and an `on_budget_exceeded`
-async callback to speak a wrap-up line before a turn ends. See
+async callback to handle either a USD or token block and speak a wrap-up line
+before a turn ends. See
 [`examples/voice_turn_budget.py`](examples/voice_turn_budget.py).
 
 ## Adapter matrix

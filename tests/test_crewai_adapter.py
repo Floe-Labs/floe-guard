@@ -22,6 +22,7 @@ litellm = pytest.importorskip("litellm")
 from floe_guard import (  # noqa: E402
     BudgetExceeded,
     BudgetGuard,
+    TokenBudgetExceeded,
     UnpriceableModelError,
     UnpriceableModelWarning,
 )
@@ -94,9 +95,9 @@ def test_unpriceable_model_hard_stops_next_call_despite_swallowed_settle(
 
     assert guard.spent_usd == 0.0  # the completed call itself went unmetered
     assert isinstance(cb.tripped, UnpriceableModelError)
-    assert any(
-        r.name == "floe_guard" and r.levelname == "ERROR" for r in caplog.records
-    ), "the swallowed violation must be loud on the logging channel"
+    assert any(r.name == "floe_guard" and r.levelname == "ERROR" for r in caplog.records), (
+        "the swallowed violation must be loud on the logging channel"
+    )
     with pytest.raises(UnpriceableModelError):
         llm.call("next step")
 
@@ -110,8 +111,13 @@ def test_ceiling_hard_stops_next_call_despite_swallowed_pre_call_block() -> None
     (cb,) = [cb for cb in litellm.callbacks if getattr(cb, "guard", None) is guard]
 
     # One completed call accrues past the ceiling (settle never blocks; check does).
-    _swallow(cb.log_success_event, {"litellm_call_id": "c1", "model": "gpt-4o"},
-             _response("gpt-4o"), None, None)
+    _swallow(
+        cb.log_success_event,
+        {"litellm_call_id": "c1", "model": "gpt-4o"},
+        _response("gpt-4o"),
+        None,
+        None,
+    )
     assert guard.spent_usd > guard.limit_usd
 
     # The swallowed pre-call block of the runaway's next attempt.
@@ -119,6 +125,23 @@ def test_ceiling_hard_stops_next_call_despite_swallowed_pre_call_block() -> None
     assert isinstance(cb.tripped, BudgetExceeded)
 
     with pytest.raises(BudgetExceeded):
+        llm.call("next step")
+
+
+def test_token_ceiling_hard_stops_after_litellm_swallows_callback_error() -> None:
+    guard = BudgetGuard(limit_usd=1.0, token_limit=0)
+    llm = budget_guarded_llm(guard, "gpt-4o")
+    (cb,) = [cb for cb in litellm.callbacks if getattr(cb, "guard", None) is guard]
+
+    _swallow(
+        cb.log_pre_api_call,
+        "gpt-4o",
+        [],
+        {"litellm_call_id": "token-block", "model": "gpt-4o", "messages": []},
+    )
+
+    assert isinstance(cb.tripped, TokenBudgetExceeded)
+    with pytest.raises(TokenBudgetExceeded):
         llm.call("next step")
 
 

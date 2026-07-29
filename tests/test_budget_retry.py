@@ -10,6 +10,7 @@ from floe_guard import (
     BudgetExceeded,
     BudgetGuard,
     RetryPlan,
+    TokenBudgetExceeded,
     async_with_budget_retry,
     with_budget_retry,
 )
@@ -117,6 +118,37 @@ def test_keyboard_interrupt_is_not_retried() -> None:
 
     with pytest.raises(KeyboardInterrupt):
         with_budget_retry(guard, primary, estimated_cost=0.01, max_attempts=3)
+
+    assert calls == {"primary": 1}
+
+
+def test_token_budget_error_is_not_retried_by_default() -> None:
+    guard = BudgetGuard(limit_usd=1.0, token_limit=0, on_token_block=lambda *_: None)
+    calls = {"primary": 0}
+
+    def primary() -> str:
+        calls["primary"] += 1
+        guard.check(estimated_next_tokens=1)
+        return "unreachable"
+
+    with pytest.raises(TokenBudgetExceeded):
+        with_budget_retry(guard, primary, max_attempts=3)
+
+    assert calls == {"primary": 1}
+
+
+@pytest.mark.asyncio
+async def test_async_token_budget_error_is_not_retried_by_default() -> None:
+    guard = BudgetGuard(limit_usd=1.0, token_limit=0, on_token_block=lambda *_: None)
+    calls = {"primary": 0}
+
+    async def primary() -> str:
+        calls["primary"] += 1
+        guard.check(estimated_next_tokens=1)
+        return "unreachable"
+
+    with pytest.raises(TokenBudgetExceeded):
+        await async_with_budget_retry(guard, primary, max_attempts=3)
 
     assert calls == {"primary": 1}
 

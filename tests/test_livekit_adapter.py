@@ -20,7 +20,7 @@ pytest.importorskip("livekit.agents")
 from livekit.agents.metrics import LLMMetrics, STTMetrics, TTSMetrics  # noqa: E402
 
 from floe_guard import BudgetGuard  # noqa: E402
-from floe_guard.errors import BudgetExceeded  # noqa: E402
+from floe_guard.errors import BudgetExceeded, TokenBudgetExceeded  # noqa: E402
 from floe_guard.integrations.livekit import LiveKitBudgetGuard  # noqa: E402
 
 
@@ -115,6 +115,29 @@ async def test_blocked_turn_raises_without_callback():
     session.emit("metrics_collected", _event(_llm_metrics(1000, 500)))
 
     with pytest.raises(BudgetExceeded):
+        await _drive_turn(agent)
+
+
+@pytest.mark.asyncio
+async def test_token_block_uses_callback_before_entering_llm_node() -> None:
+    guard = BudgetGuard(limit_usd=1.0, token_limit=0)
+    called = {}
+
+    async def handle(exc):
+        called["exc"] = exc
+
+    _, agent, _ = _attached(guard, on_budget_exceeded=handle)
+
+    assert await _drive_turn(agent) == []
+    assert isinstance(called.get("exc"), TokenBudgetExceeded)
+
+
+@pytest.mark.asyncio
+async def test_token_block_raises_before_entering_llm_node_without_callback() -> None:
+    guard = BudgetGuard(limit_usd=1.0, token_limit=0)
+    _, agent, _ = _attached(guard)
+
+    with pytest.raises(TokenBudgetExceeded):
         await _drive_turn(agent)
 
 

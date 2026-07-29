@@ -7,12 +7,24 @@ even in CI without the optional extra.
 
 from __future__ import annotations
 
+import sys
+import types
 from dataclasses import dataclass
 
 import pytest
 
-from floe_guard import BudgetGuard, UnpriceableModelError, UnpriceableModelWarning
-from floe_guard.integrations.litellm import _model_from, _record_response, _usage_from
+from floe_guard import (
+    BudgetGuard,
+    TokenBudgetExceeded,
+    UnpriceableModelError,
+    UnpriceableModelWarning,
+)
+from floe_guard.integrations.litellm import (
+    _model_from,
+    _record_response,
+    _usage_from,
+    budget_guard_callback,
+)
 
 
 @dataclass
@@ -104,3 +116,30 @@ def test_record_response_tolerates_non_dict_kwargs() -> None:
     resp = {"model": "gpt-4o", "usage": {"prompt_tokens": 1_000, "completion_tokens": 1_000}}
     _record_response(guard, None, resp)  # type: ignore[arg-type]
     assert guard.spent_usd > 0
+
+
+def test_callback_latches_token_block_when_hook_exception_is_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The callback latch is the hard-stop bridge when LiteLLM eats hook errors."""
+
+    class CustomLogger:
+        pass
+
+    litellm = types.ModuleType("litellm")
+    litellm.token_counter = lambda **_: 0  # type: ignore[attr-defined]
+    integrations = types.ModuleType("litellm.integrations")
+    custom_logger = types.ModuleType("litellm.integrations.custom_logger")
+    custom_logger.CustomLogger = CustomLogger  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "litellm", litellm)
+    monkeypatch.setitem(sys.modules, "litellm.integrations", integrations)
+    monkeypatch.setitem(sys.modules, "litellm.integrations.custom_logger", custom_logger)
+
+    guard = BudgetGuard(limit_usd=1.0, token_limit=0, on_token_block=lambda *_: None)
+    callback = budget_guard_callback(guard)
+    kwargs = {"litellm_call_id": "token-block", "model": "gpt-4o", "messages": []}
+
+    with pytest.raises(TokenBudgetExceeded):
+        callback.log_pre_api_call("gpt-4o", [], kwargs)
+
+    assert isinstance(callback.tripped, TokenBudgetExceeded)
