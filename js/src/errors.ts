@@ -38,6 +38,38 @@ export class BudgetExceeded extends FloeGuardError {
 }
 
 /**
+ * Thrown before a call that would cross a token ceiling (aggregate or step).
+ *
+ * The token twin of {@link BudgetExceeded} — it extends it so the same retry
+ * logic that treats a USD block as terminal (`!(error instanceof
+ * BudgetExceeded)`) treats a token block as terminal too, with no extra wiring.
+ * `spentUsd` / `limitUsd` are inherited but not meaningful here; the token
+ * fields are the payload.
+ *
+ * `scope` is `"aggregate"` (the guard-wide `tokenLimit`) or `"step"` (the
+ * innermost active {@link BudgetGuard.step} cap).
+ */
+export class TokenBudgetExceeded extends BudgetExceeded {
+  readonly spentTokens: number;
+  readonly limitTokens: number;
+  readonly scope: "aggregate" | "step";
+
+  constructor(spentTokens: number, limitTokens: number, scope: "aggregate" | "step") {
+    // BudgetExceeded's message is dollar-shaped; pass 0/0 for the inherited
+    // spentUsd/limitUsd (a token block spent no tracked USD), then overwrite
+    // the message with the token-shaped one.
+    super(0, 0);
+    this.message =
+      `TOKEN BUDGET EXCEEDED — call blocked (${scope}: ${spentTokens} of ` +
+      `${limitTokens} token ceiling)`;
+    this.name = "TokenBudgetExceeded";
+    this.spentTokens = spentTokens;
+    this.limitTokens = limitTokens;
+    this.scope = scope;
+  }
+}
+
+/**
  * Thrown when a model cannot be priced and the guard is fail-closed.
  *
  * We refuse rather than silently accrue $0 — "we cannot cap what we cannot price".

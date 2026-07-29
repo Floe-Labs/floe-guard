@@ -40,6 +40,36 @@ class BudgetExceeded(FloeGuardError):
         )
 
 
+class TokenBudgetExceeded(BudgetExceeded):
+    """Raised before a call that would cross a token ceiling (aggregate or step).
+
+    The token twin of :class:`BudgetExceeded` — it subclasses it so the same
+    retry logic that treats a USD block as terminal (``not isinstance(exc,
+    BudgetExceeded)``) treats a token block as terminal too, with no extra
+    wiring. ``spent_usd`` / ``limit_usd`` are inherited but not meaningful here;
+    the token fields are the payload.
+
+    ``scope`` is ``"aggregate"`` (the guard-wide ``token_limit``) or ``"step"``
+    (the innermost active :meth:`BudgetGuard.step` cap).
+    """
+
+    def __init__(self, spent_tokens: int, limit_tokens: int, scope: str) -> None:
+        # BudgetExceeded's message/attrs are dollar-shaped and don't apply; set
+        # our own attrs and message, and pass 0.0/0.0 so the inherited spent_usd
+        # / limit_usd stay well-defined (a token block spent no *tracked* USD it
+        # can attribute to this error).
+        FloeGuardError.__init__(
+            self,
+            f"TOKEN BUDGET EXCEEDED — call blocked ({scope}: {spent_tokens} of "
+            f"{limit_tokens} token ceiling)",
+        )
+        self.spent_usd = 0.0
+        self.limit_usd = 0.0
+        self.spent_tokens = spent_tokens
+        self.limit_tokens = limit_tokens
+        self.scope = scope
+
+
 class UnpriceableModelError(FloeGuardError):
     """Raised when a model cannot be priced and the guard is fail-closed.
 
