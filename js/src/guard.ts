@@ -735,16 +735,23 @@ export class BudgetGuard<
     }
     const cost = this.normalizedCostEstimate(estimatedCost);
     const tokens = this.normalizedTokenEstimate(estimatedTokens);
-    const blocked = this.blockingLimit(cost, tokens, step, enforceTokens);
+    const reservedTokens =
+      this.tokenLimit !== null || step !== null ? tokens : 0;
+    const blocked = this.blockingLimit(
+      cost,
+      reservedTokens,
+      step,
+      enforceTokens,
+    );
     if (blocked !== null) this.raiseBlock(blocked);
     this.reserved += cost;
-    this.reservedTokens += tokens;
+    this.reservedTokens += reservedTokens;
     if (step !== null) {
       step.reservedUsd += cost;
-      step.reservedTokens += tokens;
+      step.reservedTokens += reservedTokens;
     }
     if (this.tokenLimit === null && step === null) return cost;
-    return issueReservation(this, cost, tokens, step);
+    return issueReservation(this, cost, reservedTokens, step);
   }
 
   private normalizedCostEstimate(estimate: number | undefined): number {

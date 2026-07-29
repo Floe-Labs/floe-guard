@@ -46,6 +46,35 @@ describe("aggregate token ceilings", () => {
     expect(guard.remainingTokens).toBeNull();
   });
 
+  it("does not leak token reservations through legacy numeric handles", () => {
+    const guard = quiet();
+    const counters = guard as unknown as {
+      reserved: number;
+      reservedTokens: number;
+    };
+    guard.record("manual", 10, 5, {
+      price: { inputCostPerToken: 1e-6, outputCostPerToken: 2e-6 },
+    });
+
+    const fallback = guard.reserve(0.1);
+    expect(typeof fallback).toBe("number");
+    expect(counters.reservedTokens).toBe(0);
+    guard.release(fallback);
+    expect(counters.reserved).toBe(0);
+    expect(counters.reservedTokens).toBe(0);
+
+    const explicit = guard.reserve(0.1, 25);
+    expect(typeof explicit).toBe("number");
+    expect(counters.reservedTokens).toBe(0);
+    guard.settle("manual", 2, 3, {
+      reserved: explicit,
+      price: { inputCostPerToken: 1e-6, outputCostPerToken: 2e-6 },
+    });
+    expect(counters.reserved).toBe(0);
+    expect(counters.reservedTokens).toBe(0);
+    expect(guard.spentTokens).toBe(20);
+  });
+
   it("infers a typed handle for an explicitly token-enabled guard", () => {
     const guard = new BudgetGuard(10, { tokenLimit: 100 });
     const handle: BudgetReservation = guard.reserve(0);
@@ -63,8 +92,14 @@ describe("aggregate token ceilings", () => {
     const handle = guard.reserve(0);
     expect(typeof handle).toBe("object");
     expect((handle as unknown as BudgetReservation).tokens).toBe(50);
+    expect(
+      (guard as unknown as { reservedTokens: number }).reservedTokens,
+    ).toBe(50);
     expect(() => guard.reserve(0)).toThrow(TokenBudgetExceeded);
     guard.release(handle);
+    expect(
+      (guard as unknown as { reservedTokens: number }).reservedTokens,
+    ).toBe(0);
   });
 
   it("extends nearLimit with aggregate token utilization", () => {
@@ -245,6 +280,23 @@ describe("per-step budgets", () => {
       });
     });
     expect(guard.spentTokens).toBe(80);
+  });
+
+  it("tracks typed token reservations in USD-only steps without a parent token limit", () => {
+    const guard = quiet();
+    const counters = guard as unknown as {
+      reserved: number;
+      reservedTokens: number;
+    };
+
+    guard.step({ maxUsd: 1 }, (step) => {
+      const handle = step.reserve(0.1, 20) as BudgetReservation;
+      expect(handle.tokens).toBe(20);
+      expect(counters.reservedTokens).toBe(20);
+      step.release(handle);
+      expect(counters.reserved).toBe(0);
+      expect(counters.reservedTokens).toBe(0);
+    });
   });
 
   it("reports step scope for the tightest token and USD limits", () => {

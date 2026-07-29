@@ -751,16 +751,22 @@ class BudgetGuard:
                 else max(0.0, estimated_cost)
             )
             tokens = self._last_llm_tokens if estimated_tokens is None else estimated_tokens
-            blocked = self._blocking_limit_locked(cost, tokens, step, enforce_tokens=enforce_tokens)
+            reserved_tokens = tokens if self.token_limit is not None or step is not None else 0
+            blocked = self._blocking_limit_locked(
+                cost,
+                reserved_tokens,
+                step,
+                enforce_tokens=enforce_tokens,
+            )
             if blocked is None:
                 self._reserved += cost
-                self._reserved_tokens += tokens
+                self._reserved_tokens += reserved_tokens
                 if step is not None:
                     step.reserved_usd += cost
-                    step.reserved_tokens += tokens
+                    step.reserved_tokens += reserved_tokens
                 if self.token_limit is None and step is None:
                     return cost
-                return self._make_reservation_locked(cost, tokens, step)
+                return self._make_reservation_locked(cost, reserved_tokens, step)
         self._raise_block(blocked)
         raise AssertionError("unreachable")
 

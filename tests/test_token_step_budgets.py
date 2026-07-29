@@ -45,6 +45,26 @@ def test_legacy_guard_keeps_numeric_handle_and_behavior() -> None:
     assert guard.advisory().token_limit is None
 
 
+def test_legacy_numeric_handles_do_not_leak_token_reservations() -> None:
+    guard = quiet_guard()
+    guard.record("manual", 10, 5, price=PRICE)
+
+    fallback = guard.reserve(0.1)
+    assert isinstance(fallback, float)
+    assert guard._reserved_tokens == 0
+    guard.release(fallback)
+    assert guard._reserved == 0.0
+    assert guard._reserved_tokens == 0
+
+    explicit = guard.reserve(0.1, estimated_tokens=25)
+    assert isinstance(explicit, float)
+    assert guard._reserved_tokens == 0
+    guard.settle("manual", 2, 3, reserved=explicit, price=PRICE)
+    assert guard._reserved == 0.0
+    assert guard._reserved_tokens == 0
+    assert guard.spent_tokens == 20
+
+
 def test_record_accumulates_all_token_buckets() -> None:
     guard = quiet_guard(token_limit=10_000)
     guard.record(
@@ -68,9 +88,11 @@ def test_explicit_and_last_call_estimates_block_before_call() -> None:
     held = guard.reserve(0.0)
     assert isinstance(held, BudgetReservation)
     assert held.tokens == 50
+    assert guard._reserved_tokens == 50
     with pytest.raises(TokenBudgetExceeded):
         guard.reserve(0.0)
     guard.release(held)
+    assert guard._reserved_tokens == 0
 
 
 def test_aggregate_token_advisory_flips_overall_near_limit() -> None:
@@ -313,6 +335,18 @@ def test_step_resets_and_counts_against_parent() -> None:
         assert next_step.advisory().step_spent_tokens == 0
         next_step.record("manual", 20, 10, price=PRICE)
     assert guard.spent_tokens == 80
+
+
+def test_usd_only_step_tracks_typed_token_reservations_without_parent_limit() -> None:
+    guard = quiet_guard()
+    with guard.step(max_usd=1.0) as step:
+        handle = step.reserve(0.1, estimated_tokens=20)
+        assert isinstance(handle, BudgetReservation)
+        assert handle.tokens == 20
+        assert guard._reserved_tokens == 20
+        step.release(handle)
+        assert guard._reserved == 0.0
+        assert guard._reserved_tokens == 0
 
 
 def test_step_tightest_limit_blocks_with_scope() -> None:
