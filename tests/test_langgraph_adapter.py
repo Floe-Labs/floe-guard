@@ -171,6 +171,33 @@ def test_node_error_releases_reservation() -> None:
     assert guard.spent_usd == pytest.approx(0.0125)  # only the warm call
 
 
+def test_step_scoped_node_settles_and_updates_advisory() -> None:
+    guard = BudgetGuard(limit_usd=1.0, token_limit=100)
+    with guard.step(max_usd=0.1, max_tokens=20) as step:
+
+        @guarded_node(step, estimated_cost=0.001, estimated_tokens=10)
+        def worker(state: dict) -> dict:
+            return {
+                "result": "ok",
+                "usage": {
+                    "model": MODEL,
+                    "prompt_tokens": 4,
+                    "completion_tokens": 6,
+                },
+            }
+
+        result = worker({})
+        assert result["result"] == "ok"
+        advisory = result["budget"]
+        assert isinstance(advisory, BudgetAdvisory)
+        assert advisory.step_spent_tokens == 10
+        assert advisory.step_remaining_tokens == 10
+        assert guard._reserved == pytest.approx(0.0, abs=1e-9)
+        assert guard._reserved_tokens == 0
+
+    assert guard.spent_tokens == 10
+
+
 def test_malformed_usage_releases_hold_and_raises() -> None:
     # A malformed usage payload must not leak the reservation: the hold is
     # released before the error propagates, the same fail-safe as settle()'s

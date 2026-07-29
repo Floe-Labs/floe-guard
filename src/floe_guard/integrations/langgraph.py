@@ -60,7 +60,7 @@ from collections.abc import Callable
 from functools import wraps
 from typing import Annotated, Any
 
-from ..guard import BudgetAdvisory, BudgetGuard
+from ..guard import BudgetAdvisory, BudgetGuard, ReservationHandle, StepBudgetGuard
 
 
 def _require_langgraph() -> None:
@@ -118,7 +118,13 @@ def _usage_from_update(update: Any, usage_key: str) -> tuple[str, int, int] | No
     return model, prompt_tokens, completion_tokens
 
 
-def _settle_update(guard: BudgetGuard, update: Any, usage_key: str, *, reserved: float) -> None:
+def _settle_update(
+    guard: BudgetGuard | StepBudgetGuard,
+    update: Any,
+    usage_key: str,
+    *,
+    reserved: ReservationHandle,
+) -> None:
     try:
         usage = _usage_from_update(update, usage_key)
     except (TypeError, ValueError, OverflowError):
@@ -147,7 +153,11 @@ def _settle_update(guard: BudgetGuard, update: Any, usage_key: str, *, reserved:
     guard.settle(model, prompt_tokens, completion_tokens, reserved=reserved)
 
 
-def _inject_advisory(guard: BudgetGuard, update: Any, advisory_key: str | None) -> Any:
+def _inject_advisory(
+    guard: BudgetGuard | StepBudgetGuard,
+    update: Any,
+    advisory_key: str | None,
+) -> Any:
     if advisory_key is None:
         return update
     if update is None:
@@ -161,7 +171,7 @@ def _inject_advisory(guard: BudgetGuard, update: Any, advisory_key: str | None) 
 
 
 def guarded_node(
-    guard: BudgetGuard,
+    guard: BudgetGuard | StepBudgetGuard,
     node: Callable[..., Any] | None = None,
     *,
     usage_key: str = "usage",

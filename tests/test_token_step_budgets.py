@@ -394,7 +394,8 @@ def test_clean_step_exit_detects_leaked_reservation() -> None:
             reserved = step.reserve(0.0, estimated_tokens=10)
             assert isinstance(reserved, BudgetReservation)
             handle = reserved
-    guard.release(handle)
+    step.release(handle)
+    assert guard.remaining_tokens == 100
 
 
 def test_step_exception_is_not_masked_by_leaked_reservation() -> None:
@@ -452,15 +453,19 @@ def test_step_exit_and_reserve_share_one_lifecycle_boundary() -> None:
         except BaseException as exc:
             exit_errors.append(exc)
 
-    guard._lock.acquire()
     reserve_thread = threading.Thread(target=reserve)
-    reserve_thread.start()
-    assert reached_reserve.wait(timeout=1)
     exit_thread = threading.Thread(target=exit_step)
-    exit_thread.start()
-    guard._lock.release()
+    signalled = False
+    guard._lock.acquire()
+    try:
+        reserve_thread.start()
+        signalled = reached_reserve.wait(timeout=1)
+        exit_thread.start()
+    finally:
+        guard._lock.release()
     reserve_thread.join()
     exit_thread.join()
+    assert signalled
 
     if reserve_result:
         assert len(exit_errors) == 1
@@ -470,6 +475,27 @@ def test_step_exit_and_reserve_share_one_lifecycle_boundary() -> None:
         assert len(reserve_errors) == 1
         assert "no longer active" in str(reserve_errors[0])
         assert exit_errors == []
+    assert guard.remaining_tokens == 100
+
+
+def test_step_settlement_rejects_exit_but_release_still_cleans_up() -> None:
+    guard = quiet_guard(token_limit=100)
+    scoped = guard.step(max_usd=1.0, max_tokens=50)
+    with scoped:
+        llm_handle = scoped.reserve(0.0, estimated_tokens=0)
+        tool_handle = scoped.reserve_tool(0.0)
+        assert isinstance(llm_handle, BudgetReservation)
+        assert isinstance(tool_handle, BudgetReservation)
+
+    with pytest.raises(RuntimeError, match="no longer active"):
+        scoped.settle("manual", 1, 0, reserved=llm_handle, price=PRICE)
+    with pytest.raises(RuntimeError, match="no longer active"):
+        scoped.settle_tool("search", 0.01, reserved=tool_handle)
+
+    scoped.release(llm_handle)
+    scoped.release(tool_handle)
+    assert guard.spent_usd == 0.0
+    assert guard.spent_tokens == 0
     assert guard.remaining_tokens == 100
 
 

@@ -159,8 +159,9 @@ def test_callback_duplicate_call_id_preserves_original_reservation(
 
     callback.log_pre_api_call("gpt-4o", [], kwargs)
     assert guard.remaining_tokens == 60
-    with pytest.raises(RuntimeError, match="duplicate LiteLLM call id"):
+    with pytest.raises(RuntimeError, match="duplicate LiteLLM call id") as caught:
         callback.log_pre_api_call("gpt-4o", [], kwargs)
+    assert callback.tripped is caught.value
     assert guard.remaining_tokens == 60
     assert guard._reserved_tokens == 40
 

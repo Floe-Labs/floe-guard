@@ -860,38 +860,53 @@ class BudgetGuard:
             raise ValueError("reservation handle has been modified")
         return state
 
-    def _scoped_reservation(
-        self, reserved: ReservationHandle, step: _StepState
-    ) -> BudgetReservation:
-        """Return a genuine handle for ``step``; numeric scoped handles must be zero."""
+    def _validate_scoped_locked(
+        self,
+        reserved: ReservationHandle,
+        step: _StepState,
+        *,
+        require_active: bool,
+    ) -> BudgetReservation | None:
+        """Validate a scoped handle. Caller must hold ``self._lock``.
+
+        Return the genuine typed handle, or ``None`` for a legal numeric zero
+        that the caller may normalize into a registered zero-valued handle.
+        """
+        if require_active and not step.active:
+            raise RuntimeError("step budget is no longer active")
         if isinstance(reserved, BudgetReservation):
-            with self._lock:
-                state = self._typed_reservation_state_locked(reserved)
-                if state.step is not step:
-                    raise ValueError("reservation belongs to a different step budget")
+            state = self._typed_reservation_state_locked(reserved)
+            if state.step is not step:
+                raise ValueError("reservation belongs to a different step budget")
             return reserved
         if not math.isfinite(reserved) or reserved < 0:
             raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
         if reserved != 0:
             raise ValueError("scoped numeric reservation handles must be zero")
-        return self._make_reservation(0.0, 0, step)
+        return None
+
+    def _scoped_reservation(
+        self,
+        reserved: ReservationHandle,
+        step: _StepState,
+        *,
+        require_active: bool,
+    ) -> BudgetReservation:
+        """Return a genuine handle for ``step``; numeric scoped handles must be zero."""
+        with self._lock:
+            normalized = self._validate_scoped_locked(
+                reserved,
+                step,
+                require_active=require_active,
+            )
+            if normalized is not None:
+                return normalized
+            return self._make_reservation_locked(0.0, 0, step)
 
     def _validate_scoped_reservation(self, reserved: ReservationHandle, step: _StepState) -> None:
         """Validate a scoped handle without creating a zero-valued replacement."""
         with self._lock:
-            if not step.active:
-                raise RuntimeError("step budget is no longer active")
-            if isinstance(reserved, BudgetReservation):
-                state = self._typed_reservation_state_locked(reserved)
-                if state.step is not step:
-                    raise ValueError("reservation belongs to a different step budget")
-                return
-            if not math.isfinite(reserved) or reserved < 0:
-                raise ValueError(
-                    f"reserved must be a finite, non-negative number, got {reserved!r}"
-                )
-            if reserved != 0:
-                raise ValueError("scoped numeric reservation handles must be zero")
+            self._validate_scoped_locked(reserved, step, require_active=True)
 
     def _consume_handle_locked(
         self,
@@ -1002,22 +1017,10 @@ class BudgetGuard:
     ) -> tuple[BudgetReservation, object]:
         """Atomically validate scope liveness, normalize its handle, and register."""
         with self._lock:
-            if not step.active:
-                raise RuntimeError("step budget is no longer active")
-            if isinstance(reserved, BudgetReservation):
-                state = self._typed_reservation_state_locked(reserved)
-                if state.step is not step:
-                    raise ValueError("reservation belongs to a different step budget")
-                normalized = reserved
-            else:
-                if not math.isfinite(reserved) or reserved < 0:
-                    raise ValueError(
-                        f"reserved must be a finite, non-negative number, got {reserved!r}"
-                    )
-                if reserved != 0:
-                    raise ValueError("scoped numeric reservation handles must be zero")
+            normalized = self._validate_scoped_locked(reserved, step, require_active=True)
+            if normalized is None:
                 normalized = self._make_reservation_locked(0.0, 0, step)
-                state = self._typed_reservation_state_locked(normalized)
+            state = self._typed_reservation_state_locked(normalized)
             key = self._stream_register_locked(state.usd, state.tokens, state.step)
         return normalized, key
 
@@ -1253,7 +1256,11 @@ class StepBudgetGuard:
         label: str | None = None,
     ) -> float:
         self._ensure_active()
-        reserved = self._parent._scoped_reservation(reserved, self._state)
+        reserved = self._parent._scoped_reservation(
+            reserved,
+            self._state,
+            require_active=True,
+        )
         return self._parent.settle(
             model,
             prompt_tokens,
@@ -1305,7 +1312,11 @@ class StepBudgetGuard:
         label: str | None = None,
     ) -> float:
         self._ensure_active()
-        reserved = self._parent._scoped_reservation(reserved, self._state)
+        reserved = self._parent._scoped_reservation(
+            reserved,
+            self._state,
+            require_active=True,
+        )
         return self._parent.settle_tool(tool, cost_usd, reserved=reserved, label=label)
 
     def record_tool(self, tool: str, cost_usd: float, *, label: str | None = None) -> float:
@@ -1314,7 +1325,11 @@ class StepBudgetGuard:
         return self.settle_tool(tool, cost_usd, reserved=handle, label=label)
 
     def release(self, reserved: ReservationHandle) -> None:
-        reserved = self._parent._scoped_reservation(reserved, self._state)
+        reserved = self._parent._scoped_reservation(
+            reserved,
+            self._state,
+            require_active=False,
+        )
         self._parent.release(reserved)
 
     def advisory(self) -> BudgetAdvisory:

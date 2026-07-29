@@ -199,9 +199,10 @@ def budget_guard_callback(guard: BudgetGuard | StepBudgetGuard) -> Any:
         def __init__(self) -> None:
             super().__init__()
             self.guard = guard
-            # The first enforcement violation (USD/token budget or fail-closed
-            # UnpriceableModelError). Survives LiteLLM swallowing the raise, so a
-            # call-path owner can re-raise it outside the callback machinery.
+            # The first enforcement or reservation-lifecycle violation
+            # (USD/token budget, fail-closed pricing, or duplicate call id).
+            # Survives LiteLLM swallowing the raise, so a call-path owner can
+            # re-raise it outside the callback machinery.
             # Latches until reset() — a config change on the guard alone does
             # not clear it.
             self.tripped: Exception | None = None
@@ -253,7 +254,9 @@ def budget_guard_callback(guard: BudgetGuard | StepBudgetGuard) -> Any:
                     duplicate = False
             if duplicate:
                 self.guard.release(reserved)
-                raise RuntimeError(f"duplicate LiteLLM call id {key}")
+                exc = RuntimeError(f"duplicate LiteLLM call id {key}")
+                self._trip(exc)
+                raise exc
 
         def _pop(self, kwargs: Any) -> ReservationHandle:
             with self._rlock:
