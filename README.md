@@ -24,6 +24,16 @@ it for LLM calls; for paid tools, [`reserve_tool()` / `settle_tool()`](#tool-spe
 block *before* the call runs (`record_tool()` alone meters a call after the
 fact — it can't stop one already made).
 
+## Works best with the Floe skill
+
+`floe-guard` is a local ceiling — it stops paid work before your budget blows, standalone, no account needed. To govern your agent's **whole** vendor bill (LLM, voice, telephony, data) on one key with server-side spend controls, add the **Floe agent skill** — it teaches Claude Code / Cursor the same govern-your-spend workflow `floe-guard` enforces locally:
+
+```bash
+npx skills add floe-labs/agent-skills
+```
+
+[Floe agent skill →](https://github.com/Floe-Labs/agent-skills) · [Docs →](https://floe-labs.gitbook.io/docs/getting-started/claude-code-skill)
+
 ```bash
 pip install floe-guard        # Python
 npm i floe-guard              # TypeScript (Vercel AI SDK) — see js/
