@@ -64,7 +64,7 @@ def stub_subtask_call(reasoning_steps: int) -> dict[str, object]:
 
 
 def main() -> None:
-    # Taper at 70% used so there's room to simplify before the ceiling.
+    # Reasoning thins at 40% used (TAPER_BPS), optional tasks drop at 70% (near_limit).
     guard = BudgetGuard(limit_usd=0.10, near_limit_bps=7000)
     required = sum(1 for _, is_required, _ in PLAN if is_required)
     print(f"Budget ${guard.limit_usd:.2f} · model fixed at {MODEL} · plan complexity adapts")

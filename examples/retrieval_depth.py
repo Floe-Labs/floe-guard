@@ -56,7 +56,7 @@ def choose_top_k(adv: BudgetAdvisory) -> int:
 
 
 def main() -> None:
-    # Taper at 70% used so there's room to downshift before the ceiling.
+    # First downshift at 40% used (TAPER_BPS), final floor at 70% (near_limit).
     guard = BudgetGuard(limit_usd=0.10, near_limit_bps=7000)
     print(f"Budget ${guard.limit_usd:.2f} · model fixed at {MODEL} · retrieval depth adapts")
     print(
