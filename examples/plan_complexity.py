@@ -50,6 +50,7 @@ def plan_round(adv: BudgetAdvisory) -> tuple[bool, bool]:
 
 
 def reasoning_steps_for(steps: int, full_reasoning: bool) -> int:
+    """Calculate the number of reasoning steps to execute."""
     # One pass fewer, never zero — a sub-task that runs still has to produce an answer.
     return steps if full_reasoning else max(1, steps - 1)
 
@@ -64,6 +65,7 @@ def stub_subtask_call(reasoning_steps: int) -> dict[str, object]:
 
 
 def main() -> None:
+    """Run the plan complexity adaptation example."""
     # Reasoning thins at 40% used (TAPER_BPS), optional tasks drop at 70% (near_limit).
     guard = BudgetGuard(limit_usd=0.10, near_limit_bps=7000)
     required = sum(1 for _, is_required, _ in PLAN if is_required)

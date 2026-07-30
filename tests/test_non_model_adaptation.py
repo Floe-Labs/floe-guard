@@ -31,6 +31,7 @@ def _run_example(name: str, capsys: pytest.CaptureFixture[str]) -> str:
 def test_retrieval_depth_example_shrinks_top_k_without_switching_models(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Verify retrieval depth shrinks and the model remains constant."""
     # Ensure no account/key is involved.
     monkeypatch.delenv("FLOE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -52,6 +53,7 @@ def test_retrieval_depth_example_shrinks_top_k_without_switching_models(
 def test_context_size_example_trims_history_and_max_tokens(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Verify context size and reply cap shrink."""
     monkeypatch.delenv("FLOE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -71,6 +73,7 @@ def test_context_size_example_trims_history_and_max_tokens(
 def test_plan_complexity_example_drops_optional_subtasks(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Verify reasoning steps reduce and optional subtasks are dropped."""
     monkeypatch.delenv("FLOE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 

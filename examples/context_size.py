@@ -55,6 +55,7 @@ def stub_chat_call(turns_sent: int, max_tokens: int) -> dict[str, object]:
 
 
 def main() -> None:
+    """Run the context size adaptation example."""
     # Taper at 70% used so there's room to trim before the ceiling.
     guard = BudgetGuard(limit_usd=0.10, near_limit_bps=7000)
     print(f"Budget ${guard.limit_usd:.2f} · model fixed at {MODEL} · context size adapts")
