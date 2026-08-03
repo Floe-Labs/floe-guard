@@ -83,7 +83,10 @@ class StreamGuard:
         self._guard = guard
         self._model = model
         self._prompt_tokens = max(0, int(prompt_tokens))
-        self._reserved = float(reserved)
+        # Preserve persistent handles' issuing-window provenance. They remain
+        # float-compatible, but coercing here would make a stream that crosses
+        # midnight settle against the new UTC day's empty reservation row.
+        self._reserved = reserved
         self._price = price
         self._label = label
         self._count = count_tokens or approx_tokens

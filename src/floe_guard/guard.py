@@ -1,4 +1,4 @@
-"""The local, in-process budget guard.
+"""The local budget guard, with optional cross-process UTC-day state.
 
 ``BudgetGuard`` is a kill-switch that lives in the LLM call path. The contract:
 
@@ -36,6 +36,7 @@ import warnings
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Literal
 
 from .errors import (
@@ -44,9 +45,24 @@ from .errors import (
     UnpriceableModelWarning,
 )
 from .pricing import ManualPrice, price_tokens, resolve_price
+from .store import StateStore
 
 # Tolerance for float rounding in the running spend total (well below $0.000001).
 _EPS = 1e-12
+
+
+class _PersistentReservation(float):
+    """Numeric reservation handle carrying its authoritative store window."""
+
+    _window_id: str
+
+    def __new__(cls, amount_usd: float, window_id: str) -> _PersistentReservation:
+        handle = super().__new__(cls, amount_usd)
+        handle._window_id = window_id
+        return handle
+
+    def __reduce__(self) -> tuple[object, tuple[float, str]]:
+        return _PersistentReservation, (float(self), self._window_id)
 
 
 @dataclass(frozen=True)
@@ -58,7 +74,7 @@ class BudgetAdvisory:
     unchanged to the hosted path. Hosted adds what a local, single-budget guard
     cannot know: which of several caps is tightest (``scope`` across
     ``credit_line | session | task | api | vendor``), cross-vendor reasoning,
-    server-truth balances, and rolling-window reset timing.
+    server-truth balances, and arbitrary rolling-window reset timing.
 
     This is a **soft** signal — the model may ignore it. The hard-stop
     (:meth:`BudgetGuard.check`) is what actually enforces the ceiling; the
@@ -150,10 +166,15 @@ class BudgetGuard:
             (:attr:`spend_log`). When set, the ledger is a ring buffer keeping the
             most recent N events so a long-running agent's memory stays bounded;
             the running totals are unaffected. ``None`` (default) keeps every event.
+        window: optional persistence window. ``"utc-day"`` shares one ceiling
+            from midnight to midnight UTC and requires ``store``.
+        store: persistent state store used with ``window="utc-day"``. When both
+            persistence options are omitted, behavior remains entirely in-memory.
 
     Thread-safe: the running total and in-flight reservations are guarded by a
     lock, so the guard can back a parallel crew (use :meth:`reserve` /
-    :meth:`settle`).
+    :meth:`settle`). A configured :class:`~floe_guard.store.StateStore` extends
+    that reservation boundary across processes.
     """
 
     def __init__(
@@ -165,6 +186,8 @@ class BudgetGuard:
         on_block: Callable[[float, float], None] | None = None,
         near_limit_bps: int = 8000,
         max_log_events: int | None = None,
+        window: Literal["utc-day"] | None = None,
+        store: StateStore | None = None,
     ) -> None:
         if not math.isfinite(limit_usd) or limit_usd < 0:
             # NaN/inf would make every check() comparison evaluate False and
@@ -180,6 +203,13 @@ class BudgetGuard:
         ):
             raise ValueError(f"near_limit_bps must be an int in 0..10000, got {near_limit_bps!r}")
         self.limit_usd = float(limit_usd)
+        if (window is None) != (store is None):
+            raise ValueError("window and store must be configured together")
+        if window not in (None, "utc-day"):
+            raise ValueError(f"window must be 'utc-day' or None, got {window!r}")
+        self._window = window
+        self._store = store
+        self._active_window_id: str | None = None
         self.price_overrides = price_overrides
         self.fail_closed = fail_closed
         self._on_block = on_block or _default_on_block
@@ -213,6 +243,9 @@ class BudgetGuard:
         # the one shared ceiling, exposed via the tool_costs property.
         self._tool_costs: dict[str, float] = {}
         self._lock = threading.Lock()
+        if self._store is not None:
+            with self._lock:
+                self._refresh_persistent_state_locked()
 
     # ── enforcement ───────────────────────────────────────────────────────────
 
@@ -279,17 +312,28 @@ class BudgetGuard:
         """
         self._validate_estimate(estimated_cost)
         with self._lock:
+            window_id = self._current_window_id_locked() if self._store is not None else ""
             estimate = (
                 self._default_estimate_locked()
                 if estimated_cost is None
                 else max(0.0, estimated_cost)
             )
-            committed = self.spent_usd + self._reserved
-            if committed > self.limit_usd - _EPS or committed + estimate > self.limit_usd + _EPS:
-                spent, limit = self.spent_usd, self.limit_usd
+            if self._store is not None:
+                accepted, spent, reserved = self._store.reserve(window_id, self.limit_usd, estimate)
+                self.spent_usd = spent
+                self._reserved = reserved
+                if accepted:
+                    return _PersistentReservation(estimate, window_id)
             else:
-                self._reserved += estimate
-                return estimate
+                committed = self.spent_usd + self._reserved
+                if (
+                    committed <= self.limit_usd - _EPS
+                    and committed + estimate <= self.limit_usd + _EPS
+                ):
+                    self._reserved += estimate
+                    return estimate
+                spent = self.spent_usd
+            limit = self.limit_usd
         # Blocked — notify and raise outside the lock.
         self._on_block(spent, limit)
         raise BudgetExceeded(spent, limit)
@@ -356,13 +400,25 @@ class BudgetGuard:
             self.release(reserved)
             raise
         with self._lock:
-            if reserved:
-                self._consume_reservation_locked(reserved)
-            self.spent_usd += cost
-            # Clamp a sub-epsilon float overshoot back to the limit so the running
-            # total never reports as having crossed the ceiling by a rounding artifact.
-            if 0.0 < self.spent_usd - self.limit_usd < _EPS:
-                self.spent_usd = self.limit_usd
+            if self._store is not None:
+                window_id = self._reservation_window_id_locked(reserved)
+                updates_active_window = self._prepare_persistent_terminal_locked(window_id)
+                snapshot = self._store.settle(
+                    window_id,
+                    self.limit_usd,
+                    reserved,
+                    cost,
+                )
+                if updates_active_window:
+                    self.spent_usd, self._reserved = snapshot
+            else:
+                if reserved:
+                    self._consume_reservation_locked(reserved)
+                self.spent_usd += cost
+                # Clamp a sub-epsilon float overshoot back to the limit so the running
+                # total never reports as having crossed the ceiling by a rounding artifact.
+                if 0.0 < self.spent_usd - self.limit_usd < _EPS:
+                    self.spent_usd = self.limit_usd
             self._last_llm_cost = cost
             self._spend_log.append(
                 SpendEvent(
@@ -469,13 +525,25 @@ class BudgetGuard:
         # return value are always float, like every other cost in the guard.
         cost_usd = float(cost_usd)
         with self._lock:
-            if reserved:
-                self._consume_reservation_locked(reserved)
-            self.spent_usd += cost_usd
-            # Same sub-epsilon clamp as settle(): never report a rounding-artifact
-            # crossing of the ceiling.
-            if 0.0 < self.spent_usd - self.limit_usd < _EPS:
-                self.spent_usd = self.limit_usd
+            if self._store is not None:
+                window_id = self._reservation_window_id_locked(reserved)
+                updates_active_window = self._prepare_persistent_terminal_locked(window_id)
+                snapshot = self._store.settle(
+                    window_id,
+                    self.limit_usd,
+                    reserved,
+                    cost_usd,
+                )
+                if updates_active_window:
+                    self.spent_usd, self._reserved = snapshot
+            else:
+                if reserved:
+                    self._consume_reservation_locked(reserved)
+                self.spent_usd += cost_usd
+                # Same sub-epsilon clamp as settle(): never report a rounding-artifact
+                # crossing of the ceiling.
+                if 0.0 < self.spent_usd - self.limit_usd < _EPS:
+                    self.spent_usd = self.limit_usd
             self._last_tool_cost = cost_usd
             self._tool_costs[tool] = self._tool_costs.get(tool, 0.0) + cost_usd
             self._spend_log.append(
@@ -513,12 +581,20 @@ class BudgetGuard:
         if not reserved:
             return
         with self._lock:
-            self._consume_reservation_locked(reserved)
+            if self._store is not None:
+                window_id = self._reservation_window_id_locked(reserved)
+                updates_active_window = self._prepare_persistent_terminal_locked(window_id)
+                snapshot = self._store.release(window_id, self.limit_usd, reserved)
+                if updates_active_window:
+                    self.spent_usd, self._reserved = snapshot
+            else:
+                self._consume_reservation_locked(reserved)
 
     @property
     def remaining_usd(self) -> float:
         """USD left before the ceiling, net of in-flight reservations (never negative)."""
         with self._lock:
+            self._refresh_persistent_state_locked()
             return max(0.0, self.limit_usd - self.spent_usd - self._reserved)
 
     @property
@@ -568,6 +644,10 @@ class BudgetGuard:
         80%), so an agent can taper *before* the hard-stop. Advisory only: read it
         to adapt; :meth:`check` is what enforces the ceiling.
         """
+        with self._lock:
+            self._refresh_persistent_state_locked()
+            spent_usd = self.spent_usd
+            expected_cost = max(self._last_llm_cost, self._last_tool_cost)
         if self.limit_usd <= 0.0:
             used_bps = 10000
         else:
@@ -576,17 +656,13 @@ class BudgetGuard:
             # early. The tiny epsilon absorbs float noise (0.7*10000 = 6999.9999…),
             # and floor matches JS Math.floor exactly — round() would diverge
             # (Python banker's rounding vs JS ties-up).
-            used_bps = max(0, min(10000, int(self.spent_usd / self.limit_usd * 10000 + 1e-9)))
-        remaining = max(0.0, self.limit_usd - self.spent_usd)
-        # Lock-free read of the last-cost fields, consistent with reading
-        # spent_usd above: the estimate is the costlier of the last LLM and tool
-        # call (the guard's own default reservation), 0.0 before any call.
-        expected_cost = max(self._last_llm_cost, self._last_tool_cost)
+            used_bps = max(0, min(10000, int(spent_usd / self.limit_usd * 10000 + 1e-9)))
+        remaining = max(0.0, self.limit_usd - spent_usd)
+        # The estimate is the costlier of the last LLM and tool call (the
+        # guard's own default reservation), 0.0 before any call.
         # +1e-9 absorbs float noise so e.g. 0.6/0.2 floors to 3 not 2 (same
         # epsilon rationale as used_bps above, and keeps JS Math.floor parity).
-        est_calls_remaining = (
-            int(remaining / expected_cost + 1e-9) if expected_cost > 0.0 else None
-        )
+        est_calls_remaining = int(remaining / expected_cost + 1e-9) if expected_cost > 0.0 else None
         return BudgetAdvisory(
             near_limit=used_bps >= self.near_limit_bps,
             used_bps=used_bps,
@@ -597,12 +673,49 @@ class BudgetGuard:
             # can still claim.
             remaining_usd=remaining,
             limit_usd=self.limit_usd,
-            spent_usd=self.spent_usd,
+            spent_usd=spent_usd,
             expected_cost=expected_cost,
             est_calls_remaining=est_calls_remaining,
         )
 
     # ── internals ──────────────────────────────────────────────────────────────
+
+    def _current_window_id_locked(self) -> str:
+        """Return today's store key and reset process-local per-window views."""
+        window_id = _utc_day_window_id()
+        if window_id != self._active_window_id:
+            self._active_window_id = window_id
+            self._last_llm_cost = 0.0
+            self._last_tool_cost = 0.0
+            self._spend_log.clear()
+            self._tool_costs.clear()
+        return window_id
+
+    def _refresh_persistent_state_locked(self) -> None:
+        """Refresh the local cache from the configured authoritative store."""
+        if self._store is None:
+            return
+        self.spent_usd, self._reserved = self._store.load(
+            self._current_window_id_locked(), self.limit_usd
+        )
+
+    def _reservation_window_id_locked(self, reserved: float) -> str:
+        """Use a persistent handle's issuing window for its terminal operation."""
+        if isinstance(reserved, _PersistentReservation):
+            return reserved._window_id
+        return self._current_window_id_locked()
+
+    def _prepare_persistent_terminal_locked(self, window_id: str) -> bool:
+        """Refresh an active window that differs from a reservation's window."""
+        current_window_id = self._current_window_id_locked()
+        if window_id == current_window_id:
+            return True
+        # Load before consuming the old hold: once that terminal mutation commits,
+        # no follow-up store error should make successful cleanup look unsuccessful.
+        if self._store is None:  # pragma: no cover - persistent callers only
+            raise RuntimeError("persistent terminal operation requires a configured store")
+        self.spent_usd, self._reserved = self._store.load(current_window_id, self.limit_usd)
+        return False
 
     def _default_estimate_locked(self) -> float:
         """The default next-call prediction when the caller supplies no
@@ -675,6 +788,7 @@ class BudgetGuard:
 
     def _would_cross(self, estimated_next_cost: float | None) -> bool:
         with self._lock:
+            self._refresh_persistent_state_locked()
             estimate = (
                 self._default_estimate_locked()
                 if estimated_next_cost is None
@@ -702,3 +816,8 @@ def _default_on_block(spent_usd: float, limit_usd: float) -> None:
         "before it ran.",
         file=sys.stderr,
     )
+
+
+def _utc_day_window_id() -> str:
+    """Return the current UTC calendar date used as a persistent window key."""
+    return datetime.now(timezone.utc).date().isoformat()
