@@ -60,7 +60,7 @@ def main() -> None:
     except BudgetExceeded:
         print(
             f"\nStopped at item {item}. "
-            f"Final spend ${guard.spent_usd:.4f} (held under ${guard.limit_usd:.2f})."
+            f"Final spend ${guard.spent_usd:.4f} against the ${guard.limit_usd:.2f} ceiling."
         )
 
 
