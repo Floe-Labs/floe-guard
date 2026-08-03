@@ -113,6 +113,12 @@
     "litellm_provider": "anthropic",
     "mode": "chat"
   },
+  "claude-opus-5": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000025,
+    "litellm_provider": "anthropic",
+    "mode": "chat"
+  },
   "claude-sonnet-4-20250514": {
     "input_cost_per_token": 0.000003,
     "output_cost_per_token": 0.000015,
@@ -786,8 +792,8 @@
     "mode": "chat"
   },
   "gpt-5.6-luna": {
-    "input_cost_per_token": 0.000001,
-    "output_cost_per_token": 0.000006,
+    "input_cost_per_token": 2e-7,
+    "output_cost_per_token": 0.0000012,
     "litellm_provider": "openai",
     "mode": "chat"
   },
@@ -798,8 +804,8 @@
     "mode": "chat"
   },
   "gpt-5.6-terra": {
-    "input_cost_per_token": 0.0000025,
-    "output_cost_per_token": 0.000015,
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.000012,
     "litellm_provider": "openai",
     "mode": "chat"
   },
