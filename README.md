@@ -174,6 +174,17 @@ ignore it; `check()` is what enforces the ceiling. See
 [`examples/budget_aware.py`](examples/budget_aware.py) for a runnable taper demo
 (no API key).
 
+Model choice is only one adaptation axis — `advisory()` drives whatever lever
+dominates your agent's spend. Runnable stub demos (no API key) for the other
+common ones:
+
+- [`examples/budget_aware_retrieval.py`](examples/budget_aware_retrieval.py) —
+  RAG retrieval depth: `top_k` shrinks 20 → 5 past `near_limit`
+- [`examples/budget_aware_context.py`](examples/budget_aware_context.py) —
+  context size: history window and `max_tokens` shrink near the cap
+- [`examples/budget_aware_planning.py`](examples/budget_aware_planning.py) —
+  plan complexity: optional sub-tasks (critique, polish) drop off near the cap
+
 ### Budget-aware retry
 
 Blind retries can spend the same expensive path again right when the agent is
