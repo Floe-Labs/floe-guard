@@ -721,48 +721,19 @@ This is a choice, not an oversight. A guardrail's whole value is trust: a
 library that silently exfiltrates usage from people's agents is the opposite of
 a tool you hand a budget to.
 
-## Upgrade to hosted Floe
+## When you outgrow local guardrails
 
-When you need the ceiling to be **un-bypassable** and **cross-vendor**, hosted
-Floe moves enforcement server-side against a real credit line:
+`floe-guard` stops overspend **per process, locally** — no account, no network.
+When the ceiling needs to hold across your whole fleet, hosted Floe moves
+enforcement server-side.
 
-- **Un-bypassable** — enforced at the spend rail, not in your process.
-- **Cross-vendor** — one budget over LLM tokens *and* paid (x402) tool calls.
-- **Team budgets + analytics** — shared ceilings, per-agent isolation, spend history.
+| | floe-guard (this repo) | Hosted Floe |
+|---|---|---|
+| Runs | Locally, in your process | Server-side |
+| Scope | One process | Every vendor and agent |
+| Control | Hard stop at your cap | Kill switch + one unified ledger |
 
-Set `FLOE_API_KEY` (your agent key, `floe_<hex>`) and floe-guard can read your
-agent's **server-side remaining budget** from the live Floe endpoint:
-
-```python
-from floe_guard import hosted_enforcement_available, hosted_remaining_usd
-
-if hosted_enforcement_available():       # True when FLOE_API_KEY is set
-    remaining = hosted_remaining_usd()   # USD left, read from Floe's server
-```
-
-`hosted_remaining_usd()` GETs `/v1/agents/credit-remaining` and returns the USD
-remaining — the minimum of your auto-borrow headroom and your session spend
-remaining. It raises `HostedEnforcementError` on a bad/missing key (401), a
-closed or suspended agent (403), an unprovisioned agent (404), or a network
-failure.
-
-Env vars:
-
-- `FLOE_API_KEY` — your agent key. Required for the read.
-- `FLOE_API_BASE_URL` — override the API host (defaults to
-  `https://credit-api.floelabs.xyz`).
-
-Honest scope: this call only **reads** the remaining budget. The un-bypassable,
-cross-vendor *enforcement* is the hosted Floe product running server-side — not
-this client. Use the number to inform a local ceiling; the server stays the
-source of truth.
-
-→ **[dev-dashboard.floelabs.xyz](https://dev-dashboard.floelabs.xyz/?utm_source=floe-guard&utm_medium=readme&utm_campaign=oss)** ·
-**[floelabs.xyz](https://floelabs.xyz/?utm_source=floe-guard&utm_medium=readme&utm_campaign=oss)**
-
-Want runnable end-to-end agents on hosted Floe (Vapi voice agents, metered LLM
-calls, CrewAI, MCP)? See the
-**[Floe Cookbook](https://github.com/Floe-Labs/floe-cookbook)**.
+→ [dev-dashboard.floelabs.xyz](https://dev-dashboard.floelabs.xyz/)
 
 ## Built with floe-guard
 
