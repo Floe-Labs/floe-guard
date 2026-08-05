@@ -34,7 +34,7 @@ import threading
 import time
 import warnings
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -584,9 +584,7 @@ class BudgetGuard:
         expected_cost = max(self._last_llm_cost, self._last_tool_cost)
         # +1e-9 absorbs float noise so e.g. 0.6/0.2 floors to 3 not 2 (same
         # epsilon rationale as used_bps above, and keeps JS Math.floor parity).
-        est_calls_remaining = (
-            int(remaining / expected_cost + 1e-9) if expected_cost > 0.0 else None
-        )
+        est_calls_remaining = int(remaining / expected_cost + 1e-9) if expected_cost > 0.0 else None
         return BudgetAdvisory(
             near_limit=used_bps >= self.near_limit_bps,
             used_bps=used_bps,
@@ -690,8 +688,37 @@ class BudgetGuard:
     def _resolve(self, model: str, price: ManualPrice | None):
         overrides = self.price_overrides
         if price is not None:
+            _require_manual_price(price, "price")
             overrides = {**(overrides or {}), model: price}
+        for key, override in (overrides or {}).items():
+            _require_manual_price(override, f"price_overrides[{key!r}]")
         return resolve_price(model, overrides)
+
+
+def _require_manual_price(value: object, where: str) -> None:
+    """Fail at the call site, not three frames into pricing.
+
+    A cost_map.json entry is a plain dict with the right key names, so passing
+    one straight through is the obvious move and used to surface as
+    ``AttributeError: 'dict' object has no attribute 'input_cost_per_token'``
+    from inside resolve_price.
+    """
+    if isinstance(value, ManualPrice):
+        return
+    hint = ""
+    if isinstance(value, Mapping):
+        try:
+            hint = (
+                f" Build one from it: ManualPrice("
+                f"input_cost_per_token={value['input_cost_per_token']!r}, "
+                f"output_cost_per_token={value['output_cost_per_token']!r})"
+            )
+        except KeyError:
+            hint = (
+                " A mapping needs both 'input_cost_per_token' and "
+                "'output_cost_per_token' to become a ManualPrice."
+            )
+    raise TypeError(f"{where} must be a ManualPrice, got {type(value).__name__}.{hint}")
 
 
 def _default_on_block(spent_usd: float, limit_usd: float) -> None:
