@@ -27,3 +27,23 @@ def test_version_matches_installed_package_metadata():
 def test_version_is_a_non_empty_string():
     assert isinstance(floe_guard.__version__, str)
     assert floe_guard.__version__
+
+
+def test_source_tree_fallback_when_metadata_is_missing(monkeypatch):
+    """A bare checkout with no install must still import.
+
+    Pinned explicitly because the non-empty-string test above would accept any
+    replacement for the sentinel.
+    """
+    import importlib
+
+    def raise_not_found(_name):
+        raise PackageNotFoundError(_name)
+
+    monkeypatch.setattr("importlib.metadata.version", raise_not_found)
+    try:
+        reloaded = importlib.reload(floe_guard)
+        assert reloaded.__version__ == "0.0.0.dev0"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(floe_guard)  # leave the real version in place
