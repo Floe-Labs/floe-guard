@@ -180,6 +180,8 @@ class BudgetGuard:
         ):
             raise ValueError(f"near_limit_bps must be an int in 0..10000, got {near_limit_bps!r}")
         self.limit_usd = float(limit_usd)
+        for _key, _override in (price_overrides or {}).items():
+            _require_manual_price(_override, f"price_overrides[{_key!r}]")
         self.price_overrides = price_overrides
         self.fail_closed = fail_closed
         self._on_block = on_block or _default_on_block
@@ -690,8 +692,6 @@ class BudgetGuard:
         if price is not None:
             _require_manual_price(price, "price")
             overrides = {**(overrides or {}), model: price}
-        for key, override in (overrides or {}).items():
-            _require_manual_price(override, f"price_overrides[{key!r}]")
         return resolve_price(model, overrides)
 
 
