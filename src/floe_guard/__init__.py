@@ -14,6 +14,9 @@ cross-vendor upgrade path (see the README).
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
+
 from .errors import (
     BudgetExceeded,
     DeadlineExceeded,
@@ -29,7 +32,13 @@ from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
 from .retry import RetryPlan, async_with_budget_retry, with_budget_retry
 from .stream import StreamGuard, guard_stream
 
-__version__ = "0.10.0"  # keep in lockstep with pyproject.toml
+# Single-sourced from the installed package metadata, which pyproject.toml
+# already fills in. The hand-maintained literal that used to live here drifted:
+# the published 0.11.0 wheel ships __version__ == "0.10.0".
+try:
+    __version__ = _package_version("floe-guard")
+except PackageNotFoundError:  # source tree with no install
+    __version__ = "0.0.0.dev0"
 
 __all__ = [
     "BudgetGuard",
