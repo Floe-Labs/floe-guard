@@ -18,9 +18,19 @@ Run:  python examples/plan_complexity.py
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 from floe_guard import BudgetAdvisory, BudgetExceeded, BudgetGuard
 
 MODEL = "gpt-4o"  # fixed for the whole run: only the plan adapts
+
+
+class SubtaskResponse(TypedDict):
+    """The shape a real sub-task provider call reports back."""
+
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
 
 # (sub-task, required, reasoning steps at full complexity)
 PLAN = (
@@ -55,7 +65,7 @@ def reasoning_steps_for(steps: int, full_reasoning: bool) -> int:
     return steps if full_reasoning else max(1, steps - 1)
 
 
-def stub_subtask_call(reasoning_steps: int) -> dict[str, object]:
+def stub_subtask_call(reasoning_steps: int) -> SubtaskResponse:
     """A fake sub-task call — no network, no key."""
     return {
         "model": MODEL,
@@ -77,7 +87,9 @@ def main() -> None:
     )
 
     round_no = 0
-    completed_required = 0
+    # Counts required sub-task *executions* across all rounds (the plan is worked
+    # every round), so this can exceed the number of distinct required items.
+    required_calls = 0
     stopped = False
     while not stopped:
         round_no += 1
@@ -108,18 +120,19 @@ def main() -> None:
 
             response = stub_subtask_call(reasoning_steps)
             cost = guard.record(
-                str(response["model"]),
-                int(response["prompt_tokens"]),  # type: ignore[arg-type]
-                int(response["completion_tokens"]),  # type: ignore[arg-type]
+                response["model"],
+                response["prompt_tokens"],
+                response["completion_tokens"],
             )
             if is_required:
-                completed_required += 1
+                required_calls += 1
             plural = "s" if reasoning_steps > 1 else ""
             steps_label = f"{reasoning_steps} reasoning step{plural}"
             print(f"    {name:<19} {steps_label:<18} +${cost:.4f}  (total ${guard.spent_usd:.4f})")
 
     print(
-        f"\nStopped in round {round_no} after {completed_required} required sub-tasks. "
+        f"\nStopped in round {round_no} after {required_calls} required sub-task calls "
+        f"(across all rounds; {required} distinct required items in the plan). "
         f"Final spend ${guard.spent_usd:.4f} (held under ${guard.limit_usd:.2f})."
     )
 

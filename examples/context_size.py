@@ -18,9 +18,19 @@ Run:  python examples/context_size.py
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 from floe_guard import BudgetAdvisory, BudgetExceeded, BudgetGuard
 
 MODEL = "gpt-4o"  # fixed for the whole run: only the context size adapts
+
+
+class ChatResponse(TypedDict):
+    """The shape a real chat-completion provider reports back."""
+
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
 
 SYSTEM_PROMPT_TOKENS = 400
 TOKENS_PER_TURN = 400
@@ -45,7 +55,7 @@ def prompt_tokens_for(turns_sent: int) -> int:
     return SYSTEM_PROMPT_TOKENS + turns_sent * TOKENS_PER_TURN
 
 
-def stub_chat_call(turns_sent: int, max_tokens: int) -> dict[str, object]:
+def stub_chat_call(turns_sent: int, max_tokens: int) -> ChatResponse:
     """A fake chat completion — no network, no key."""
     return {
         "model": MODEL,
@@ -94,9 +104,9 @@ def main() -> None:
 
         response = stub_chat_call(turns_sent, max_tokens)
         cost = guard.record(
-            str(response["model"]),
-            int(response["prompt_tokens"]),  # type: ignore[arg-type]
-            int(response["completion_tokens"]),  # type: ignore[arg-type]
+            response["model"],
+            response["prompt_tokens"],
+            response["completion_tokens"],
         )
         print(
             f"  turn {turn:>2}: {turns_sent:>2} of {len(history):>2} turns sent · "

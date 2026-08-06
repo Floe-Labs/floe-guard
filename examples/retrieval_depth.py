@@ -18,9 +18,19 @@ Run:  python examples/retrieval_depth.py
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 from floe_guard import BudgetAdvisory, BudgetExceeded, BudgetGuard
 
 MODEL = "gpt-4o"  # fixed for the whole run: only the retrieval depth adapts
+
+
+class RagResponse(TypedDict):
+    """The shape a real retrieve-then-generate provider reports back."""
+
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
 
 TOP_K_FULL = 20  # ~$0.0130 / step
 TOP_K_TAPER = 12  # ~$0.0098 / step
@@ -37,7 +47,7 @@ def prompt_tokens_for(top_k: int) -> int:
     return BASE_PROMPT_TOKENS + top_k * TOKENS_PER_CHUNK
 
 
-def stub_rag_call(top_k: int) -> dict[str, object]:
+def stub_rag_call(top_k: int) -> RagResponse:
     """A fake retrieve-then-generate call — no network, no key."""
     return {
         "model": MODEL,
@@ -92,9 +102,9 @@ def main() -> None:
 
         response = stub_rag_call(top_k)
         cost = guard.record(
-            str(response["model"]),
-            int(response["prompt_tokens"]),  # type: ignore[arg-type]
-            int(response["completion_tokens"]),  # type: ignore[arg-type]
+            response["model"],
+            response["prompt_tokens"],
+            response["completion_tokens"],
         )
         print(
             f"  step {step:>2}: {MODEL:<8} {top_k:>2} chunks  "
