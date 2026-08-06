@@ -51,5 +51,10 @@
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",
     "vitest": "^4.1.9"
+  },
+  "overrides": {
+    "postcss": ">=8.5.18",
+    "esbuild": ">=0.28.1",
+    "jsondiffpatch": ">=0.7.2"
   }
 }
