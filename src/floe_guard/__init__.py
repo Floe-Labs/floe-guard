@@ -23,7 +23,13 @@ from .errors import (
     UnpriceableModelError,
     UnpriceableModelWarning,
 )
-from .guard import BudgetAdvisory, BudgetGuard, BudgetReservation, SpendEvent
+from .guard import (
+    BudgetAdvisory,
+    BudgetGuard,
+    BudgetReservation,
+    ReservationHandle,
+    SpendEvent,
+)
 from .hosted import hosted_enforcement_available, hosted_remaining_usd
 from .latency import LatencyAdvisory, LatencyBudget
 from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
@@ -36,6 +42,7 @@ __all__ = [
     "BudgetGuard",
     "BudgetAdvisory",
     "BudgetReservation",
+    "ReservationHandle",
     "SpendEvent",
     "LatencyBudget",
     "LatencyAdvisory",

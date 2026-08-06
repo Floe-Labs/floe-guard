@@ -27,9 +27,12 @@ export class BudgetExceeded extends FloeGuardError {
   readonly spentUsd: number;
   readonly limitUsd: number;
 
-  constructor(spentUsd: number, limitUsd: number) {
+  constructor(spentUsd: number, limitUsd: number, message?: string) {
+    // Subclasses (the token twin) pass their own message through so they don't
+    // have to reassign `this.message` after super().
     super(
-      `BUDGET EXCEEDED — call blocked (spent $${spentUsd.toFixed(6)} of $${limitUsd.toFixed(6)} ceiling)`,
+      message ??
+        `BUDGET EXCEEDED — call blocked (spent $${spentUsd.toFixed(6)} of $${limitUsd.toFixed(6)} ceiling)`,
     );
     this.name = "BudgetExceeded";
     this.spentUsd = spentUsd;
@@ -55,13 +58,15 @@ export class TokenBudgetExceeded extends BudgetExceeded {
   readonly scope: "aggregate" | "step";
 
   constructor(spentTokens: number, limitTokens: number, scope: "aggregate" | "step") {
-    // BudgetExceeded's message is dollar-shaped; pass 0/0 for the inherited
-    // spentUsd/limitUsd (a token block spent no tracked USD), then overwrite
-    // the message with the token-shaped one.
-    super(0, 0);
-    this.message =
+    // Pass the token-shaped message through super (BudgetExceeded's default is
+    // dollar-shaped); 0/0 for the inherited spentUsd/limitUsd — a token block
+    // spent no tracked USD.
+    super(
+      0,
+      0,
       `TOKEN BUDGET EXCEEDED — call blocked (${scope}: ${spentTokens} of ` +
-      `${limitTokens} token ceiling)`;
+        `${limitTokens} token ceiling)`,
+    );
     this.name = "TokenBudgetExceeded";
     this.spentTokens = spentTokens;
     this.limitTokens = limitTokens;

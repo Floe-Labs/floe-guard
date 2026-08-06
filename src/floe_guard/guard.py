@@ -73,7 +73,11 @@ class BudgetReservation:
 ReservationHandle = float | BudgetReservation
 
 
-@dataclass
+# eq=False: identity, not value, equality. The step stack is popped by identity
+# (``is`` / ``list.remove`` on the exact object), so two nested steps with the
+# same caps and no spend yet must not compare equal or ``remove`` could drop the
+# wrong one. Matches the JS twin, which splices by ``lastIndexOf`` (reference).
+@dataclass(eq=False)
 class _StepState:
     """One scope on the step stack (see :meth:`BudgetGuard.step`). Mutable: the
     guard accrues into ``spent_*`` / ``reserved_*`` as calls settle within the
@@ -192,7 +196,10 @@ class BudgetGuard:
             (you have explicitly opted into un-enforced spend for that model).
         on_block: optional callback invoked with ``(spent_usd, limit_usd)`` right
             before :class:`BudgetExceeded` is raised. Defaults to printing the
-            ``BUDGET EXCEEDED — call blocked`` banner to stderr.
+            ``BUDGET EXCEEDED — call blocked`` banner to stderr. Fires on **USD**
+            ceiling crossings only; a token-ceiling block
+            (:class:`TokenBudgetExceeded`, aggregate or step) is raised without
+            invoking it, because the callback is dollar-shaped (spent/limit USD).
         near_limit_bps: utilization (basis points, 0..10000) at which
             :meth:`advisory` flags ``near_limit`` so an agent can taper before the
             hard-stop. Defaults to ``8000`` (80%).
@@ -200,6 +207,11 @@ class BudgetGuard:
             (:attr:`spend_log`). When set, the ledger is a ring buffer keeping the
             most recent N events so a long-running agent's memory stays bounded;
             the running totals are unaffected. ``None`` (default) keeps every event.
+        token_limit: optional aggregate token ceiling (prompt + completion + cache
+            buckets) enforced alongside ``limit_usd``. ``check`` / ``reserve`` take
+            ``estimated_tokens`` to pre-emptively block; a cross raises
+            :class:`TokenBudgetExceeded` (``scope="aggregate"``). ``None`` (default)
+            disables the token dimension entirely.
 
     Thread-safe: the running total and in-flight reservations are guarded by a
     lock, so the guard can back a parallel crew (use :meth:`reserve` /
@@ -918,11 +930,16 @@ class BudgetGuard:
 
     def _blocking_cross_locked(
         self, estimate_usd: float, estimate_tokens: int
-    ) -> tuple[str, str] | None:
+    ) -> tuple[str, str, int, int] | None:
         """The ONE choke point, now across two dimensions and two scopes. Caller
         must hold ``self._lock``. Returns the first ceiling that blocks as
-        ``(dimension, scope)`` — dimension ``"usd" | "tokens"``, scope
-        ``"aggregate" | "step"`` — or ``None`` if the call fits everywhere.
+        ``(dimension, scope, spent_tokens, limit_tokens)`` — dimension
+        ``"usd" | "tokens"``, scope ``"aggregate" | "step"`` — or ``None`` if the
+        call fits everywhere. The two token counts are captured HERE, under the
+        lock, so :meth:`_raise_block` (which runs after the lock is released) can
+        build the token error without re-reading ``self._steps`` — a concurrent
+        step() exit must not turn a token block into an ``IndexError``. They are
+        ``0, 0`` for a USD block (its message reads ``spent_usd`` / ``limit_usd``).
 
         Order (aggregate before step) is deliberate: the guard-wide ceiling is
         the hard money/token limit, so it's reported first when both would block.
@@ -932,12 +949,12 @@ class BudgetGuard:
         # Aggregate USD — same comparison the original _would_cross used.
         committed = self.spent_usd + self._reserved
         if committed > self.limit_usd - _EPS or committed + estimate_usd > self.limit_usd + _EPS:
-            return ("usd", "aggregate")
+            return ("usd", "aggregate", 0, 0)
         # Aggregate tokens (integers — no epsilon needed).
         if self.token_limit is not None:
             committed_t = self.spent_tokens + self._reserved_tokens
             if committed_t >= self.token_limit or committed_t + estimate_tokens > self.token_limit:
-                return ("tokens", "aggregate")
+                return ("tokens", "aggregate", committed_t, self.token_limit)
         # Innermost active step's caps (an outer step can only be crossed by
         # first crossing the inner one, so checking the innermost is sufficient).
         step = self._steps[-1] if self._steps else None
@@ -948,14 +965,14 @@ class BudgetGuard:
                     s_committed > step.max_usd - _EPS
                     or s_committed + estimate_usd > step.max_usd + _EPS
                 ):
-                    return ("usd", "step")
+                    return ("usd", "step", 0, 0)
             if step.max_tokens is not None:
                 s_committed_t = step.spent_tokens + step.reserved_tokens
                 if (
                     s_committed_t >= step.max_tokens
                     or s_committed_t + estimate_tokens > step.max_tokens
                 ):
-                    return ("tokens", "step")
+                    return ("tokens", "step", s_committed_t, step.max_tokens)
         return None
 
     def _block(self) -> NoReturn:
@@ -965,21 +982,17 @@ class BudgetGuard:
         self._on_block(self.spent_usd, self.limit_usd)
         raise BudgetExceeded(self.spent_usd, self.limit_usd)
 
-    def _raise_block(self, blocked: tuple[str, str]) -> NoReturn:
+    def _raise_block(self, blocked: tuple[str, str, int, int]) -> NoReturn:
         """Notify + raise the right error for a (dimension, scope) block. Called
-        OUTSIDE the lock (like the original _block)."""
-        dimension, scope = blocked
+        OUTSIDE the lock (like the original _block). The token counts were
+        snapshotted under the lock by :meth:`_blocking_cross_locked`, so this path
+        reads no shared step state and cannot race a concurrent step() exit."""
+        dimension, scope, spent_t, limit_t = blocked
         if dimension == "usd":
             self._on_block(self.spent_usd, self.limit_usd)
             raise BudgetExceeded(self.spent_usd, self.limit_usd)
-        # Token block — report against the crossed ceiling (aggregate or step).
-        if scope == "step":
-            step = self._steps[-1]
-            spent_t = step.spent_tokens + step.reserved_tokens
-            limit_t = step.max_tokens if step.max_tokens is not None else 0
-        else:
-            spent_t = self.spent_tokens + self._reserved_tokens
-            limit_t = self.token_limit if self.token_limit is not None else 0
+        # Token block — the crossed ceiling's counts (aggregate or step) came in
+        # with `blocked`; on_block is dollar-shaped so a token block skips it.
         raise TokenBudgetExceeded(spent_t, limit_t, scope)
 
     def _resolve(self, model: str, price: ManualPrice | None):

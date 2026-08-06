@@ -25,13 +25,12 @@ See ``examples/streaming_guard.py`` for a runnable demo (no API key).
 
 from __future__ import annotations
 
-import math
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
 from .errors import UnpriceableModelError, UnpriceableModelWarning
-from .guard import BudgetGuard
+from .guard import BudgetGuard, ReservationHandle
 from .pricing import ManualPrice, price_tokens
 
 
@@ -71,19 +70,24 @@ class StreamGuard:
         model: str,
         *,
         prompt_tokens: int = 0,
-        reserved: float = 0.0,
+        reserved: ReservationHandle = 0.0,
         price: ManualPrice | None = None,
         label: str | None = None,
         count_tokens: Callable[[str], int] | None = None,
     ) -> None:
         # Same contract as settle(): a bad handle would corrupt the guard's
-        # in-flight tally. Reject it before the stream starts, not at settle time.
-        if not math.isfinite(reserved) or reserved < 0:
-            raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
+        # in-flight tally. Validate it before the stream starts, not at settle
+        # time. Accepts a plain float (USD-only) OR a BudgetReservation from a
+        # token/step-aware reserve() — a token-aware handle used to crash here.
+        reserved_usd = guard._reserved_usd_of(reserved)
         self._guard = guard
         self._model = model
         self._prompt_tokens = max(0, int(prompt_tokens))
-        self._reserved = float(reserved)
+        # Keep the ORIGINAL handle so settle()/release() drain the token hold too;
+        # keep the USD amount for the stream-cost registry (mid-stream enforcement
+        # is USD-only — a stream's token hold is reconciled at settle()).
+        self._reserved = reserved
+        self._reserved_usd = reserved_usd
         self._price = price
         self._label = label
         self._count = count_tokens or approx_tokens
@@ -109,8 +113,9 @@ class StreamGuard:
             raise UnpriceableModelError(model)
         # Registered AFTER the fail-closed raise so a refused stream leaves no
         # entry; _settle() unregisters, so entries live exactly as long as the
-        # stream. Parallel streams see each other's accrual through this.
-        self._key = guard._stream_register(self._reserved)
+        # stream. Parallel streams see each other's accrual through this. The
+        # registry tracks USD only, so pass the USD amount of the handle.
+        self._key = guard._stream_register(self._reserved_usd)
 
     def feed_text(self, delta: str) -> None:
         """Meter one text delta (token count via the heuristic/``count_tokens``).
@@ -195,7 +200,7 @@ def guard_stream(
     *,
     get_text: Callable[[Any], str] | None = None,
     prompt_tokens: int = 0,
-    reserved: float = 0.0,
+    reserved: ReservationHandle = 0.0,
     price: ManualPrice | None = None,
     label: str | None = None,
     count_tokens: Callable[[str], int] | None = None,

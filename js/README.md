@@ -81,9 +81,9 @@ guard.toolCosts; // { "apollo.people_lookup": 0.42, "exa.search": 0.11 }
 
 ## Token ceilings and per-step budgets
 
-Cap *how much the agent generates* (a token ceiling) and keep one step of a
-sequential loop from starving the rest (a per-step cap) — a second dimension on
-the same reserve/settle machinery, not a second guard:
+Cap *total token usage — prompt and completion combined* (a token ceiling) and
+keep one step of a sequential loop from starving the rest (a per-step cap) — a
+second dimension on the same reserve/settle machinery, not a second guard:
 
 ```ts
 import { BudgetGuard, TokenBudgetExceeded } from "floe-guard";
@@ -101,15 +101,16 @@ guard.step({ maxTokens: 5_000 }, (g) => {
 
 const adv = guard.advisory();
 adv.tokenUsedBps; // aggregate token utilization (null if no tokenLimit)
-adv.remainingTokens; // tokens left before the ceiling
-adv.stepRemainingTokens; // headroom in the active step (null when no step)
+adv.remainingTokens; // tokens left before the ceiling (null if no tokenLimit)
+adv.stepRemainingTokens; // active step's headroom (null if no step, or its token cap is unset)
 ```
 
 `TokenBudgetExceeded` extends `BudgetExceeded`, so budget-aware retry treats a
-token block as terminal automatically. With no `tokenLimit` and no `step()` the
-guard is byte-for-byte the USD-only guard — `reserve()` still returns a plain
-`number`; a `BudgetReservation` handle appears only when tokens or a step are in
-play.
+token block as terminal automatically. With no `tokenLimit` and no `step()`, USD
+enforcement is unchanged and `reserve()` still returns a plain `number` — a
+`BudgetReservation` handle appears only when tokens are actually reserved or a
+step is active. (`advisory()` gains the token/step fields above; additive and
+`null` when their dimension is unused.)
 
 ## Per-call spend log
 

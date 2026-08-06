@@ -106,7 +106,9 @@ export interface BudgetGuardOptions {
   /**
    * Optional callback invoked with `(spentUsd, limitUsd)` right before
    * {@link BudgetExceeded} is thrown. Defaults to printing the
-   * `BUDGET EXCEEDED — call blocked` banner to stderr.
+   * `BUDGET EXCEEDED — call blocked` banner to stderr. Fires on **USD** ceiling
+   * crossings only; a token-ceiling block ({@link TokenBudgetExceeded}, aggregate
+   * or step) is thrown without invoking it, since the callback is dollar-shaped.
    */
   onBlock?: (spentUsd: number, limitUsd: number) => void;
   /**

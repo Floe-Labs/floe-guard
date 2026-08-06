@@ -32,12 +32,17 @@ class BudgetExceeded(FloeGuardError):
     loop stops here rather than burning more money.
     """
 
-    def __init__(self, spent_usd: float, limit_usd: float) -> None:
+    def __init__(self, spent_usd: float, limit_usd: float, message: str | None = None) -> None:
         self.spent_usd = spent_usd
         self.limit_usd = limit_usd
-        super().__init__(
-            f"BUDGET EXCEEDED — call blocked (spent ${spent_usd:.6f} of ${limit_usd:.6f} ceiling)"
-        )
+        # Subclasses (the token twin) pass their own message through so they don't
+        # have to bypass this constructor and re-set attrs by hand.
+        if message is None:
+            message = (
+                f"BUDGET EXCEEDED — call blocked "
+                f"(spent ${spent_usd:.6f} of ${limit_usd:.6f} ceiling)"
+            )
+        super().__init__(message)
 
 
 class TokenBudgetExceeded(BudgetExceeded):
@@ -54,17 +59,18 @@ class TokenBudgetExceeded(BudgetExceeded):
     """
 
     def __init__(self, spent_tokens: int, limit_tokens: int, scope: str) -> None:
-        # BudgetExceeded's message/attrs are dollar-shaped and don't apply; set
-        # our own attrs and message, and pass 0.0/0.0 so the inherited spent_usd
-        # / limit_usd stay well-defined (a token block spent no *tracked* USD it
-        # can attribute to this error).
-        FloeGuardError.__init__(
-            self,
-            f"TOKEN BUDGET EXCEEDED — call blocked ({scope}: {spent_tokens} of "
-            f"{limit_tokens} token ceiling)",
+        # Go through BudgetExceeded (not FloeGuardError directly) so any future
+        # parent field is inherited, not silently missed. Pass 0.0/0.0 for the
+        # inherited spent_usd/limit_usd (a token block spent no *tracked* USD) and
+        # the token-shaped message straight through.
+        super().__init__(
+            0.0,
+            0.0,
+            message=(
+                f"TOKEN BUDGET EXCEEDED — call blocked ({scope}: {spent_tokens} of "
+                f"{limit_tokens} token ceiling)"
+            ),
         )
-        self.spent_usd = 0.0
-        self.limit_usd = 0.0
         self.spent_tokens = spent_tokens
         self.limit_tokens = limit_tokens
         self.scope = scope

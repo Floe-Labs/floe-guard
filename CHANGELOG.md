@@ -31,10 +31,11 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
     now also flips on a near token ceiling or step cap.
   - `TokenBudgetExceeded` subclasses `BudgetExceeded`, so budget-aware retry
     treats a token block as terminal with no extra wiring.
-  - **Backward compatible:** with no `token_limit` and no `step()`, behaviour is
-    byte-for-byte unchanged — including `reserve()` still returning a plain
-    `float` / `number`. A `BudgetReservation` handle is returned only when a token
-    ceiling or an active step is involved.
+  - **Backward compatible:** USD enforcement is unchanged with no `token_limit`
+    and no `step()`, and `reserve()` still returns a plain `float` / `number`. A
+    `BudgetReservation` handle is returned only when tokens are actually reserved
+    or a step is active. `advisory()` additionally gains the token/step fields
+    above — additive, and `None` / `null` when their dimension is unused.
 - **`advisory()` exposes `expected_cost` + `est_calls_remaining`** (`expectedCost`
   / `estCallsRemaining` in TS, issue #49): the guard's own next-call estimate and
   how many more calls the remaining budget buys, so a planner can see call

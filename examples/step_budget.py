@@ -41,7 +41,9 @@ def main() -> None:
     except TokenBudgetExceeded as exc:
         print(f"step 2 (retrieve): hard-stopped at the step cap — {exc} (scope={exc.scope})")
 
-    # The global budget is untouched by the step block: the loop keeps going.
+    # The blocked call consumed no tokens, but Step 2's already-recorded 4,500
+    # tokens still count against the global ceiling — the step cap stopped the
+    # overshoot, not the run, so the loop keeps going.
     print(f"global tokens spent so far: {guard.spent_tokens} / {guard.token_limit}")
 
     # Step 3 — synthesis: fits comfortably.

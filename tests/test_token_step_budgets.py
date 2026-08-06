@@ -179,3 +179,37 @@ def test_token_block_is_terminal_like_budget_exceeded() -> None:
     assert issubclass(TokenBudgetExceeded, BudgetExceeded)
     err = TokenBudgetExceeded(600, 500, "step")
     assert isinstance(err, BudgetExceeded)
+
+
+# ── reservation handle lifecycle ────────────────────────────────────────────────
+
+
+def test_reservation_settled_after_owning_step_exits() -> None:
+    # A BudgetReservation may outlive the step() that created it. Settling it once
+    # the step has exited must drain the aggregate token hold (there's no active
+    # step to drain) and accrue the actual counts — not raise.
+    guard = BudgetGuard(limit_usd=100.0, token_limit=20_000)
+    with guard.step(max_tokens=5_000) as g:
+        handle = g.reserve(estimated_tokens=1_000)
+        assert isinstance(handle, BudgetReservation)
+    # Step popped; the aggregate hold is still outstanding until we settle it.
+    guard.settle(MODEL, 400, 300, reserved=handle)
+    assert guard._reserved_tokens == 0  # hold fully drained, no phantom left behind
+    assert guard.spent_tokens == 700
+
+
+def test_stream_guard_accepts_token_reservation() -> None:
+    # Regression: a token-aware BudgetReservation (from a token/step-aware
+    # reserve()) must be accepted by StreamGuard — it used to crash on a
+    # float-only isfinite() check before the stream even started.
+    from floe_guard import StreamGuard
+
+    guard = BudgetGuard(limit_usd=100.0, token_limit=20_000)
+    handle = guard.reserve(0.01, estimated_tokens=500)
+    assert isinstance(handle, BudgetReservation)
+    with StreamGuard(guard, MODEL, prompt_tokens=100, reserved=handle) as sg:
+        sg.feed_tokens(50)
+        sg.finish(completion_tokens=50)
+    # settle() drained the token hold and accrued prompt+completion (100 + 50).
+    assert guard._reserved_tokens == 0
+    assert guard.spent_tokens == 150

@@ -259,9 +259,10 @@ is no tool cost-map); every tool call lands in `spend_log` as a
 
 ## Token ceilings and per-step budgets
 
-Dollars aren't the only runaway. A token ceiling caps *how much the agent
-generates* regardless of price, and a **per-step** cap keeps one step of a
-sequential loop from starving the rest even when the global budget has room.
+Dollars aren't the only runaway. A token ceiling caps *total recorded token
+usage — prompt and completion combined* regardless of price, and a **per-step**
+cap keeps one step of a sequential loop from starving the rest even when the
+global budget has room.
 Both ride on the same reserve/settle machinery — they're a second dimension, not
 a second guard:
 
@@ -281,15 +282,17 @@ with guard.step(max_tokens=5_000) as g:  # g IS guard — adapters pass it throu
 
 adv = guard.advisory()
 adv.token_used_bps        # aggregate token utilization (None if no token_limit)
-adv.remaining_tokens      # tokens left before the ceiling
-adv.step_remaining_tokens # headroom in the active step (None when no step)
+adv.remaining_tokens      # tokens left before the ceiling (None if no token_limit)
+adv.step_remaining_tokens # active step's headroom (None if no step, or its token cap is unset)
 ```
 
 `TokenBudgetExceeded` subclasses `BudgetExceeded`, so budget-aware retry treats a
-token block as terminal automatically. With no `token_limit` and no `step()`,
-the guard is byte-for-byte the USD-only guard — `reserve()` still returns a plain
-`float`; a `BudgetReservation` handle appears only when tokens or a step are in
-play. In TS the step is a callback and fields are camelCase:
+token block as terminal automatically. With no `token_limit` and no `step()`, USD
+enforcement is unchanged and `reserve()` still returns a plain `float` — a
+`BudgetReservation` handle appears only when tokens are actually reserved or a
+step is active. (`advisory()` gains the token/step fields shown above; they're
+additive and `None` when their dimension is unused.) In TS the step is a callback
+and fields are camelCase:
 
 ```ts
 const guard = new BudgetGuard(100, { tokenLimit: 20_000 });

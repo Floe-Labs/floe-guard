@@ -102,6 +102,18 @@ describe("per-step caps", () => {
     });
   });
 
+  it("settles a BudgetReservation after its owning step has exited", () => {
+    // A token-aware handle may outlive the step() that made it; settling it once
+    // the step is gone must drain the aggregate hold and accrue, not throw.
+    const guard = new BudgetGuard(100, { tokenLimit: 20_000 });
+    let handle!: BudgetReservation;
+    guard.step({ maxTokens: 5_000 }, (g) => {
+      handle = g.reserve(undefined, { estimatedTokens: 1_000 }) as BudgetReservation;
+    });
+    expect(() => guard.settle(MODEL, 400, 300, { reserved: handle })).not.toThrow();
+    expect(guard.spentTokens).toBe(700);
+  });
+
   it("nested steps: innermost blocks first", () => {
     const guard = new BudgetGuard(100, silent);
     guard.step({ maxTokens: 10_000 }, (outer) => {
