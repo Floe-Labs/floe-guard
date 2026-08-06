@@ -260,9 +260,9 @@ is no tool cost-map); every tool call lands in `spend_log` as a
 ## Token ceilings and per-step budgets
 
 Dollars aren't the only runaway. A token ceiling caps *total recorded token
-usage — prompt and completion combined* regardless of price, and a **per-step**
-cap keeps one step of a sequential loop from starving the rest even when the
-global budget has room.
+usage — every bucket the guard counts: prompt, completion, and cache* regardless
+of price, and a **per-step** cap keeps one step of a sequential loop from
+starving the rest even when the global budget has room.
 Both ride on the same reserve/settle machinery — they're a second dimension, not
 a second guard:
 

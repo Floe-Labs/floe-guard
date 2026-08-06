@@ -213,3 +213,17 @@ def test_stream_guard_accepts_token_reservation() -> None:
     # settle() drained the token hold and accrued prompt+completion (100 + 50).
     assert guard._reserved_tokens == 0
     assert guard.spent_tokens == 150
+
+
+def test_budget_reservation_rejects_bad_fields() -> None:
+    # Public, re-exported value object: a hand-rolled reservation with a NaN usd
+    # or negative/bool tokens must be refused at construction, not silently
+    # corrupt _reserved / _reserved_tokens when passed to settle()/release().
+    with pytest.raises(ValueError):
+        BudgetReservation(usd=float("nan"), tokens=0)
+    with pytest.raises(ValueError):
+        BudgetReservation(usd=-1.0, tokens=0)
+    with pytest.raises(ValueError):
+        BudgetReservation(usd=0.0, tokens=-5)
+    with pytest.raises(ValueError):
+        BudgetReservation(usd=0.0, tokens=True)  # bool is not a valid token count

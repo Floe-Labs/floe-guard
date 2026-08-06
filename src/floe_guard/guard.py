@@ -67,6 +67,19 @@ class BudgetReservation:
     usd: float
     tokens: int
 
+    def __post_init__(self) -> None:
+        # Public, re-exported value object: validate at construction so a
+        # hand-rolled BudgetReservation(usd=nan, tokens=-5) can't slip past the
+        # raw-float guard and corrupt _reserved / _reserved_tokens downstream
+        # (settle/release trust these fields). Same contracts as reserve()'s
+        # inputs and the JS twin's reservedUsdOf validation.
+        if not math.isfinite(self.usd) or self.usd < 0:
+            raise ValueError(f"BudgetReservation.usd must be finite and >= 0, got {self.usd!r}")
+        if isinstance(self.tokens, bool) or not isinstance(self.tokens, int) or self.tokens < 0:
+            raise ValueError(
+                f"BudgetReservation.tokens must be a non-negative int, got {self.tokens!r}"
+            )
+
 
 # A plain float when USD-only (backward compatible); a BudgetReservation when a
 # token ceiling or an active step is in play.
@@ -432,7 +445,7 @@ class BudgetGuard:
         """
         # A bad reserved handle would corrupt _reserved and break the ceiling for
         # OTHER in-flight calls (negative → phantom hold; inf → clears all holds).
-        # _reserved_usd_of validates a raw float; a BudgetReservation is trusted.
+        # _reserved_usd_of validates the handle (raw float, or a BudgetReservation's fields).
         reserved_usd = self._reserved_usd_of(reserved)
         priced = self._resolve(model, price)
         if priced is None:
@@ -588,7 +601,7 @@ class BudgetGuard:
             raise ValueError(f"cost_usd must be a finite, non-negative number, got {cost_usd!r}")
         # A bad reserved handle would corrupt _reserved and break the ceiling for
         # OTHER in-flight calls — same contract as settle(). _reserved_usd_of
-        # validates a raw float; a BudgetReservation is trusted.
+        # validates the handle (raw float, or a BudgetReservation's fields).
         reserved_usd = self._reserved_usd_of(reserved)
         # int (and bool) are valid inputs; coerce so the logged event and the
         # return value are always float, like every other cost in the guard.
@@ -872,10 +885,11 @@ class BudgetGuard:
 
     @staticmethod
     def _reserved_usd_of(reserved: ReservationHandle) -> float:
-        """The USD amount of a handle, validated. A ``BudgetReservation`` is a
-        trusted value object (its fields were validated at reserve time); a raw
-        float still gets the same finite/non-negative guard as before so a bad
-        hand-rolled handle can't corrupt the in-flight tally."""
+        """The USD amount of a handle, validated. A ``BudgetReservation`` self-
+        validates at construction (:meth:`BudgetReservation.__post_init__`), so its
+        ``usd`` is already finite/non-negative; a raw float gets the same
+        finite/non-negative guard here so a bad hand-rolled handle can't corrupt
+        the in-flight tally."""
         if isinstance(reserved, BudgetReservation):
             return reserved.usd
         if not math.isfinite(reserved) or reserved < 0:
@@ -930,26 +944,28 @@ class BudgetGuard:
 
     def _blocking_cross_locked(
         self, estimate_usd: float, estimate_tokens: int
-    ) -> tuple[str, str, int, int] | None:
+    ) -> tuple[str, str, float, float] | None:
         """The ONE choke point, now across two dimensions and two scopes. Caller
         must hold ``self._lock``. Returns the first ceiling that blocks as
-        ``(dimension, scope, spent_tokens, limit_tokens)`` — dimension
-        ``"usd" | "tokens"``, scope ``"aggregate" | "step"`` — or ``None`` if the
-        call fits everywhere. The two token counts are captured HERE, under the
-        lock, so :meth:`_raise_block` (which runs after the lock is released) can
-        build the token error without re-reading ``self._steps`` — a concurrent
-        step() exit must not turn a token block into an ``IndexError``. They are
-        ``0, 0`` for a USD block (its message reads ``spent_usd`` / ``limit_usd``).
+        ``(dimension, scope, spent, limit)`` — dimension ``"usd" | "tokens"``,
+        scope ``"aggregate" | "step"`` — or ``None`` if the call fits everywhere.
+        The ``spent`` / ``limit`` pair is the crossed ceiling's own figures (USD
+        for a USD block, token counts for a token block), captured HERE under the
+        lock so :meth:`_raise_block` (which runs after the lock is released) builds
+        the error and fires ``on_block`` with a snapshot — never re-reading shared
+        state, so a concurrent write or step() exit can't make the reported values
+        inconsistent or raise an ``IndexError``.
 
         Order (aggregate before step) is deliberate: the guard-wide ceiling is
         the hard money/token limit, so it's reported first when both would block.
         The token ceilings are only consulted when ``token_limit`` / the step's
         ``max_tokens`` is set — an unset dimension never blocks.
         """
-        # Aggregate USD — same comparison the original _would_cross used.
+        # Aggregate USD — same comparison the original _would_cross used. The
+        # message/callback report the accrued total (spent_usd), as _block did.
         committed = self.spent_usd + self._reserved
         if committed > self.limit_usd - _EPS or committed + estimate_usd > self.limit_usd + _EPS:
-            return ("usd", "aggregate", 0, 0)
+            return ("usd", "aggregate", self.spent_usd, self.limit_usd)
         # Aggregate tokens (integers — no epsilon needed).
         if self.token_limit is not None:
             committed_t = self.spent_tokens + self._reserved_tokens
@@ -965,7 +981,10 @@ class BudgetGuard:
                     s_committed > step.max_usd - _EPS
                     or s_committed + estimate_usd > step.max_usd + _EPS
                 ):
-                    return ("usd", "step", 0, 0)
+                    # USD message stays aggregate-shaped (matches the original
+                    # _raise_block, which reported spent_usd/limit_usd for a step
+                    # USD block too).
+                    return ("usd", "step", self.spent_usd, self.limit_usd)
             if step.max_tokens is not None:
                 s_committed_t = step.spent_tokens + step.reserved_tokens
                 if (
@@ -982,18 +1001,19 @@ class BudgetGuard:
         self._on_block(self.spent_usd, self.limit_usd)
         raise BudgetExceeded(self.spent_usd, self.limit_usd)
 
-    def _raise_block(self, blocked: tuple[str, str, int, int]) -> NoReturn:
+    def _raise_block(self, blocked: tuple[str, str, float, float]) -> NoReturn:
         """Notify + raise the right error for a (dimension, scope) block. Called
-        OUTSIDE the lock (like the original _block). The token counts were
+        OUTSIDE the lock (like the original _block). ``spent`` / ``limit`` were
         snapshotted under the lock by :meth:`_blocking_cross_locked`, so this path
-        reads no shared step state and cannot race a concurrent step() exit."""
-        dimension, scope, spent_t, limit_t = blocked
+        reads no shared state — the reported figures stay consistent with the
+        blocking decision and can't race a concurrent write or step() exit."""
+        dimension, scope, spent, limit = blocked
         if dimension == "usd":
-            self._on_block(self.spent_usd, self.limit_usd)
-            raise BudgetExceeded(self.spent_usd, self.limit_usd)
-        # Token block — the crossed ceiling's counts (aggregate or step) came in
-        # with `blocked`; on_block is dollar-shaped so a token block skips it.
-        raise TokenBudgetExceeded(spent_t, limit_t, scope)
+            self._on_block(spent, limit)
+            raise BudgetExceeded(spent, limit)
+        # Token block — counts came in with `blocked`; on_block is dollar-shaped
+        # so a token block skips it.
+        raise TokenBudgetExceeded(int(spent), int(limit), scope)
 
     def _resolve(self, model: str, price: ManualPrice | None):
         overrides = self.price_overrides

@@ -112,6 +112,29 @@ describe("per-step caps", () => {
     });
     expect(() => guard.settle(MODEL, 400, 300, { reserved: handle })).not.toThrow();
     expect(guard.spentTokens).toBe(700);
+    // The 1_000-token hold must be fully released: 700 spent + 19_300 estimated
+    // == 20_000 fits exactly; a leaked hold would push committed over the ceiling.
+    expect(() => guard.check(0, { estimatedTokens: 19_300 })).not.toThrow();
+  });
+
+  it("keeps the step active across awaits when fn is async", async () => {
+    // A promise-returning fn must not pop the step synchronously — enforcement
+    // has to hold across every await inside it.
+    const guard = new BudgetGuard(100, silent);
+    await guard.step({ maxTokens: 200 }, async (g) => {
+      await Promise.resolve();
+      // Still inside the step here: the per-step cap must still bite.
+      expect(() => g.check(undefined, { estimatedTokens: 500 })).toThrow(TokenBudgetExceeded);
+    });
+    // Popped once the promise settled: no step cap applies now.
+    expect(() => guard.check(undefined, { estimatedTokens: 1_000_000 })).not.toThrow();
+  });
+
+  it("rejects a hand-rolled reservation object with bad fields", () => {
+    const guard = new BudgetGuard(100, { tokenLimit: 20_000 });
+    // NaN usd / negative tokens must be refused, not silently corrupt the tally.
+    expect(() => guard.release({ usd: NaN, tokens: 0 } as BudgetReservation)).toThrow(RangeError);
+    expect(() => guard.release({ usd: 0, tokens: -1 } as BudgetReservation)).toThrow(RangeError);
   });
 
   it("nested steps: innermost blocks first", () => {

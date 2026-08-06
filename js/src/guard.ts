@@ -53,7 +53,12 @@ export interface BudgetReservation {
 export type ReservationHandle = number | BudgetReservation;
 
 function isReservation(h: ReservationHandle): h is BudgetReservation {
-  return typeof h === "object";
+  return (
+    typeof h === "object" &&
+    h !== null &&
+    typeof (h as BudgetReservation).usd === "number" &&
+    typeof (h as BudgetReservation).tokens === "number"
+  );
 }
 
 /** One scope on the step stack (see {@link BudgetGuard.step}). Mutable. */
@@ -348,7 +353,7 @@ export class BudgetGuard {
     const reserved = options.reserved ?? 0;
     // A bad reserved handle would corrupt this.reserved and break the ceiling for
     // OTHER in-flight calls (negative → phantom hold; Infinity → clears all holds).
-    // reservedUsdOf validates a raw number; a BudgetReservation is trusted.
+    // reservedUsdOf validates the handle (raw number, or a BudgetReservation's fields).
     const reservedUsd = this.reservedUsdOf(reserved);
     let overrides = this.priceOverrides;
     if (options.price !== undefined) {
@@ -492,7 +497,7 @@ export class BudgetGuard {
     const reserved = options.reserved ?? 0;
     // A bad reserved handle would corrupt the in-flight tally and break the
     // ceiling for OTHER calls — same contract as settle(). reservedUsdOf
-    // validates a raw number; a BudgetReservation is trusted.
+    // validates the handle (raw number, or a BudgetReservation's fields).
     const reservedUsd = this.reservedUsdOf(reserved);
     if (reserved) {
       this.consumeReservation(reserved);
@@ -539,7 +544,7 @@ export class BudgetGuard {
   release(reserved: ReservationHandle): void {
     // Validate before the zero-check so a NaN handle throws instead of being
     // silently dropped (a leak); a bad handle corrupts the in-flight tally.
-    // reservedUsdOf validates a raw number; a BudgetReservation is trusted.
+    // reservedUsdOf validates the handle (raw number, or a BudgetReservation's fields).
     this.reservedUsdOf(reserved);
     if (!reserved) return;
     this.consumeReservation(reserved);
@@ -647,12 +652,28 @@ export class BudgetGuard {
   }
 
   /**
-   * The USD amount of a handle, validated. A {@link BudgetReservation} is a
-   * trusted value object; a raw number still gets the finite/non-negative guard
-   * so a bad hand-rolled handle can't corrupt the in-flight tally.
+   * The USD amount of a handle, validated. Both shapes are checked — a raw
+   * number and a {@link BudgetReservation}'s `usd`/`tokens` fields — so a bad
+   * hand-rolled handle can't corrupt the in-flight tally.
    */
   private reservedUsdOf(reserved: ReservationHandle): number {
-    if (isReservation(reserved)) return reserved.usd;
+    if (isReservation(reserved)) {
+      // A BudgetReservation is public (re-exported), so validate its fields here
+      // — a hand-rolled { usd: NaN, tokens: -1 } must not slip past into
+      // consumeReservation and corrupt the in-flight tallies. Mirrors Python's
+      // BudgetReservation.__post_init__.
+      if (!Number.isFinite(reserved.usd) || reserved.usd < 0) {
+        throw new RangeError(
+          `reserved.usd must be a finite, non-negative number, got ${reserved.usd}`,
+        );
+      }
+      if (!Number.isInteger(reserved.tokens) || reserved.tokens < 0) {
+        throw new RangeError(
+          `reserved.tokens must be a non-negative integer, got ${reserved.tokens}`,
+        );
+      }
+      return reserved.usd;
+    }
     if (!Number.isFinite(reserved) || reserved < 0) {
       throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
     }
@@ -765,14 +786,27 @@ export class BudgetGuard {
       reservedTokens: 0,
     };
     this.steps.push(state);
-    try {
-      return fn(this);
-    } finally {
-      // Pop our own state; splice by identity so an out-of-order exit can't
-      // silently drop someone else's step.
+    // Pop our own state; splice by identity so an out-of-order exit can't
+    // silently drop someone else's step.
+    const pop = (): void => {
       const idx = this.steps.lastIndexOf(state);
       if (idx !== -1) this.steps.splice(idx, 1);
+    };
+    let result: T;
+    try {
+      result = fn(this);
+    } catch (err) {
+      pop();
+      throw err;
     }
+    // An async `fn` returns a promise synchronously — popping now would disable
+    // step enforcement across every `await` inside it (the common agent-loop
+    // shape). Keep the step on the stack until the promise settles, then pop.
+    if (result != null && typeof (result as { then?: unknown }).then === "function") {
+      return (result as unknown as Promise<unknown>).finally(pop) as unknown as T;
+    }
+    pop();
+    return result;
   }
 
   private appendEvent(event: SpendEvent): void {

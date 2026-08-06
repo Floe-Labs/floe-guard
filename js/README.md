@@ -81,9 +81,10 @@ guard.toolCosts; // { "apollo.people_lookup": 0.42, "exa.search": 0.11 }
 
 ## Token ceilings and per-step budgets
 
-Cap *total token usage — prompt and completion combined* (a token ceiling) and
-keep one step of a sequential loop from starving the rest (a per-step cap) — a
-second dimension on the same reserve/settle machinery, not a second guard:
+Cap *total token usage — every bucket the guard counts: prompt, completion, and
+cache* (a token ceiling) and keep one step of a sequential loop from starving the
+rest (a per-step cap) — a second dimension on the same reserve/settle machinery,
+not a second guard:
 
 ```ts
 import { BudgetGuard, TokenBudgetExceeded } from "floe-guard";
