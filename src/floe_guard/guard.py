@@ -248,10 +248,23 @@ class BudgetGuard:
             ``estimated_tokens`` to pre-emptively block; a cross raises
             :class:`TokenBudgetExceeded` (``scope="aggregate"``). ``None`` (default)
             disables the token dimension entirely.
+        window: optional persistence window. ``"utc-day"`` shares one ceiling from
+            midnight to midnight UTC across every process using the same ``store``;
+            requires ``store``. ``None`` (default) is the in-memory guard.
+        store: persistent :class:`~floe_guard.store.StateStore` (e.g.
+            :class:`~floe_guard.store.SqliteStore`) used with ``window``. When set,
+            ``spent_usd`` / reservations are the store's authoritative window
+            snapshot, so a fresh process continues where the last left off and the
+            cap resets at the UTC-day boundary. Persistence is **USD-only**: it
+            cannot be combined with ``token_limit``, :meth:`step`, or a per-call
+            ``estimated_tokens`` (each raises). ``window`` and ``store`` are
+            all-or-nothing. Note ``spend_log`` / ``tool_costs`` remain
+            process-local (not persisted, not window-reset).
 
     Thread-safe: the running total and in-flight reservations are guarded by a
     lock, so the guard can back a parallel crew (use :meth:`reserve` /
-    :meth:`settle`).
+    :meth:`settle`). A configured ``store`` extends that hard-stop across
+    processes (SQLite transactions), where the in-process lock cannot reach.
     """
 
     def __init__(
@@ -769,9 +782,15 @@ class BudgetGuard:
         """Per-tool running USD totals, keyed by the name given to
         :meth:`settle_tool` / :meth:`record_tool` — e.g.
         ``{"apollo.people_lookup": 0.42, "exa.search": 0.11}``. Makes the
-        token/tool split of the one shared ceiling inspectable
-        (``spent_usd - sum(tool_costs.values())`` is the token side).
-        Returns a snapshot copy."""
+        token/tool split of the one shared ceiling inspectable: in the in-memory
+        guard, ``spent_usd - sum(tool_costs.values())`` is the token side.
+        Returns a snapshot copy.
+
+        With a persistent ``store``, ``spent_usd`` is the current UTC-day window's
+        authoritative total while ``tool_costs`` is this process's own cumulative
+        tally (not windowed, not shared), so that identity does not hold across a
+        day rollover or a second process — use it for per-process attribution, not
+        as a cross-window invariant."""
         with self._lock:
             return dict(self._tool_costs)
 

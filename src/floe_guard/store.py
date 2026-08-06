@@ -67,6 +67,15 @@ class SqliteStore:
         self.path = os.fspath(path)
         connection = self._connect()
         try:
+            # WAL lets readers proceed while one writer commits, so the read-heavy
+            # check()/advisory() paths don't queue behind a settling process. The
+            # mode is persisted on the file. Some network filesystems can't back
+            # WAL's shared memory — fall back to the default journal rather than
+            # failing to open the store.
+            try:
+                connection.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError:
+                pass
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS budget_windows (
@@ -82,7 +91,31 @@ class SqliteStore:
             connection.close()
 
     def load(self, window_id: str, limit_usd: float) -> tuple[float, float]:
-        """Load or initialize ``window_id`` in a serialized transaction."""
+        """Load or initialize ``window_id`` and return its snapshot.
+
+        Read-only fast path: an existing window is read in autocommit mode (a
+        brief shared lock, no write lock), so the common case — every
+        ``check()`` / ``advisory()`` / ``remaining_usd`` on a window that already
+        exists — never serializes behind a writer. Only a missing window escalates
+        to the ``BEGIN IMMEDIATE`` write transaction to create it, and that
+        transaction re-reads first, so two processes racing to create the same
+        window stay correct.
+        """
+        _validate_window(window_id, limit_usd)
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT limit_usd, spent_usd, reserved_usd
+                FROM budget_windows
+                WHERE window_id = ?
+                """,
+                (window_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is not None:
+            return self._snapshot_from_row(row, window_id, limit_usd)
         with self._transaction() as connection:
             return self._load_or_create_locked(connection, window_id, limit_usd)
 
@@ -180,6 +213,13 @@ class SqliteStore:
                 (window_id, limit_usd),
             )
             return 0.0, 0.0
+        return self._snapshot_from_row(row, window_id, limit_usd)
+
+    @staticmethod
+    def _snapshot_from_row(
+        row: tuple[float, float, float], window_id: str, limit_usd: float
+    ) -> tuple[float, float]:
+        """Validate a stored ``(limit, spent, reserved)`` row and return its snapshot."""
         stored_limit, spent, reserved = (float(value) for value in row)
         if not math.isclose(stored_limit, limit_usd, rel_tol=0.0, abs_tol=_EPS):
             raise ValueError(

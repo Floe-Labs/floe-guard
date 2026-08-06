@@ -159,6 +159,26 @@ def test_persistence_configuration_is_explicit(tmp_path: Path) -> None:
         BudgetGuard(1.0, window="hour", store=store)  # type: ignore[arg-type]
 
 
+def test_persistence_is_usd_only_and_rejects_the_token_dimension(tmp_path: Path) -> None:
+    # Persistence is USD-only for now: it cannot compose with token_limit, step(),
+    # or a per-call token estimate — each is refused with a clear error rather than
+    # silently ignored (a persistent handle can't also carry a token hold).
+    def _fresh_store() -> SqliteStore:
+        return SqliteStore(tmp_path / "tok.sqlite3")
+
+    with pytest.raises(ValueError, match="token_limit is not supported"):
+        BudgetGuard(1.0, window="utc-day", store=_fresh_store(), token_limit=1000)
+
+    guard = BudgetGuard(1.0, window="utc-day", store=_fresh_store())
+    with pytest.raises(ValueError, match="estimated_tokens is not supported"):
+        guard.reserve(0.1, estimated_tokens=500)
+    with pytest.raises(ValueError, match="estimated_tokens is not supported"):
+        guard.check(estimated_tokens=500)
+    with pytest.raises(ValueError, match="step\\(\\) is not supported"):
+        with guard.step(max_usd=0.5):
+            pass
+
+
 def test_conflicting_limit_for_same_window_fails_closed(tmp_path: Path) -> None:
     path = tmp_path / "budget.sqlite3"
     BudgetGuard(1.0, window="utc-day", store=SqliteStore(path))
