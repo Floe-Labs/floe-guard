@@ -8,7 +8,7 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.12.0 / js 0.8.0
+## Unreleased — py 0.12.0 / js 0.9.0
 
 ### Added (py)
 
@@ -16,10 +16,35 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   window="utc-day", store=SqliteStore(path))` keeps spend and in-flight
   reservations in dependency-free SQLite transactions, so sequential and
   overlapping Python processes share one daily ceiling. With no store/window,
-  the existing in-memory behavior is unchanged.
+  the existing in-memory behavior is unchanged. (Persistence is USD-only; it
+  cannot be combined with `token_limit` / `step()` yet.)
 
 ### Added (py + js)
 
+- **Token ceilings + per-step budgets** (issue #46) — a **minimal alternative to
+  PR #58** (~1.1k LOC vs 4.1k). Adds a second dimension (tokens) on the existing
+  enforcement choke point plus a step scope, not a new reservation system:
+  - `BudgetGuard(..., token_limit=N)` / `{ tokenLimit: N }` — an aggregate token
+    ceiling. `check` / `reserve` take `estimated_tokens` / `{ estimatedTokens }`
+    to pre-emptively block; a cross raises the new `TokenBudgetExceeded`
+    (`scope="aggregate"`). Tokens accrue for free from the counts `settle` /
+    `record` already receive.
+  - `guard.step(max_usd=…, max_tokens=…)` — a per-step cap for a **sequential**
+    agent loop. Python is a context manager (`with guard.step(...) as g:`, `g` is
+    the guard); TS is a callback (`guard.step({ maxTokens }, (g) => …)`). Both
+    yield the SAME guard, so adapters are untouched. A per-step block raises
+    `BudgetExceeded` (USD) / `TokenBudgetExceeded` (`scope="step"`) even when the
+    aggregate budget has room.
+  - `advisory()` gains `token_used_bps` / `remaining_tokens` and per-step
+    `step_remaining_usd` / `step_remaining_tokens` (camelCase in TS); `near_limit`
+    now also flips on a near token ceiling or step cap.
+  - `TokenBudgetExceeded` subclasses `BudgetExceeded`, so budget-aware retry
+    treats a token block as terminal with no extra wiring.
+  - **Backward compatible:** USD enforcement is unchanged with no `token_limit`
+    and no `step()`, and `reserve()` still returns a plain `float` / `number`. A
+    `BudgetReservation` handle is returned only when tokens are actually reserved
+    or a step is active. `advisory()` additionally gains the token/step fields
+    above — additive, and `None` / `null` when their dimension is unused.
 - **`advisory()` exposes `expected_cost` + `est_calls_remaining`** (`expectedCost`
   / `estCallsRemaining` in TS, issue #49): the guard's own next-call estimate and
   how many more calls the remaining budget buys, so a planner can see call
@@ -27,6 +52,15 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   before the first call is recorded; `est_calls_remaining` / `estCallsRemaining`
   is `None` / `null` until then (unknown, not zero).
   Additive fields — existing advisory consumers are unaffected.
+
+### Added (py)
+
+- **Non-model budget-adaptation examples** (issue #50):
+  `examples/retrieval_depth.py`, `examples/context_size.py`, and
+  `examples/plan_complexity.py` show `advisory()` driving RAG `top_k`, history and
+  `max_tokens` truncation, and optional-sub-task pruning — each with the model
+  held fixed, so the savings come from the non-model knob. Examples and docs
+  only; no API change.
 
 ## py 0.10.0 / js 0.7.0 — 2026-07-23
 
