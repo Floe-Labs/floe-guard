@@ -174,6 +174,16 @@ ignore it; `check()` is what enforces the ceiling. See
 [`examples/budget_aware.py`](examples/budget_aware.py) for a runnable taper demo
 (no API key).
 
+Model choice is only one axis. The same signal drives **any** cost lever, and in
+most agents the bigger levers are elsewhere — retrieval depth
+([`examples/retrieval_depth.py`](examples/retrieval_depth.py): RAG `top_k` falls
+20 → 12 → 5), context size
+([`examples/context_size.py`](examples/context_size.py): stop resending the whole
+transcript, cap replies shorter), and plan complexity
+([`examples/plan_complexity.py`](examples/plan_complexity.py): thin the reasoning,
+then drop the optional sub-tasks to protect the required ones). Each holds the
+model fixed and shrinks a non-model parameter as the budget drains (no API key).
+
 ### Budget-aware retry
 
 Blind retries can spend the same expensive path again right when the agent is

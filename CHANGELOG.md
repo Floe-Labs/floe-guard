@@ -44,6 +44,15 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   is `None` / `null` until then (unknown, not zero).
   Additive fields — existing advisory consumers are unaffected.
 
+### Added (py)
+
+- **Non-model budget-adaptation examples** (issue #50):
+  `examples/retrieval_depth.py`, `examples/context_size.py`, and
+  `examples/plan_complexity.py` show `advisory()` driving RAG `top_k`, history and
+  `max_tokens` truncation, and optional-sub-task pruning — each with the model
+  held fixed, so the savings come from the non-model knob. Examples and docs
+  only; no API change.
+
 ## py 0.10.0 / js 0.7.0 — 2026-07-23
 
 ### Added (py + js)
