@@ -329,6 +329,7 @@ class BudgetGuard:
         :meth:`reserve` / :meth:`settle`, which hold the estimate atomically.
         """
         self._validate_estimate(estimated_next_cost)
+        self._validate_token_estimate(estimated_tokens)
         with self._lock:
             estimate = (
                 self._default_estimate_locked()
@@ -392,6 +393,7 @@ class BudgetGuard:
         call and the last tool call.
         """
         self._validate_estimate(estimated_cost)
+        self._validate_token_estimate(estimated_tokens)
         tokens = max(0, estimated_tokens)
         with self._lock:
             estimate = (
@@ -754,7 +756,27 @@ class BudgetGuard:
         80%), so an agent can taper *before* the hard-stop. Advisory only: read it
         to adapt; :meth:`check` is what enforces the ceiling.
         """
-        if self.limit_usd <= 0.0:
+        # Snapshot every shared field under the lock — running totals, last-call
+        # costs, and the innermost step's mutable fields — so a concurrent
+        # settle()/step() can't change them mid-read, and a step() exit can't pop
+        # the last step between the truthiness check and the index (IndexError).
+        # The arithmetic below runs on the snapshot, lock-free.
+        with self._lock:
+            limit_usd = self.limit_usd
+            spent_usd = self.spent_usd
+            last_llm = self._last_llm_cost
+            last_tool = self._last_tool_cost
+            token_limit = self.token_limit
+            spent_tokens = self.spent_tokens
+            near_limit_bps = self.near_limit_bps
+            step = self._steps[-1] if self._steps else None
+            step_active = step is not None
+            step_max_usd = step.max_usd if step is not None else None
+            step_spent_usd = step.spent_usd if step is not None else 0.0
+            step_max_tokens = step.max_tokens if step is not None else None
+            step_spent_tokens = step.spent_tokens if step is not None else 0
+
+        if limit_usd <= 0.0:
             used_bps = 10000
         else:
             # Floor (not round) so used_bps never over-reports utilization and
@@ -762,12 +784,11 @@ class BudgetGuard:
             # early. The tiny epsilon absorbs float noise (0.7*10000 = 6999.9999…),
             # and floor matches JS Math.floor exactly — round() would diverge
             # (Python banker's rounding vs JS ties-up).
-            used_bps = max(0, min(10000, int(self.spent_usd / self.limit_usd * 10000 + 1e-9)))
-        remaining = max(0.0, self.limit_usd - self.spent_usd)
-        # Lock-free read of the last-cost fields, consistent with reading
-        # spent_usd above: the estimate is the costlier of the last LLM and tool
-        # call (the guard's own default reservation), 0.0 before any call.
-        expected_cost = max(self._last_llm_cost, self._last_tool_cost)
+            used_bps = max(0, min(10000, int(spent_usd / limit_usd * 10000 + 1e-9)))
+        remaining = max(0.0, limit_usd - spent_usd)
+        # The estimate is the costlier of the last LLM and tool call (the guard's
+        # own default reservation), 0.0 before any call.
+        expected_cost = max(last_llm, last_tool)
         # +1e-9 absorbs float noise so e.g. 0.6/0.2 floors to 3 not 2 (same
         # epsilon rationale as used_bps above, and keeps JS Math.floor parity).
         est_calls_remaining = int(remaining / expected_cost + 1e-9) if expected_cost > 0.0 else None
@@ -776,40 +797,37 @@ class BudgetGuard:
         token_used_bps: int | None = None
         remaining_tokens: int | None = None
         near_token = False
-        if self.token_limit is not None:
-            if self.token_limit <= 0:
+        if token_limit is not None:
+            if token_limit <= 0:
                 token_used_bps = 10000
             else:
-                token_used_bps = max(
-                    0, min(10000, int(self.spent_tokens / self.token_limit * 10000 + 1e-9))
-                )
-            remaining_tokens = max(0, self.token_limit - self.spent_tokens)
-            near_token = token_used_bps >= self.near_limit_bps
+                token_used_bps = max(0, min(10000, int(spent_tokens / token_limit * 10000 + 1e-9)))
+            remaining_tokens = max(0, token_limit - spent_tokens)
+            near_token = token_used_bps >= near_limit_bps
         # Innermost active step's headroom + nearness (per dimension, only when
         # that dimension is capped). None keeps the fields absent for old readers.
-        step = self._steps[-1] if self._steps else None
         step_remaining_usd: float | None = None
         step_remaining_tokens: int | None = None
         near_step = False
-        if step is not None:
-            if step.max_usd is not None:
-                step_remaining_usd = max(0.0, step.max_usd - step.spent_usd)
-                if step.max_usd <= 0.0:
+        if step_active:
+            if step_max_usd is not None:
+                step_remaining_usd = max(0.0, step_max_usd - step_spent_usd)
+                if step_max_usd <= 0.0:
                     near_step = True
                 else:
-                    s_bps = int(step.spent_usd / step.max_usd * 10000 + 1e-9)
-                    near_step = near_step or s_bps >= self.near_limit_bps
-            if step.max_tokens is not None:
-                step_remaining_tokens = max(0, step.max_tokens - step.spent_tokens)
-                if step.max_tokens <= 0:
+                    s_bps = int(step_spent_usd / step_max_usd * 10000 + 1e-9)
+                    near_step = near_step or s_bps >= near_limit_bps
+            if step_max_tokens is not None:
+                step_remaining_tokens = max(0, step_max_tokens - step_spent_tokens)
+                if step_max_tokens <= 0:
                     near_step = True
                 else:
-                    s_tbps = int(step.spent_tokens / step.max_tokens * 10000 + 1e-9)
-                    near_step = near_step or s_tbps >= self.near_limit_bps
+                    s_tbps = int(step_spent_tokens / step_max_tokens * 10000 + 1e-9)
+                    near_step = near_step or s_tbps >= near_limit_bps
         return BudgetAdvisory(
             # near_limit now also flips when a token ceiling or the active step is
             # near its cap, so a router can downshift before ANY hard-stop.
-            near_limit=used_bps >= self.near_limit_bps or near_token or near_step,
+            near_limit=used_bps >= near_limit_bps or near_token or near_step,
             used_bps=used_bps,
             # Settled budget: limit minus accrued spend, deliberately NOT net of
             # in-flight reservations. This differs from the remaining_usd property
@@ -817,8 +835,8 @@ class BudgetGuard:
             # about money already spent, while the property reports what a new call
             # can still claim.
             remaining_usd=remaining,
-            limit_usd=self.limit_usd,
-            spent_usd=self.spent_usd,
+            limit_usd=limit_usd,
+            spent_usd=spent_usd,
             expected_cost=expected_cost,
             est_calls_remaining=est_calls_remaining,
             token_used_bps=token_used_bps,
@@ -882,6 +900,17 @@ class BudgetGuard:
         # matching the constructor's math.isfinite guard and the TS Number.isFinite.
         if estimated is not None and not math.isfinite(estimated):
             raise ValueError(f"estimated cost must be a finite number, got {estimated!r}")
+
+    @staticmethod
+    def _validate_token_estimate(estimated_tokens: int) -> None:
+        # Reject a float (incl. NaN/inf) or bool token estimate BEFORE reserve()
+        # mutates _reserved_tokens / the step's hold. Otherwise the mutation lands
+        # and BudgetReservation.__post_init__ rejects the handle only afterwards —
+        # leaking the hold — and a NaN cast into the integer token comparisons
+        # would fail-open the ceiling. A negative int is clamped by max(0, ...),
+        # matching the lenient USD estimate. Mirrors the TS Number.isInteger guard.
+        if isinstance(estimated_tokens, bool) or not isinstance(estimated_tokens, int):
+            raise ValueError(f"estimated_tokens must be an int, got {estimated_tokens!r}")
 
     @staticmethod
     def _reserved_usd_of(reserved: ReservationHandle) -> float:

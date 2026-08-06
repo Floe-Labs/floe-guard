@@ -227,3 +227,18 @@ def test_budget_reservation_rejects_bad_fields() -> None:
         BudgetReservation(usd=0.0, tokens=-5)
     with pytest.raises(ValueError):
         BudgetReservation(usd=0.0, tokens=True)  # bool is not a valid token count
+
+
+def test_invalid_token_estimate_rejected_without_leak() -> None:
+    # A float/NaN/inf/bool token estimate must be refused up front — otherwise
+    # reserve() would mutate the in-flight token hold before BudgetReservation
+    # rejected the handle, leaking it and disabling the ceiling.
+    guard = BudgetGuard(limit_usd=100.0, token_limit=20_000)
+    for bad in (1.5, float("nan"), float("inf"), True):
+        with pytest.raises(ValueError):
+            guard.reserve(estimated_tokens=bad)  # type: ignore[arg-type]
+        with pytest.raises(ValueError):
+            guard.check(estimated_tokens=bad)  # type: ignore[arg-type]
+    # No phantom hold left behind by the rejected calls.
+    assert guard._reserved_tokens == 0
+    assert guard.remaining_usd == 100.0

@@ -137,6 +137,16 @@ describe("per-step caps", () => {
     expect(() => guard.release({ usd: 0, tokens: -1 } as BudgetReservation)).toThrow(RangeError);
   });
 
+  it("rejects a non-integer or NaN token estimate without leaking a hold", () => {
+    const guard = new BudgetGuard(100, { tokenLimit: 20_000 });
+    for (const bad of [1.5, NaN, Infinity]) {
+      expect(() => guard.reserve(undefined, { estimatedTokens: bad })).toThrow(RangeError);
+      expect(() => guard.check(undefined, { estimatedTokens: bad })).toThrow(RangeError);
+    }
+    // No phantom hold: a full-ceiling reservation still fits exactly.
+    expect(() => guard.reserve(0, { estimatedTokens: 20_000 })).not.toThrow();
+  });
+
   it("nested steps: innermost blocks first", () => {
     const guard = new BudgetGuard(100, silent);
     guard.step({ maxTokens: 10_000 }, (outer) => {

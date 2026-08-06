@@ -294,6 +294,7 @@ export class BudgetGuard {
       );
     }
     const estimate = Math.max(0, rawEstimate);
+    this.validateTokenEstimate(options.estimatedTokens);
     const tokens = Math.max(0, options.estimatedTokens ?? 0);
     const blocked = this.blockingCross(estimate, tokens);
     if (blocked !== null) this.raiseBlock(blocked);
@@ -319,6 +320,10 @@ export class BudgetGuard {
       );
     }
     const estimate = Math.max(0, rawEstimate);
+    // Reject a fractional/NaN/Infinity token estimate BEFORE mutating
+    // reservedTokens/step holds — a NaN would fail-open the integer token
+    // comparisons and corrupt the tally. A negative int is clamped by Math.max.
+    this.validateTokenEstimate(options.estimatedTokens);
     const tokens = Math.max(0, options.estimatedTokens ?? 0);
     const blocked = this.blockingCross(estimate, tokens);
     if (blocked !== null) this.raiseBlock(blocked);
@@ -656,6 +661,19 @@ export class BudgetGuard {
    * number and a {@link BudgetReservation}'s `usd`/`tokens` fields — so a bad
    * hand-rolled handle can't corrupt the in-flight tally.
    */
+  /**
+   * Validate a caller-supplied token estimate. Rejects a fraction, NaN,
+   * Infinity, or boolean (via `Number.isInteger`) so it can't disable the
+   * integer token hard-stops or corrupt the in-flight token tally. `undefined`
+   * (the default) is fine; a negative integer is clamped by `Math.max(0, ...)`,
+   * matching the lenient USD estimate. Mirrors Python's `_validate_token_estimate`.
+   */
+  private validateTokenEstimate(estimatedTokens: number | undefined): void {
+    if (estimatedTokens !== undefined && !Number.isInteger(estimatedTokens)) {
+      throw new RangeError(`estimatedTokens must be an integer, got ${estimatedTokens}`);
+    }
+  }
+
   private reservedUsdOf(reserved: ReservationHandle): number {
     if (isReservation(reserved)) {
       // A BudgetReservation is public (re-exported), so validate its fields here
