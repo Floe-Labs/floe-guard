@@ -19,21 +19,30 @@ from .errors import (
     DeadlineExceeded,
     FloeGuardError,
     HostedEnforcementError,
+    TokenBudgetExceeded,
     UnpriceableModelError,
     UnpriceableModelWarning,
 )
-from .guard import BudgetAdvisory, BudgetGuard, SpendEvent
+from .guard import (
+    BudgetAdvisory,
+    BudgetGuard,
+    BudgetReservation,
+    ReservationHandle,
+    SpendEvent,
+)
 from .hosted import hosted_enforcement_available, hosted_remaining_usd
 from .latency import LatencyAdvisory, LatencyBudget
 from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
 from .retry import RetryPlan, async_with_budget_retry, with_budget_retry
 from .stream import StreamGuard, guard_stream
 
-__version__ = "0.10.0"  # keep in lockstep with pyproject.toml
+__version__ = "0.12.0"  # keep in lockstep with pyproject.toml
 
 __all__ = [
     "BudgetGuard",
     "BudgetAdvisory",
+    "BudgetReservation",
+    "ReservationHandle",
     "SpendEvent",
     "LatencyBudget",
     "LatencyAdvisory",
@@ -43,6 +52,7 @@ __all__ = [
     "with_budget_retry",
     "async_with_budget_retry",
     "BudgetExceeded",
+    "TokenBudgetExceeded",
     "DeadlineExceeded",
     "FloeGuardError",
     "HostedEnforcementError",

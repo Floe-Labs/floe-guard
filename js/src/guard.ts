@@ -23,7 +23,7 @@
  * same epsilon handling, same fail-closed default.
  */
 
-import { BudgetExceeded, UnpriceableModelError } from "./errors.js";
+import { BudgetExceeded, TokenBudgetExceeded, UnpriceableModelError } from "./errors.js";
 import {
   type ManualPrice,
   priceTokens,
@@ -32,6 +32,44 @@ import {
 
 /** Tolerance for float rounding in the running spend total (well below $0.000001). */
 const EPS = 1e-12;
+
+/**
+ * A two-dimensional in-flight hold (USD + tokens) returned by
+ * {@link BudgetGuard.reserve} when a token ceiling or an active
+ * {@link BudgetGuard.step} is involved. A dumb value handle — pass it straight
+ * back to {@link BudgetGuard.settle} / {@link BudgetGuard.release}. When neither
+ * tokens nor a step are involved, `reserve` returns a plain `number` instead
+ * (byte-for-byte the old behaviour), so {@link ReservationHandle} is the union.
+ */
+export interface BudgetReservation {
+  readonly usd: number;
+  readonly tokens: number;
+}
+
+/**
+ * A plain `number` when USD-only (backward compatible); a
+ * {@link BudgetReservation} when a token ceiling or an active step is in play.
+ */
+export type ReservationHandle = number | BudgetReservation;
+
+function isReservation(h: ReservationHandle): h is BudgetReservation {
+  return (
+    typeof h === "object" &&
+    h !== null &&
+    typeof (h as BudgetReservation).usd === "number" &&
+    typeof (h as BudgetReservation).tokens === "number"
+  );
+}
+
+/** One scope on the step stack (see {@link BudgetGuard.step}). Mutable. */
+interface StepState {
+  readonly maxUsd: number | null;
+  readonly maxTokens: number | null;
+  spentUsd: number;
+  spentTokens: number;
+  reservedUsd: number;
+  reservedTokens: number;
+}
 
 /**
  * One priced spend event in the guard's per-call ledger.
@@ -73,7 +111,9 @@ export interface BudgetGuardOptions {
   /**
    * Optional callback invoked with `(spentUsd, limitUsd)` right before
    * {@link BudgetExceeded} is thrown. Defaults to printing the
-   * `BUDGET EXCEEDED — call blocked` banner to stderr.
+   * `BUDGET EXCEEDED — call blocked` banner to stderr. Fires on **USD** ceiling
+   * crossings only; a token-ceiling block ({@link TokenBudgetExceeded}, aggregate
+   * or step) is thrown without invoking it, since the callback is dollar-shaped.
    */
   onBlock?: (spentUsd: number, limitUsd: number) => void;
   /**
@@ -88,6 +128,11 @@ export interface BudgetGuardOptions {
    * unaffected. Default: keep every event.
    */
   maxLogEvents?: number;
+  /**
+   * Aggregate token ceiling. `null`/undefined disables the token dimension
+   * entirely (a pure USD guard, unchanged). `0` blocks the first token.
+   */
+  tokenLimit?: number;
 }
 
 /**
@@ -129,6 +174,19 @@ export interface BudgetAdvisory {
    * expectedCost; `advisory()` always sets it.
    */
   estCallsRemaining?: number | null;
+  /**
+   * Aggregate token utilization in basis points (0..10000), mirroring usedBps
+   * for the token ceiling. null when no `tokenLimit` is set (nothing to signal).
+   */
+  tokenUsedBps?: number | null;
+  /** Tokens left before the aggregate token ceiling. null when no `tokenLimit`. */
+  remainingTokens?: number | null;
+  /**
+   * Per-step headroom for the innermost active step — present (non-null) ONLY
+   * while a step() is active AND that dimension is capped. null otherwise.
+   */
+  stepRemainingUsd?: number | null;
+  stepRemainingTokens?: number | null;
 }
 
 export class BudgetGuard {
@@ -137,6 +195,14 @@ export class BudgetGuard {
   priceOverrides?: Record<string, ManualPrice>;
   failClosed: boolean;
   nearLimitBps: number;
+  /** Aggregate token ceiling, or null when the token dimension is disabled. */
+  readonly tokenLimit: number | null;
+  /** Aggregate tokens accrued (prompt + completion + cache buckets). */
+  spentTokens = 0;
+  /** Tokens held in-flight — the token twin of `reserved`. */
+  private reservedTokens = 0;
+  /** Step stack: innermost step is last. Empty when no step() is active. */
+  private readonly steps: StepState[] = [];
 
   private readonly onBlock: (spentUsd: number, limitUsd: number) => void;
   /**
@@ -187,7 +253,16 @@ export class BudgetGuard {
         `maxLogEvents must be a non-negative integer, got ${options.maxLogEvents}`,
       );
     }
+    if (
+      options.tokenLimit !== undefined &&
+      (!Number.isInteger(options.tokenLimit) || options.tokenLimit < 0)
+    ) {
+      throw new RangeError(
+        `tokenLimit must be a non-negative integer, got ${options.tokenLimit}`,
+      );
+    }
     this.limitUsd = limitUsd;
+    this.tokenLimit = options.tokenLimit ?? null;
     this.maxLogEvents = options.maxLogEvents;
     this.priceOverrides = options.priceOverrides;
     this.failClosed = options.failClosed ?? true;
@@ -208,7 +283,7 @@ export class BudgetGuard {
    * Note: `check` is a non-binding peek. For parallel calls, use `reserve()` /
    * `settle()`, which hold the estimate across the await.
    */
-  check(estimatedNextCost?: number): void {
+  check(estimatedNextCost?: number, options: { estimatedTokens?: number } = {}): void {
     const rawEstimate =
       estimatedNextCost === undefined ? this.defaultEstimate() : estimatedNextCost;
     if (!Number.isFinite(rawEstimate)) {
@@ -219,11 +294,10 @@ export class BudgetGuard {
       );
     }
     const estimate = Math.max(0, rawEstimate);
-    const committed = this.spentUsd + this.reserved;
-    if (committed > this.limitUsd - EPS || committed + estimate > this.limitUsd + EPS) {
-      this.onBlock(this.spentUsd, this.limitUsd);
-      throw new BudgetExceeded(this.spentUsd, this.limitUsd);
-    }
+    this.validateTokenEstimate(options.estimatedTokens);
+    const tokens = Math.max(0, options.estimatedTokens ?? 0);
+    const blocked = this.blockingCross(estimate, tokens);
+    if (blocked !== null) this.raiseBlock(blocked);
   }
 
   /**
@@ -237,7 +311,7 @@ export class BudgetGuard {
    * `estimatedCost` defaults to the costlier of the last LLM call and the last
    * tool call.
    */
-  reserve(estimatedCost?: number): number {
+  reserve(estimatedCost?: number, options: { estimatedTokens?: number } = {}): ReservationHandle {
     const rawEstimate = estimatedCost === undefined ? this.defaultEstimate() : estimatedCost;
     if (!Number.isFinite(rawEstimate)) {
       // NaN would poison this.reserved and fail-open the ceiling — reject it.
@@ -246,13 +320,24 @@ export class BudgetGuard {
       );
     }
     const estimate = Math.max(0, rawEstimate);
-    const committed = this.spentUsd + this.reserved;
-    if (committed > this.limitUsd - EPS || committed + estimate > this.limitUsd + EPS) {
-      this.onBlock(this.spentUsd, this.limitUsd);
-      throw new BudgetExceeded(this.spentUsd, this.limitUsd);
-    }
+    // Reject a fractional/NaN/Infinity token estimate BEFORE mutating
+    // reservedTokens/step holds — a NaN would fail-open the integer token
+    // comparisons and corrupt the tally. A negative int is clamped by Math.max.
+    this.validateTokenEstimate(options.estimatedTokens);
+    const tokens = Math.max(0, options.estimatedTokens ?? 0);
+    const blocked = this.blockingCross(estimate, tokens);
+    if (blocked !== null) this.raiseBlock(blocked);
     this.reserved += estimate;
-    return estimate;
+    this.reservedTokens += tokens;
+    const step = this.steps.length ? this.steps[this.steps.length - 1] : null;
+    if (step !== null) {
+      step.reservedUsd += estimate;
+      step.reservedTokens += tokens;
+    }
+    // Plain number only when nothing token- or step-shaped is in play, so
+    // pre-existing USD-only callers get byte-for-byte the old handle.
+    if (tokens === 0 && step === null) return estimate;
+    return { usd: estimate, tokens };
   }
 
   /**
@@ -268,14 +353,13 @@ export class BudgetGuard {
     model: string,
     promptTokens: number,
     completionTokens: number,
-    options: { reserved?: number; price?: ManualPrice; label?: string } = {},
+    options: { reserved?: ReservationHandle; price?: ManualPrice; label?: string } = {},
   ): number {
     const reserved = options.reserved ?? 0;
     // A bad reserved handle would corrupt this.reserved and break the ceiling for
     // OTHER in-flight calls (negative → phantom hold; Infinity → clears all holds).
-    if (!Number.isFinite(reserved) || reserved < 0) {
-      throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
-    }
+    // reservedUsdOf validates the handle (raw number, or a BudgetReservation's fields).
+    const reservedUsd = this.reservedUsdOf(reserved);
     let overrides = this.priceOverrides;
     if (options.price !== undefined) {
       overrides = { ...(overrides ?? {}), [model]: options.price };
@@ -311,7 +395,12 @@ export class BudgetGuard {
     if (reserved) {
       this.consumeReservation(reserved);
     }
+    // Tokens accrued match what priceTokens bills (prompt + completion; negative
+    // counts clamp to 0, as in pricing).
+    const accruedTokens = Math.max(0, promptTokens) + Math.max(0, completionTokens);
     this.spentUsd += cost;
+    this.spentTokens += accruedTokens;
+    this.accrueStep(cost, accruedTokens);
     // Clamp a sub-epsilon float overshoot back to the limit so the running total
     // never reports as having crossed the ceiling by a rounding artifact.
     if (this.spentUsd - this.limitUsd > 0 && this.spentUsd - this.limitUsd < EPS) {
@@ -327,8 +416,9 @@ export class BudgetGuard {
       costUsd: cost,
       ...(options.label !== undefined ? { label: options.label } : {}),
       // 0 means "no reservation" (the plain record() path) — omit rather than
-      // log a meaningless zero.
-      ...(reserved ? { reserved } : {}),
+      // log a meaningless zero. Log the USD amount so the ledger schema stays
+      // number-shaped even for a BudgetReservation.
+      ...(reservedUsd ? { reserved: reservedUsd } : {}),
     });
     return cost;
   }
@@ -370,7 +460,7 @@ export class BudgetGuard {
    * worth falling back to. Pass the returned handle to
    * {@link BudgetGuard.settleTool}, or {@link BudgetGuard.release} on failure.
    */
-  reserveTool(estimatedCost: number): number {
+  reserveTool(estimatedCost: number): ReservationHandle {
     if (estimatedCost === undefined) {
       // reserve(undefined) would silently fall back to the last-cost prediction
       // (0 on a fresh guard) — an unguarded tool call. A missing price must
@@ -404,21 +494,22 @@ export class BudgetGuard {
   settleTool(
     tool: string,
     costUsd: number,
-    options: { reserved?: number; label?: string } = {},
+    options: { reserved?: ReservationHandle; label?: string } = {},
   ): number {
     if (!Number.isFinite(costUsd) || costUsd < 0) {
       throw new RangeError(`costUsd must be a finite, non-negative number, got ${costUsd}`);
     }
     const reserved = options.reserved ?? 0;
     // A bad reserved handle would corrupt the in-flight tally and break the
-    // ceiling for OTHER calls — same contract as settle().
-    if (!Number.isFinite(reserved) || reserved < 0) {
-      throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
-    }
+    // ceiling for OTHER calls — same contract as settle(). reservedUsdOf
+    // validates the handle (raw number, or a BudgetReservation's fields).
+    const reservedUsd = this.reservedUsdOf(reserved);
     if (reserved) {
       this.consumeReservation(reserved);
     }
     this.spentUsd += costUsd;
+    // A paid tool spends the step's USD too (no tokens to price).
+    this.accrueStep(costUsd, 0);
     // Same sub-epsilon clamp as settle(): never report a rounding-artifact
     // crossing of the ceiling.
     if (this.spentUsd - this.limitUsd > 0 && this.spentUsd - this.limitUsd < EPS) {
@@ -434,7 +525,7 @@ export class BudgetGuard {
       completionTokens: null,
       costUsd,
       ...(options.label !== undefined ? { label: options.label } : {}),
-      ...(reserved ? { reserved } : {}),
+      ...(reservedUsd ? { reserved: reservedUsd } : {}),
     });
     return costUsd;
   }
@@ -455,12 +546,11 @@ export class BudgetGuard {
    * Drop an in-flight reservation without recording spend (e.g. the call failed
    * before producing usage). Safe to call with `0`.
    */
-  release(reserved: number): void {
+  release(reserved: ReservationHandle): void {
     // Validate before the zero-check so a NaN handle throws instead of being
     // silently dropped (a leak); a bad handle corrupts the in-flight tally.
-    if (!Number.isFinite(reserved) || reserved < 0) {
-      throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
-    }
+    // reservedUsdOf validates the handle (raw number, or a BudgetReservation's fields).
+    this.reservedUsdOf(reserved);
     if (!reserved) return;
     this.consumeReservation(reserved);
   }
@@ -539,14 +629,202 @@ export class BudgetGuard {
    * undetectable without per-handle tracking and remains the caller's
    * responsibility.
    */
-  private consumeReservation(reserved: number): void {
-    if (reserved > this.reserved + EPS) {
+  private consumeReservation(reserved: ReservationHandle): void {
+    const usd = isReservation(reserved) ? reserved.usd : reserved;
+    const tokens = isReservation(reserved) ? reserved.tokens : 0;
+    if (usd > this.reserved + EPS) {
       throw new RangeError(
-        `reserved handle (${reserved}) exceeds total in-flight reservations ` +
+        `reserved handle (${usd}) exceeds total in-flight reservations ` +
           `(${this.reserved}) — a handle must come from a matching reserve()`,
       );
     }
-    this.reserved = Math.max(0, this.reserved - reserved);
+    if (tokens > this.reservedTokens) {
+      throw new RangeError(
+        `reserved token handle (${tokens}) exceeds total in-flight token ` +
+          `reservations (${this.reservedTokens}) — a handle must come from a matching reserve()`,
+      );
+    }
+    this.reserved = Math.max(0, this.reserved - usd);
+    this.reservedTokens = Math.max(0, this.reservedTokens - tokens);
+    // Drain the innermost active step too (mirrors the aggregate drain). A
+    // handle is drained against whatever step is innermost now — the
+    // sequential-loop contract; concurrent parallel steps are out of scope (#46).
+    const step = this.steps.length ? this.steps[this.steps.length - 1] : null;
+    if (step !== null) {
+      step.reservedUsd = Math.max(0, step.reservedUsd - usd);
+      step.reservedTokens = Math.max(0, step.reservedTokens - tokens);
+    }
+  }
+
+  /**
+   * The USD amount of a handle, validated. Both shapes are checked — a raw
+   * number and a {@link BudgetReservation}'s `usd`/`tokens` fields — so a bad
+   * hand-rolled handle can't corrupt the in-flight tally.
+   */
+  /**
+   * Validate a caller-supplied token estimate. Rejects a fraction, NaN,
+   * Infinity, or boolean (via `Number.isInteger`) so it can't disable the
+   * integer token hard-stops or corrupt the in-flight token tally. `undefined`
+   * (the default) is fine; a negative integer is clamped by `Math.max(0, ...)`,
+   * matching the lenient USD estimate. Mirrors Python's `_validate_token_estimate`.
+   */
+  private validateTokenEstimate(estimatedTokens: number | undefined): void {
+    if (estimatedTokens !== undefined && !Number.isInteger(estimatedTokens)) {
+      throw new RangeError(`estimatedTokens must be an integer, got ${estimatedTokens}`);
+    }
+  }
+
+  private reservedUsdOf(reserved: ReservationHandle): number {
+    if (isReservation(reserved)) {
+      // A BudgetReservation is public (re-exported), so validate its fields here
+      // — a hand-rolled { usd: NaN, tokens: -1 } must not slip past into
+      // consumeReservation and corrupt the in-flight tallies. Mirrors Python's
+      // BudgetReservation.__post_init__.
+      if (!Number.isFinite(reserved.usd) || reserved.usd < 0) {
+        throw new RangeError(
+          `reserved.usd must be a finite, non-negative number, got ${reserved.usd}`,
+        );
+      }
+      if (!Number.isInteger(reserved.tokens) || reserved.tokens < 0) {
+        throw new RangeError(
+          `reserved.tokens must be a non-negative integer, got ${reserved.tokens}`,
+        );
+      }
+      return reserved.usd;
+    }
+    if (!Number.isFinite(reserved) || reserved < 0) {
+      throw new RangeError(`reserved must be a finite, non-negative number, got ${reserved}`);
+    }
+    return reserved;
+  }
+
+  /**
+   * Accrue a settled call into the innermost active step (no-op when none).
+   * Sequential-loop contract: the innermost step owns the call.
+   */
+  private accrueStep(cost: number, tokens: number): void {
+    const step = this.steps.length ? this.steps[this.steps.length - 1] : null;
+    if (step !== null) {
+      step.spentUsd += cost;
+      step.spentTokens += tokens;
+    }
+  }
+
+  /**
+   * The ONE choke point, across two dimensions and two scopes. Returns the first
+   * ceiling that blocks as `[dimension, scope]` — dimension `"usd" | "tokens"`,
+   * scope `"aggregate" | "step"` — or `null` if the call fits everywhere.
+   * Aggregate is checked before step (the guard-wide ceiling is the hard limit).
+   */
+  private blockingCross(
+    estimateUsd: number,
+    estimateTokens: number,
+  ): ["usd" | "tokens", "aggregate" | "step"] | null {
+    // Aggregate USD — same comparison the original check/reserve used.
+    const committed = this.spentUsd + this.reserved;
+    if (committed > this.limitUsd - EPS || committed + estimateUsd > this.limitUsd + EPS) {
+      return ["usd", "aggregate"];
+    }
+    // Aggregate tokens (integers — no epsilon).
+    if (this.tokenLimit !== null) {
+      const committedT = this.spentTokens + this.reservedTokens;
+      if (committedT >= this.tokenLimit || committedT + estimateTokens > this.tokenLimit) {
+        return ["tokens", "aggregate"];
+      }
+    }
+    // Innermost active step's caps (crossing an outer step requires first
+    // crossing the inner one, so the innermost is sufficient).
+    const step = this.steps.length ? this.steps[this.steps.length - 1] : null;
+    if (step !== null) {
+      if (step.maxUsd !== null) {
+        const sCommitted = step.spentUsd + step.reservedUsd;
+        if (sCommitted > step.maxUsd - EPS || sCommitted + estimateUsd > step.maxUsd + EPS) {
+          return ["usd", "step"];
+        }
+      }
+      if (step.maxTokens !== null) {
+        const sCommittedT = step.spentTokens + step.reservedTokens;
+        if (sCommittedT >= step.maxTokens || sCommittedT + estimateTokens > step.maxTokens) {
+          return ["tokens", "step"];
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Notify + throw the right error for a [dimension, scope] block. */
+  private raiseBlock(blocked: ["usd" | "tokens", "aggregate" | "step"]): never {
+    const [dimension, scope] = blocked;
+    if (dimension === "usd") {
+      this.onBlock(this.spentUsd, this.limitUsd);
+      throw new BudgetExceeded(this.spentUsd, this.limitUsd);
+    }
+    let spentT: number;
+    let limitT: number;
+    if (scope === "step") {
+      const step = this.steps[this.steps.length - 1];
+      spentT = step.spentTokens + step.reservedTokens;
+      limitT = step.maxTokens ?? 0;
+    } else {
+      spentT = this.spentTokens + this.reservedTokens;
+      limitT = this.tokenLimit ?? 0;
+    }
+    throw new TokenBudgetExceeded(spentT, limitT, scope);
+  }
+
+  /**
+   * Scope a per-step USD and/or token cap for a **sequential agent loop**.
+   *
+   * Runs `fn` with a step pushed onto the guard's stack; the
+   * enforcement/accrual path honours the innermost active step *on top of* the
+   * aggregate ceilings. A call that would cross the step's `maxUsd` / `maxTokens`
+   * is hard-blocked ({@link BudgetExceeded} / {@link TokenBudgetExceeded} with
+   * `scope: "step"`) even if the aggregate budget has room. `fn` receives the
+   * SAME guard, so no adapter needs to know about steps. The step is popped when
+   * `fn` settles or throws. **Not for concurrent parallel steps on one guard** —
+   * that's out of scope for issue #46; use one guard per parallel branch.
+   */
+  step<T>(
+    options: { maxUsd?: number; maxTokens?: number },
+    fn: (guard: BudgetGuard) => T,
+  ): T {
+    const { maxUsd, maxTokens } = options;
+    if (maxUsd !== undefined && (!Number.isFinite(maxUsd) || maxUsd < 0)) {
+      throw new RangeError(`maxUsd must be a finite, non-negative number, got ${maxUsd}`);
+    }
+    if (maxTokens !== undefined && (!Number.isInteger(maxTokens) || maxTokens < 0)) {
+      throw new RangeError(`maxTokens must be a non-negative integer, got ${maxTokens}`);
+    }
+    const state: StepState = {
+      maxUsd: maxUsd ?? null,
+      maxTokens: maxTokens ?? null,
+      spentUsd: 0,
+      spentTokens: 0,
+      reservedUsd: 0,
+      reservedTokens: 0,
+    };
+    this.steps.push(state);
+    // Pop our own state; splice by identity so an out-of-order exit can't
+    // silently drop someone else's step.
+    const pop = (): void => {
+      const idx = this.steps.lastIndexOf(state);
+      if (idx !== -1) this.steps.splice(idx, 1);
+    };
+    let result: T;
+    try {
+      result = fn(this);
+    } catch (err) {
+      pop();
+      throw err;
+    }
+    // An async `fn` returns a promise synchronously — popping now would disable
+    // step enforcement across every `await` inside it (the common agent-loop
+    // shape). Keep the step on the stack until the promise settles, then pop.
+    if (result != null && typeof (result as { then?: unknown }).then === "function") {
+      return (result as unknown as Promise<unknown>).finally(pop) as unknown as T;
+    }
+    pop();
+    return result;
   }
 
   private appendEvent(event: SpendEvent): void {
@@ -583,8 +861,52 @@ export class BudgetGuard {
     // rationale as usedBps above, and keeps Python int() parity).
     const estCallsRemaining =
       expectedCost > 0 ? Math.floor(remainingUsd / expectedCost + 1e-9) : null;
+    // Aggregate token utilization, mirroring usedBps. null (no signal) when the
+    // token dimension is unset — a pure USD guard's advisory is unchanged.
+    let tokenUsedBps: number | null = null;
+    let remainingTokens: number | null = null;
+    let nearToken = false;
+    if (this.tokenLimit !== null) {
+      tokenUsedBps =
+        this.tokenLimit <= 0
+          ? 10000
+          : Math.max(
+              0,
+              Math.min(10000, Math.floor((this.spentTokens / this.tokenLimit) * 10000 + 1e-9)),
+            );
+      remainingTokens = Math.max(0, this.tokenLimit - this.spentTokens);
+      nearToken = tokenUsedBps >= this.nearLimitBps;
+    }
+    // Innermost active step's headroom + nearness (per dimension, only when
+    // capped). null keeps the fields absent for old readers.
+    const step = this.steps.length ? this.steps[this.steps.length - 1] : null;
+    let stepRemainingUsd: number | null = null;
+    let stepRemainingTokens: number | null = null;
+    let nearStep = false;
+    if (step !== null) {
+      if (step.maxUsd !== null) {
+        stepRemainingUsd = Math.max(0, step.maxUsd - step.spentUsd);
+        if (step.maxUsd <= 0) {
+          nearStep = true;
+        } else {
+          const sBps = Math.floor((step.spentUsd / step.maxUsd) * 10000 + 1e-9);
+          nearStep = nearStep || sBps >= this.nearLimitBps;
+        }
+      }
+      if (step.maxTokens !== null) {
+        stepRemainingTokens = Math.max(0, step.maxTokens - step.spentTokens);
+        if (step.maxTokens <= 0) {
+          nearStep = true;
+        } else {
+          const sTBps = Math.floor((step.spentTokens / step.maxTokens) * 10000 + 1e-9);
+          nearStep = nearStep || sTBps >= this.nearLimitBps;
+        }
+      }
+    }
     return {
-      nearLimit: usedBps >= this.nearLimitBps,
+      // nearLimit now also flips when a token ceiling or the active step is near
+      // its cap, so a router can downshift before ANY hard-stop.
+      nearLimit: usedBps >= this.nearLimitBps || nearToken || nearStep,
       usedBps,
       // Settled budget: limit minus accrued spend, deliberately NOT net of
       // in-flight reservations. Unlike the remainingUsd getter (which subtracts
@@ -596,6 +918,10 @@ export class BudgetGuard {
       scope: "local",
       expectedCost,
       estCallsRemaining,
+      tokenUsedBps,
+      remainingTokens,
+      stepRemainingUsd,
+      stepRemainingTokens,
     };
   }
 }

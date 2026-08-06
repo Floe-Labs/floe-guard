@@ -27,13 +27,50 @@ export class BudgetExceeded extends FloeGuardError {
   readonly spentUsd: number;
   readonly limitUsd: number;
 
-  constructor(spentUsd: number, limitUsd: number) {
+  constructor(spentUsd: number, limitUsd: number, message?: string) {
+    // Subclasses (the token twin) pass their own message through so they don't
+    // have to reassign `this.message` after super().
     super(
-      `BUDGET EXCEEDED — call blocked (spent $${spentUsd.toFixed(6)} of $${limitUsd.toFixed(6)} ceiling)`,
+      message ??
+        `BUDGET EXCEEDED — call blocked (spent $${spentUsd.toFixed(6)} of $${limitUsd.toFixed(6)} ceiling)`,
     );
     this.name = "BudgetExceeded";
     this.spentUsd = spentUsd;
     this.limitUsd = limitUsd;
+  }
+}
+
+/**
+ * Thrown before a call that would cross a token ceiling (aggregate or step).
+ *
+ * The token twin of {@link BudgetExceeded} — it extends it so the same retry
+ * logic that treats a USD block as terminal (`!(error instanceof
+ * BudgetExceeded)`) treats a token block as terminal too, with no extra wiring.
+ * `spentUsd` / `limitUsd` are inherited but not meaningful here; the token
+ * fields are the payload.
+ *
+ * `scope` is `"aggregate"` (the guard-wide `tokenLimit`) or `"step"` (the
+ * innermost active {@link BudgetGuard.step} cap).
+ */
+export class TokenBudgetExceeded extends BudgetExceeded {
+  readonly spentTokens: number;
+  readonly limitTokens: number;
+  readonly scope: "aggregate" | "step";
+
+  constructor(spentTokens: number, limitTokens: number, scope: "aggregate" | "step") {
+    // Pass the token-shaped message through super (BudgetExceeded's default is
+    // dollar-shaped); 0/0 for the inherited spentUsd/limitUsd — a token block
+    // spent no tracked USD.
+    super(
+      0,
+      0,
+      `TOKEN BUDGET EXCEEDED — call blocked (${scope}: ${spentTokens} of ` +
+        `${limitTokens} token ceiling)`,
+    );
+    this.name = "TokenBudgetExceeded";
+    this.spentTokens = spentTokens;
+    this.limitTokens = limitTokens;
+    this.scope = scope;
   }
 }
 
