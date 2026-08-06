@@ -52,7 +52,12 @@ _EPS = 1e-12
 
 
 class _PersistentReservation(float):
-    """Numeric reservation handle carrying its authoritative store window."""
+    """Numeric reservation handle carrying its authoritative store window.
+
+    Pass this handle through unchanged. It is float-compatible, but arithmetic
+    or normalization such as ``float()``, ``abs()``, ``round()``, or ``max()``
+    can return a plain float and discard its issuing-window provenance.
+    """
 
     _window_id: str
 
@@ -681,14 +686,12 @@ class BudgetGuard:
     # ── internals ──────────────────────────────────────────────────────────────
 
     def _current_window_id_locked(self) -> str:
-        """Return today's store key and reset process-local per-window views."""
+        """Return today's store key and reset the process-local estimate."""
         window_id = _utc_day_window_id()
         if window_id != self._active_window_id:
             self._active_window_id = window_id
             self._last_llm_cost = 0.0
             self._last_tool_cost = 0.0
-            self._spend_log.clear()
-            self._tool_costs.clear()
         return window_id
 
     def _refresh_persistent_state_locked(self) -> None:

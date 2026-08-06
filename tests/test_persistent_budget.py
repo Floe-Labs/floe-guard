@@ -91,9 +91,17 @@ def test_utc_day_rollover_uses_a_fresh_window(
 
     current_day[0] = "2026-08-05"
     assert guard.remaining_usd == pytest.approx(1.0)
+    assert guard.advisory().expected_cost == 0.0
+    assert guard.tool_costs == {"day-one": pytest.approx(0.3)}
+    assert [event.model_or_tool for event in guard.spend_log] == ["day-one"]
     guard.record_tool("day-two", 0.1)
 
     assert guard.spent_usd == pytest.approx(0.1)
+    assert guard.tool_costs == {
+        "day-one": pytest.approx(0.3),
+        "day-two": pytest.approx(0.1),
+    }
+    assert [event.model_or_tool for event in guard.spend_log] == ["day-one", "day-two"]
     assert store.load("2026-08-04", 1.0) == pytest.approx((0.3, 0.0))
     assert store.load("2026-08-05", 1.0) == pytest.approx((0.1, 0.0))
 
@@ -197,6 +205,10 @@ def test_overlapping_processes_share_reservations_and_ceiling(tmp_path: Path) ->
     start.set()
     for process in processes:
         process.join(timeout=15)
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
 
     assert all(process.exitcode == 0 for process in processes)
     messages: list[str] = []
@@ -219,7 +231,7 @@ def test_no_store_keeps_the_in_memory_contract() -> None:
     guard = BudgetGuard(1.0)
     reserved = guard.reserve_tool(0.2)
 
-    assert isinstance(reserved, float)
+    assert type(reserved) is float
     assert guard.remaining_usd == pytest.approx(0.8)
     guard.release(reserved)
     assert guard.remaining_usd == pytest.approx(1.0)

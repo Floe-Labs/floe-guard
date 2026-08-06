@@ -107,8 +107,10 @@ be the thing standing in front of the next call:
 
 ### Persist one UTC-day budget across processes (Python)
 
-Cron and serverless jobs can share one ceiling through the standard-library
-SQLite store:
+Cron and serverless jobs can share one ceiling only when every process opens the
+same database file on storage with reliable SQLite file locking. Isolated
+serverless instances with separate local files do not coordinate; use hosted
+enforcement when no shared file is available:
 
 ```python
 from floe_guard import BudgetGuard, SqliteStore
