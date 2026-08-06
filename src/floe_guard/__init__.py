@@ -38,7 +38,7 @@ from .retry import RetryPlan, async_with_budget_retry, with_budget_retry
 from .store import SqliteStore, StateStore
 from .stream import StreamGuard, guard_stream
 
-__version__ = "0.12.0"  # keep in lockstep with pyproject.toml
+__version__ = "0.13.0"  # keep in lockstep with pyproject.toml
 
 __all__ = [
     "BudgetGuard",
