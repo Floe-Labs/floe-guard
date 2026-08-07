@@ -32,12 +32,48 @@ class BudgetExceeded(FloeGuardError):
     loop stops here rather than burning more money.
     """
 
-    def __init__(self, spent_usd: float, limit_usd: float) -> None:
+    def __init__(self, spent_usd: float, limit_usd: float, message: str | None = None) -> None:
         self.spent_usd = spent_usd
         self.limit_usd = limit_usd
+        # Subclasses (the token twin) pass their own message through so they don't
+        # have to bypass this constructor and re-set attrs by hand.
+        if message is None:
+            message = (
+                f"BUDGET EXCEEDED — call blocked "
+                f"(spent ${spent_usd:.6f} of ${limit_usd:.6f} ceiling)"
+            )
+        super().__init__(message)
+
+
+class TokenBudgetExceeded(BudgetExceeded):
+    """Raised before a call that would cross a token ceiling (aggregate or step).
+
+    The token twin of :class:`BudgetExceeded` — it subclasses it so the same
+    retry logic that treats a USD block as terminal (``not isinstance(exc,
+    BudgetExceeded)``) treats a token block as terminal too, with no extra
+    wiring. ``spent_usd`` / ``limit_usd`` are inherited but not meaningful here;
+    the token fields are the payload.
+
+    ``scope`` is ``"aggregate"`` (the guard-wide ``token_limit``) or ``"step"``
+    (the innermost active :meth:`BudgetGuard.step` cap).
+    """
+
+    def __init__(self, spent_tokens: int, limit_tokens: int, scope: str) -> None:
+        # Go through BudgetExceeded (not FloeGuardError directly) so any future
+        # parent field is inherited, not silently missed. Pass 0.0/0.0 for the
+        # inherited spent_usd/limit_usd (a token block spent no *tracked* USD) and
+        # the token-shaped message straight through.
         super().__init__(
-            f"BUDGET EXCEEDED — call blocked (spent ${spent_usd:.6f} of ${limit_usd:.6f} ceiling)"
+            0.0,
+            0.0,
+            message=(
+                f"TOKEN BUDGET EXCEEDED — call blocked ({scope}: {spent_tokens} of "
+                f"{limit_tokens} token ceiling)"
+            ),
         )
+        self.spent_tokens = spent_tokens
+        self.limit_tokens = limit_tokens
+        self.scope = scope
 
 
 class UnpriceableModelError(FloeGuardError):

@@ -17,3 +17,4 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+.venv-fg/

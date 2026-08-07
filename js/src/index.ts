@@ -10,6 +10,8 @@ export {
   BudgetGuard,
   type BudgetGuardOptions,
   type BudgetAdvisory,
+  type BudgetReservation,
+  type ReservationHandle,
   type SpendEvent,
 } from "./guard.js";
 export {
@@ -20,6 +22,7 @@ export {
 export {
   FloeGuardError,
   BudgetExceeded,
+  TokenBudgetExceeded,
   DeadlineExceeded,
   UnpriceableModelError,
 } from "./errors.js";

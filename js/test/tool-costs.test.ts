@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { BudgetExceeded, BudgetGuard } from "../src/index.js";
+import { BudgetExceeded, BudgetGuard, type ReservationHandle } from "../src/index.js";
 
 const MODEL = "gpt-4o"; // 1k in + 1k out = $0.0125/call
 
@@ -160,7 +160,7 @@ describe("tool spend (reserveTool / settleTool / recordTool / toolCosts)", () =>
 
     let blocked = 0;
     const agents = Array.from({ length: 16 }, (_, i) => async () => {
-      let reserved: number;
+      let reserved: ReservationHandle;
       try {
         reserved = i % 2 ? guard.reserve() : guard.reserveTool(0.0125);
       } catch (err) {
