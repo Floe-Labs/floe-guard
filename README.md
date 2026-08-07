@@ -105,6 +105,33 @@ be the thing standing in front of the next call:
   [LiteLLM cost map](src/floe_guard/cost_map.json) and adds the USD to a running
   total.
 
+### Persist one UTC-day budget across processes (Python)
+
+Cron and serverless jobs can share one ceiling only when every process opens the
+same database file on storage with reliable SQLite file locking. Isolated
+serverless instances with separate local files do not coordinate; use hosted
+enforcement when no shared file is available:
+
+```python
+from floe_guard import BudgetGuard, SqliteStore
+
+guard = BudgetGuard(
+    limit_usd=5.00,
+    window="utc-day",
+    store=SqliteStore("agent-budget.sqlite3"),
+)
+reservation = guard.reserve_tool(0.02)  # atomic across sharing processes
+guard.settle_tool("search", 0.02, reserved=reservation)
+```
+
+One database file represents one logical budget. Settled spend and in-flight
+reservations persist until a new UTC date selects a fresh window; per-call logs,
+tool attribution, and next-call estimates remain process-local. A process that
+dies with a reservation leaves a fail-closed hold that must be recovered
+manually. This feature is Python-only and supports `window="utc-day"` only;
+arbitrary rolling durations are not yet supported. As elsewhere, enforcement is
+estimate-based, so size reservations to the real request when possible.
+
 ### Unpriceable models fail closed
 
 If a model isn't in the cost map and you didn't supply a price, the guard **warns
@@ -220,7 +247,8 @@ for a no-network demo.
 This is the **same advisory shape** hosted Floe returns on every proxied call
 (the `X-Floe-Budget-Advisory` header), so the logic you write here ports
 unchanged — hosted just answers across *every* vendor and cap with server-truth
-balances and rolling-window reset timing, which a single local budget can't know.
+balances and arbitrary rolling-window timing, which a local UTC-day budget can't
+know.
 The TS package exposes the identical `guard.advisory()`.
 
 ## Per-call spend log

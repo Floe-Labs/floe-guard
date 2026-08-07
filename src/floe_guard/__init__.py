@@ -2,8 +2,9 @@
 
 Hard-stops an agent before its next LLM or paid tool call when it would cross a
 spend ceiling — tokens and tool costs share one local ceiling.
-Zero account, no network, runs in-process. Hosted Floe is the un-bypassable,
-cross-vendor upgrade path (see the README).
+Zero account and no network; enforcement runs locally, with optional SQLite
+state shared across processes. Hosted Floe is the un-bypassable, cross-vendor
+upgrade path (see the README).
 
     from floe_guard import BudgetGuard
 
@@ -37,6 +38,7 @@ from .hosted import hosted_enforcement_available, hosted_remaining_usd
 from .latency import LatencyAdvisory, LatencyBudget
 from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
 from .retry import RetryPlan, async_with_budget_retry, with_budget_retry
+from .store import SqliteStore, StateStore
 from .stream import StreamGuard, guard_stream
 
 # Single-sourced from the installed package metadata, which pyproject.toml
@@ -53,6 +55,8 @@ __all__ = [
     "BudgetReservation",
     "ReservationHandle",
     "SpendEvent",
+    "StateStore",
+    "SqliteStore",
     "LatencyBudget",
     "LatencyAdvisory",
     "StreamGuard",

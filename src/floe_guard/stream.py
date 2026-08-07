@@ -83,9 +83,12 @@ class StreamGuard:
         self._guard = guard
         self._model = model
         self._prompt_tokens = max(0, int(prompt_tokens))
-        # Keep the ORIGINAL handle so settle()/release() drain the token hold too;
-        # keep the USD amount for the stream-cost registry (mid-stream enforcement
-        # is USD-only — a stream's token hold is reconciled at settle()).
+        # Keep the ORIGINAL handle so settle()/release() drain the token hold too
+        # AND preserve a persistent handle's issuing-window provenance — coercing
+        # to a plain float here would make a stream that crosses midnight settle
+        # against the new UTC day's empty reservation row. Keep the USD amount for
+        # the stream-cost registry (mid-stream enforcement is USD-only; a stream's
+        # token hold is reconciled at settle()).
         self._reserved = reserved
         self._reserved_usd = reserved_usd
         self._price = price

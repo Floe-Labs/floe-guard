@@ -8,7 +8,16 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.12.0 / js 0.9.0
+## Unreleased — py 0.13.0 / js 0.9.0
+
+### Added (py)
+
+- **Persistent UTC-day budgets** (issue #47): `BudgetGuard(...,
+  window="utc-day", store=SqliteStore(path))` keeps spend and in-flight
+  reservations in dependency-free SQLite transactions, so sequential and
+  overlapping Python processes share one daily ceiling. With no store/window,
+  the existing in-memory behavior is unchanged. (Persistence is USD-only; it
+  cannot be combined with `token_limit` / `step()` yet.)
 
 ### Added (py + js)
 
