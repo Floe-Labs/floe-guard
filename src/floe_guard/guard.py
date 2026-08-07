@@ -34,12 +34,14 @@ import threading
 import time
 import warnings
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, NoReturn
 
 from .errors import (
     BudgetExceeded,
+    TokenBudgetExceeded,
     UnpriceableModelError,
     UnpriceableModelWarning,
 )
@@ -47,6 +49,59 @@ from .pricing import ManualPrice, price_tokens, resolve_price
 
 # Tolerance for float rounding in the running spend total (well below $0.000001).
 _EPS = 1e-12
+
+
+@dataclass(frozen=True)
+class BudgetReservation:
+    """A two-dimensional in-flight hold (USD + tokens) returned by
+    :meth:`BudgetGuard.reserve` when a token ceiling or an active
+    :meth:`BudgetGuard.step` is involved.
+
+    A dumb value handle — it carries the amounts held, nothing else. Pass it
+    straight back to :meth:`BudgetGuard.settle` / :meth:`BudgetGuard.release`.
+    When neither tokens nor a step are involved, ``reserve`` returns a plain
+    ``float`` instead (byte-for-byte the old behaviour), so ``ReservationHandle``
+    is the union of the two.
+    """
+
+    usd: float
+    tokens: int
+
+    def __post_init__(self) -> None:
+        # Public, re-exported value object: validate at construction so a
+        # hand-rolled BudgetReservation(usd=nan, tokens=-5) can't slip past the
+        # raw-float guard and corrupt _reserved / _reserved_tokens downstream
+        # (settle/release trust these fields). Same contracts as reserve()'s
+        # inputs and the JS twin's reservedUsdOf validation.
+        if not math.isfinite(self.usd) or self.usd < 0:
+            raise ValueError(f"BudgetReservation.usd must be finite and >= 0, got {self.usd!r}")
+        if isinstance(self.tokens, bool) or not isinstance(self.tokens, int) or self.tokens < 0:
+            raise ValueError(
+                f"BudgetReservation.tokens must be a non-negative int, got {self.tokens!r}"
+            )
+
+
+# A plain float when USD-only (backward compatible); a BudgetReservation when a
+# token ceiling or an active step is in play.
+ReservationHandle = float | BudgetReservation
+
+
+# eq=False: identity, not value, equality. The step stack is popped by identity
+# (``is`` / ``list.remove`` on the exact object), so two nested steps with the
+# same caps and no spend yet must not compare equal or ``remove`` could drop the
+# wrong one. Matches the JS twin, which splices by ``lastIndexOf`` (reference).
+@dataclass(eq=False)
+class _StepState:
+    """One scope on the step stack (see :meth:`BudgetGuard.step`). Mutable: the
+    guard accrues into ``spent_*`` / ``reserved_*`` as calls settle within the
+    step. ``max_usd`` / ``max_tokens`` are ``None`` for an uncapped dimension."""
+
+    max_usd: float | None
+    max_tokens: int | None
+    spent_usd: float = 0.0
+    spent_tokens: int = 0
+    reserved_usd: float = 0.0
+    reserved_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -79,6 +134,18 @@ class BudgetAdvisory:
     # floor(remaining_usd / expected_cost). None when expected_cost is 0.0
     # (no call recorded yet) — unknown, not zero.
     est_calls_remaining: int | None = None
+    # Aggregate token utilization in basis points (0..10000), mirroring used_bps
+    # for the token ceiling. None when no token_limit is set (nothing to signal).
+    token_used_bps: int | None = None
+    # Tokens left before the aggregate token ceiling (never negative). None when
+    # no token_limit is set.
+    remaining_tokens: int | None = None
+    # Per-step headroom for the innermost active step, present (non-None) ONLY
+    # while a step() is active AND that dimension is capped. Lets a router read
+    # how much room the current step has before its own cap, not just the global
+    # one. None when no step is active or the dimension is uncapped.
+    step_remaining_usd: float | None = None
+    step_remaining_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -142,7 +209,10 @@ class BudgetGuard:
             (you have explicitly opted into un-enforced spend for that model).
         on_block: optional callback invoked with ``(spent_usd, limit_usd)`` right
             before :class:`BudgetExceeded` is raised. Defaults to printing the
-            ``BUDGET EXCEEDED — call blocked`` banner to stderr.
+            ``BUDGET EXCEEDED — call blocked`` banner to stderr. Fires on **USD**
+            ceiling crossings only; a token-ceiling block
+            (:class:`TokenBudgetExceeded`, aggregate or step) is raised without
+            invoking it, because the callback is dollar-shaped (spent/limit USD).
         near_limit_bps: utilization (basis points, 0..10000) at which
             :meth:`advisory` flags ``near_limit`` so an agent can taper before the
             hard-stop. Defaults to ``8000`` (80%).
@@ -150,6 +220,11 @@ class BudgetGuard:
             (:attr:`spend_log`). When set, the ledger is a ring buffer keeping the
             most recent N events so a long-running agent's memory stays bounded;
             the running totals are unaffected. ``None`` (default) keeps every event.
+        token_limit: optional aggregate token ceiling (prompt + completion + cache
+            buckets) enforced alongside ``limit_usd``. ``check`` / ``reserve`` take
+            ``estimated_tokens`` to pre-emptively block; a cross raises
+            :class:`TokenBudgetExceeded` (``scope="aggregate"``). ``None`` (default)
+            disables the token dimension entirely.
 
     Thread-safe: the running total and in-flight reservations are guarded by a
     lock, so the guard can back a parallel crew (use :meth:`reserve` /
@@ -165,6 +240,7 @@ class BudgetGuard:
         on_block: Callable[[float, float], None] | None = None,
         near_limit_bps: int = 8000,
         max_log_events: int | None = None,
+        token_limit: int | None = None,
     ) -> None:
         if not math.isfinite(limit_usd) or limit_usd < 0:
             # NaN/inf would make every check() comparison evaluate False and
@@ -179,7 +255,20 @@ class BudgetGuard:
             or not 0 <= near_limit_bps <= 10000
         ):
             raise ValueError(f"near_limit_bps must be an int in 0..10000, got {near_limit_bps!r}")
+        # Same int-not-bool contract as near_limit_bps (parity with TS
+        # Number.isInteger). None disables the token ceiling entirely.
+        if token_limit is not None and (
+            isinstance(token_limit, bool) or not isinstance(token_limit, int) or token_limit < 0
+        ):
+            raise ValueError(f"token_limit must be None or a non-negative int, got {token_limit!r}")
         self.limit_usd = float(limit_usd)
+        self.token_limit = token_limit
+        # Aggregate tokens accrued (prompt + completion + cache buckets), and
+        # tokens held in-flight — the token twin of spent_usd / _reserved.
+        self.spent_tokens = 0
+        self._reserved_tokens = 0
+        # Step stack: innermost step is last. Empty when no step() is active.
+        self._steps: list[_StepState] = []
         self.price_overrides = price_overrides
         self.fail_closed = fail_closed
         self._on_block = on_block or _default_on_block
@@ -216,23 +305,40 @@ class BudgetGuard:
 
     # ── enforcement ───────────────────────────────────────────────────────────
 
-    def check(self, estimated_next_cost: float | None = None) -> None:
-        """Raise :class:`BudgetExceeded` if the next call would cross the ceiling.
+    def check(
+        self,
+        estimated_next_cost: float | None = None,
+        *,
+        estimated_tokens: int = 0,
+    ) -> None:
+        """Raise if the next call would cross any active ceiling.
 
-        Call this immediately before each LLM request. The "next call" is
-        estimated conservatively as the costlier of the last LLM call and the
+        Call this immediately before each LLM request. The "next call" USD cost
+        is estimated conservatively as the costlier of the last LLM call and the
         last tool call (override with ``estimated_next_cost``); the first call
-        is always allowed unless the ceiling is already met. A belt-and-suspenders
+        is always allowed unless a ceiling is already met. A belt-and-suspenders
         check on the running total catches an overshoot if the estimate was too
         low. In-flight reservations count toward the total, so this stays
         correct alongside :meth:`reserve`.
+
+        Pass ``estimated_tokens`` to also pre-emptively block on the aggregate
+        ``token_limit`` or the active step's token cap (raises
+        :class:`TokenBudgetExceeded`). A USD block raises :class:`BudgetExceeded`.
 
         Note: ``check`` is a non-binding peek. For parallel calls, use
         :meth:`reserve` / :meth:`settle`, which hold the estimate atomically.
         """
         self._validate_estimate(estimated_next_cost)
-        if self._would_cross(estimated_next_cost):
-            self._block()
+        self._validate_token_estimate(estimated_tokens)
+        with self._lock:
+            estimate = (
+                self._default_estimate_locked()
+                if estimated_next_cost is None
+                else max(0.0, estimated_next_cost)
+            )
+            blocked = self._blocking_cross_locked(estimate, max(0, estimated_tokens))
+        if blocked is not None:
+            self._raise_block(blocked)
 
     def estimate_call(
         self,
@@ -264,35 +370,52 @@ class BudgetGuard:
             return None
         return price_tokens(priced, prompt_tokens, max_completion_tokens)
 
-    def reserve(self, estimated_cost: float | None = None) -> float:
-        """Atomically check the ceiling AND hold the estimated cost in-flight.
+    def reserve(
+        self,
+        estimated_cost: float | None = None,
+        *,
+        estimated_tokens: int = 0,
+    ) -> ReservationHandle:
+        """Atomically check every active ceiling AND hold the estimate in-flight.
 
         This is the concurrency-safe enforcement path. Each parallel caller
         reserves before its call, so N callers can't all clear the same stale
-        total and overshoot. Raises :class:`BudgetExceeded` (without reserving)
-        if the reservation would cross the ceiling.
+        total and overshoot. Raises :class:`BudgetExceeded` (USD) or
+        :class:`TokenBudgetExceeded` (tokens) — without reserving — if the
+        reservation would cross the aggregate ceiling or the active step's cap.
 
-        Returns a reservation handle (the USD amount held) to pass to
-        :meth:`settle` after the response, or to :meth:`release` if the call
-        fails. ``estimated_cost`` defaults to the costlier of the last LLM call
-        and the last tool call.
+        Returns a reservation handle to pass to :meth:`settle` after the
+        response, or to :meth:`release` if the call fails. **For backward
+        compatibility the handle is a plain ``float`` (the USD held) when no
+        tokens and no active :meth:`step` are involved** — old callers are
+        unchanged. Otherwise it is a :class:`BudgetReservation` carrying both
+        dimensions. ``estimated_cost`` defaults to the costlier of the last LLM
+        call and the last tool call.
         """
         self._validate_estimate(estimated_cost)
+        self._validate_token_estimate(estimated_tokens)
+        tokens = max(0, estimated_tokens)
         with self._lock:
             estimate = (
                 self._default_estimate_locked()
                 if estimated_cost is None
                 else max(0.0, estimated_cost)
             )
-            committed = self.spent_usd + self._reserved
-            if committed > self.limit_usd - _EPS or committed + estimate > self.limit_usd + _EPS:
-                spent, limit = self.spent_usd, self.limit_usd
-            else:
+            blocked = self._blocking_cross_locked(estimate, tokens)
+            if blocked is None:
                 self._reserved += estimate
-                return estimate
+                self._reserved_tokens += tokens
+                step = self._steps[-1] if self._steps else None
+                if step is not None:
+                    step.reserved_usd += estimate
+                    step.reserved_tokens += tokens
+                # Plain float only when nothing token- or step-shaped is in play,
+                # so pre-existing USD-only callers get byte-for-byte the old handle.
+                if tokens == 0 and step is None:
+                    return estimate
+                return BudgetReservation(usd=estimate, tokens=tokens)
         # Blocked — notify and raise outside the lock.
-        self._on_block(spent, limit)
-        raise BudgetExceeded(spent, limit)
+        self._raise_block(blocked)
 
     def settle(
         self,
@@ -300,7 +423,7 @@ class BudgetGuard:
         prompt_tokens: int,
         completion_tokens: int,
         *,
-        reserved: float = 0.0,
+        reserved: ReservationHandle = 0.0,
         price: ManualPrice | None = None,
         cache_creation_input_tokens: int = 0,
         cache_creation_input_tokens_1h: int = 0,
@@ -316,11 +439,16 @@ class BudgetGuard:
         :class:`SpendEvent` to :attr:`spend_log` (``label`` tags it, e.g. with an
         agent or task name); the warn-and-skip path accrues nothing and logs
         nothing, so the ledger stays in lockstep with ``spent_usd``.
+
+        ``reserved`` accepts a plain float (USD-only, backward compatible) or a
+        :class:`BudgetReservation` from a token/step-aware :meth:`reserve`; the
+        token hold is drained the same way. Tokens accrue free from the counts
+        this method already receives.
         """
         # A bad reserved handle would corrupt _reserved and break the ceiling for
         # OTHER in-flight calls (negative → phantom hold; inf → clears all holds).
-        if not math.isfinite(reserved) or reserved < 0:
-            raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
+        # _reserved_usd_of validates the handle (raw float, or a BudgetReservation's fields).
+        reserved_usd = self._reserved_usd_of(reserved)
         priced = self._resolve(model, price)
         if priced is None:
             warnings.warn(
@@ -355,10 +483,21 @@ class BudgetGuard:
             # path above.
             self.release(reserved)
             raise
+        # Tokens accrued match what USD bills: prompt + completion + every cache
+        # bucket price_tokens charges (negative counts clamp to 0, as in pricing).
+        accrued_tokens = (
+            max(0, prompt_tokens)
+            + max(0, completion_tokens)
+            + max(0, cache_creation_input_tokens)
+            + max(0, cache_creation_input_tokens_1h)
+            + max(0, cache_read_input_tokens)
+        )
         with self._lock:
             if reserved:
                 self._consume_reservation_locked(reserved)
             self.spent_usd += cost
+            self.spent_tokens += accrued_tokens
+            self._accrue_step_locked(cost, accrued_tokens)
             # Clamp a sub-epsilon float overshoot back to the limit so the running
             # total never reports as having crossed the ceiling by a rounding artifact.
             if 0.0 < self.spent_usd - self.limit_usd < _EPS:
@@ -374,8 +513,9 @@ class BudgetGuard:
                     cost_usd=cost,
                     label=label,
                     # 0.0 means "no reservation" (the plain record() path) — omit
-                    # rather than log a meaningless zero.
-                    reserved=reserved if reserved else None,
+                    # rather than log a meaningless zero. Log the USD amount so the
+                    # ledger schema stays float-shaped even for a BudgetReservation.
+                    reserved=reserved_usd if reserved_usd else None,
                 )
             )
         return cost
@@ -410,7 +550,7 @@ class BudgetGuard:
             label=label,
         )
 
-    def reserve_tool(self, estimated_cost: float) -> float:
+    def reserve_tool(self, estimated_cost: float) -> ReservationHandle:
         """Atomically check the ceiling AND hold a tool call's cost in-flight.
 
         The tool-spend counterpart of :meth:`reserve` — and STRONGER than the
@@ -444,7 +584,7 @@ class BudgetGuard:
         tool: str,
         cost_usd: float,
         *,
-        reserved: float = 0.0,
+        reserved: ReservationHandle = 0.0,
         label: str | None = None,
     ) -> float:
         """Release a reservation and record a tool call's actual cost.
@@ -462,9 +602,9 @@ class BudgetGuard:
         if not math.isfinite(cost_usd) or cost_usd < 0:
             raise ValueError(f"cost_usd must be a finite, non-negative number, got {cost_usd!r}")
         # A bad reserved handle would corrupt _reserved and break the ceiling for
-        # OTHER in-flight calls — same contract as settle().
-        if not math.isfinite(reserved) or reserved < 0:
-            raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
+        # OTHER in-flight calls — same contract as settle(). _reserved_usd_of
+        # validates the handle (raw float, or a BudgetReservation's fields).
+        reserved_usd = self._reserved_usd_of(reserved)
         # int (and bool) are valid inputs; coerce so the logged event and the
         # return value are always float, like every other cost in the guard.
         cost_usd = float(cost_usd)
@@ -472,6 +612,8 @@ class BudgetGuard:
             if reserved:
                 self._consume_reservation_locked(reserved)
             self.spent_usd += cost_usd
+            # A paid tool spends the step's USD too (no tokens to price).
+            self._accrue_step_locked(cost_usd, 0)
             # Same sub-epsilon clamp as settle(): never report a rounding-artifact
             # crossing of the ceiling.
             if 0.0 < self.spent_usd - self.limit_usd < _EPS:
@@ -487,7 +629,7 @@ class BudgetGuard:
                     completion_tokens=None,
                     cost_usd=cost_usd,
                     label=label,
-                    reserved=reserved if reserved else None,
+                    reserved=reserved_usd if reserved_usd else None,
                 )
             )
         return cost_usd
@@ -502,14 +644,14 @@ class BudgetGuard:
         """
         return self.settle_tool(tool, cost_usd, reserved=0.0, label=label)
 
-    def release(self, reserved: float) -> None:
+    def release(self, reserved: ReservationHandle) -> None:
         """Drop an in-flight reservation without recording spend (e.g. the call
-        failed before producing usage). Safe to call with ``0``."""
+        failed before producing usage). Safe to call with ``0``. Accepts a plain
+        float or a :class:`BudgetReservation` (drains its token hold too)."""
         # Validate before the zero-check so a NaN handle raises instead of being
         # silently dropped (which would leak the hold). A bad handle here corrupts
-        # _reserved for other in-flight calls.
-        if not math.isfinite(reserved) or reserved < 0:
-            raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
+        # _reserved for other in-flight calls. _reserved_usd_of validates a raw float.
+        self._reserved_usd_of(reserved)
         if not reserved:
             return
         with self._lock:
@@ -561,6 +703,52 @@ class BudgetGuard:
             for event in self.spend_log
         )
 
+    @contextmanager
+    def step(
+        self, *, max_usd: float | None = None, max_tokens: int | None = None
+    ) -> Iterator[BudgetGuard]:
+        """Scope a per-step USD and/or token cap for a **sequential agent loop**.
+
+        Push a step onto the guard's stack on enter, pop it on exit; the
+        enforcement/accrual path honours the innermost active step *on top of*
+        the aggregate ceilings. A call that would cross the step's ``max_usd`` /
+        ``max_tokens`` is hard-blocked (``BudgetExceeded`` / ``TokenBudgetExceeded``
+        with ``scope="step"``) even if the aggregate budget has room::
+
+            with guard.step(max_tokens=5_000) as g:   # g IS guard
+                g.check(estimated_tokens=...)          # may raise scope="step"
+                g.record("gpt-4o", 1200, 350)
+
+        Yields the SAME guard, so no adapter needs to know about steps — pass the
+        guard through as usual. Steps nest (an inner step is checked first); the
+        innermost is the one that owns each call. **Not for concurrent parallel
+        steps on one guard** — that's a per-step identity registry, out of scope
+        for issue #46. Use one guard per parallel branch instead.
+        """
+        if max_usd is not None and (not math.isfinite(max_usd) or max_usd < 0):
+            raise ValueError(
+                f"max_usd must be None or a finite, non-negative number, got {max_usd!r}"
+            )
+        if max_tokens is not None and (
+            isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 0
+        ):
+            raise ValueError(f"max_tokens must be None or a non-negative int, got {max_tokens!r}")
+        state = _StepState(
+            max_usd=float(max_usd) if max_usd is not None else None, max_tokens=max_tokens
+        )
+        with self._lock:
+            self._steps.append(state)
+        try:
+            yield self
+        finally:
+            with self._lock:
+                # Pop our own state. Identity match (not just pop()) so an
+                # out-of-order exit can't silently drop someone else's step.
+                if self._steps and self._steps[-1] is state:
+                    self._steps.pop()
+                else:
+                    self._steps.remove(state)
+
     def advisory(self) -> BudgetAdvisory:
         """Context-aware spend advisory for this budget — see :class:`BudgetAdvisory`.
 
@@ -568,7 +756,27 @@ class BudgetGuard:
         80%), so an agent can taper *before* the hard-stop. Advisory only: read it
         to adapt; :meth:`check` is what enforces the ceiling.
         """
-        if self.limit_usd <= 0.0:
+        # Snapshot every shared field under the lock — running totals, last-call
+        # costs, and the innermost step's mutable fields — so a concurrent
+        # settle()/step() can't change them mid-read, and a step() exit can't pop
+        # the last step between the truthiness check and the index (IndexError).
+        # The arithmetic below runs on the snapshot, lock-free.
+        with self._lock:
+            limit_usd = self.limit_usd
+            spent_usd = self.spent_usd
+            last_llm = self._last_llm_cost
+            last_tool = self._last_tool_cost
+            token_limit = self.token_limit
+            spent_tokens = self.spent_tokens
+            near_limit_bps = self.near_limit_bps
+            step = self._steps[-1] if self._steps else None
+            step_active = step is not None
+            step_max_usd = step.max_usd if step is not None else None
+            step_spent_usd = step.spent_usd if step is not None else 0.0
+            step_max_tokens = step.max_tokens if step is not None else None
+            step_spent_tokens = step.spent_tokens if step is not None else 0
+
+        if limit_usd <= 0.0:
             used_bps = 10000
         else:
             # Floor (not round) so used_bps never over-reports utilization and
@@ -576,19 +784,50 @@ class BudgetGuard:
             # early. The tiny epsilon absorbs float noise (0.7*10000 = 6999.9999…),
             # and floor matches JS Math.floor exactly — round() would diverge
             # (Python banker's rounding vs JS ties-up).
-            used_bps = max(0, min(10000, int(self.spent_usd / self.limit_usd * 10000 + 1e-9)))
-        remaining = max(0.0, self.limit_usd - self.spent_usd)
-        # Lock-free read of the last-cost fields, consistent with reading
-        # spent_usd above: the estimate is the costlier of the last LLM and tool
-        # call (the guard's own default reservation), 0.0 before any call.
-        expected_cost = max(self._last_llm_cost, self._last_tool_cost)
+            used_bps = max(0, min(10000, int(spent_usd / limit_usd * 10000 + 1e-9)))
+        remaining = max(0.0, limit_usd - spent_usd)
+        # The estimate is the costlier of the last LLM and tool call (the guard's
+        # own default reservation), 0.0 before any call.
+        expected_cost = max(last_llm, last_tool)
         # +1e-9 absorbs float noise so e.g. 0.6/0.2 floors to 3 not 2 (same
         # epsilon rationale as used_bps above, and keeps JS Math.floor parity).
-        est_calls_remaining = (
-            int(remaining / expected_cost + 1e-9) if expected_cost > 0.0 else None
-        )
+        est_calls_remaining = int(remaining / expected_cost + 1e-9) if expected_cost > 0.0 else None
+        # Aggregate token utilization, mirroring used_bps. None (no signal) when
+        # the token dimension is unset — an aggregate-only USD guard is unchanged.
+        token_used_bps: int | None = None
+        remaining_tokens: int | None = None
+        near_token = False
+        if token_limit is not None:
+            if token_limit <= 0:
+                token_used_bps = 10000
+            else:
+                token_used_bps = max(0, min(10000, int(spent_tokens / token_limit * 10000 + 1e-9)))
+            remaining_tokens = max(0, token_limit - spent_tokens)
+            near_token = token_used_bps >= near_limit_bps
+        # Innermost active step's headroom + nearness (per dimension, only when
+        # that dimension is capped). None keeps the fields absent for old readers.
+        step_remaining_usd: float | None = None
+        step_remaining_tokens: int | None = None
+        near_step = False
+        if step_active:
+            if step_max_usd is not None:
+                step_remaining_usd = max(0.0, step_max_usd - step_spent_usd)
+                if step_max_usd <= 0.0:
+                    near_step = True
+                else:
+                    s_bps = int(step_spent_usd / step_max_usd * 10000 + 1e-9)
+                    near_step = near_step or s_bps >= near_limit_bps
+            if step_max_tokens is not None:
+                step_remaining_tokens = max(0, step_max_tokens - step_spent_tokens)
+                if step_max_tokens <= 0:
+                    near_step = True
+                else:
+                    s_tbps = int(step_spent_tokens / step_max_tokens * 10000 + 1e-9)
+                    near_step = near_step or s_tbps >= near_limit_bps
         return BudgetAdvisory(
-            near_limit=used_bps >= self.near_limit_bps,
+            # near_limit now also flips when a token ceiling or the active step is
+            # near its cap, so a router can downshift before ANY hard-stop.
+            near_limit=used_bps >= near_limit_bps or near_token or near_step,
             used_bps=used_bps,
             # Settled budget: limit minus accrued spend, deliberately NOT net of
             # in-flight reservations. This differs from the remaining_usd property
@@ -596,10 +835,14 @@ class BudgetGuard:
             # about money already spent, while the property reports what a new call
             # can still claim.
             remaining_usd=remaining,
-            limit_usd=self.limit_usd,
-            spent_usd=self.spent_usd,
+            limit_usd=limit_usd,
+            spent_usd=spent_usd,
             expected_cost=expected_cost,
             est_calls_remaining=est_calls_remaining,
+            token_used_bps=token_used_bps,
+            remaining_tokens=remaining_tokens,
+            step_remaining_usd=step_remaining_usd,
+            step_remaining_tokens=step_remaining_tokens,
         )
 
     # ── internals ──────────────────────────────────────────────────────────────
@@ -614,8 +857,8 @@ class BudgetGuard:
         """
         return max(self._last_llm_cost, self._last_tool_cost)
 
-    def _consume_reservation_locked(self, reserved: float) -> None:
-        """Subtract a settled/released hold from the in-flight tally. Caller
+    def _consume_reservation_locked(self, reserved: ReservationHandle) -> None:
+        """Subtract a settled/released hold from the in-flight tallies. Caller
         must hold ``self._lock``. A handle larger than EVERYTHING currently
         held cannot have come from a matching :meth:`reserve` — raising beats
         silently clamping, which would free OTHER callers' holds and fail the
@@ -623,13 +866,33 @@ class BudgetGuard:
         draining many holds; per-caller over-release (a handle within the
         total but larger than the caller's own hold) is undetectable without
         per-handle tracking and remains the caller's responsibility.
+
+        Drains both dimensions the SAME way — a ``BudgetReservation`` carries a
+        token hold too, and (like the USD float) it also unwinds the innermost
+        active step. A plain ``float`` handle drains only USD (the backward-compat
+        path). We do NOT track which step a handle came from: a handle is drained
+        against whatever step is innermost now, matching the sequential-loop
+        contract (concurrent parallel steps on one guard are out of scope, #46).
         """
-        if reserved > self._reserved + _EPS:
+        usd = reserved.usd if isinstance(reserved, BudgetReservation) else reserved
+        tokens = reserved.tokens if isinstance(reserved, BudgetReservation) else 0
+        if usd > self._reserved + _EPS:
             raise ValueError(
-                f"reserved handle ({reserved!r}) exceeds total in-flight reservations "
+                f"reserved handle ({usd!r}) exceeds total in-flight reservations "
                 f"({self._reserved!r}) — a handle must come from a matching reserve()"
             )
-        self._reserved = max(0.0, self._reserved - reserved)
+        if tokens > self._reserved_tokens:
+            raise ValueError(
+                f"reserved token handle ({tokens!r}) exceeds total in-flight token "
+                f"reservations ({self._reserved_tokens!r}) — a handle must come from a "
+                f"matching reserve()"
+            )
+        self._reserved = max(0.0, self._reserved - usd)
+        self._reserved_tokens = max(0, self._reserved_tokens - tokens)
+        step = self._steps[-1] if self._steps else None
+        if step is not None:
+            step.reserved_usd = max(0.0, step.reserved_usd - usd)
+            step.reserved_tokens = max(0, step.reserved_tokens - tokens)
 
     def _validate_estimate(self, estimated: float | None) -> None:
         # NaN/inf would poison the ceiling comparisons and fail-open (or poison
@@ -637,6 +900,41 @@ class BudgetGuard:
         # matching the constructor's math.isfinite guard and the TS Number.isFinite.
         if estimated is not None and not math.isfinite(estimated):
             raise ValueError(f"estimated cost must be a finite number, got {estimated!r}")
+
+    @staticmethod
+    def _validate_token_estimate(estimated_tokens: int) -> None:
+        # Reject a float (incl. NaN/inf) or bool token estimate BEFORE reserve()
+        # mutates _reserved_tokens / the step's hold. Otherwise the mutation lands
+        # and BudgetReservation.__post_init__ rejects the handle only afterwards —
+        # leaking the hold — and a NaN cast into the integer token comparisons
+        # would fail-open the ceiling. A negative int is clamped by max(0, ...),
+        # matching the lenient USD estimate. Mirrors the TS Number.isInteger guard.
+        if isinstance(estimated_tokens, bool) or not isinstance(estimated_tokens, int):
+            raise ValueError(f"estimated_tokens must be an int, got {estimated_tokens!r}")
+
+    @staticmethod
+    def _reserved_usd_of(reserved: ReservationHandle) -> float:
+        """The USD amount of a handle, validated. A ``BudgetReservation`` self-
+        validates at construction (:meth:`BudgetReservation.__post_init__`), so its
+        ``usd`` is already finite/non-negative; a raw float gets the same
+        finite/non-negative guard here so a bad hand-rolled handle can't corrupt
+        the in-flight tally."""
+        if isinstance(reserved, BudgetReservation):
+            return reserved.usd
+        if not math.isfinite(reserved) or reserved < 0:
+            raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
+        return reserved
+
+    def _accrue_step_locked(self, cost: float, tokens: int) -> None:
+        """Accrue a settled call into the innermost active step. Caller must
+        hold ``self._lock``. No-op when no step is active — the reservation was
+        already drained by _consume_reservation_locked, this adds the *settled*
+        amount. Sequential-loop contract: the innermost step is the one that
+        owns the call (concurrent parallel steps on one guard are out of scope)."""
+        step = self._steps[-1] if self._steps else None
+        if step is not None:
+            step.spent_usd += cost
+            step.spent_tokens += tokens
 
     def _stream_register(self, reserved: float) -> object:
         """Register an active stream (see :class:`~floe_guard.stream.StreamGuard`)
@@ -673,19 +971,78 @@ class BudgetGuard:
             others = self.spent_usd + max(0.0, self._reserved - own_reserved) + other_overage
             return others + cumulative_call_cost > self.limit_usd + _EPS
 
-    def _would_cross(self, estimated_next_cost: float | None) -> bool:
-        with self._lock:
-            estimate = (
-                self._default_estimate_locked()
-                if estimated_next_cost is None
-                else max(0.0, estimated_next_cost)
-            )
-            committed = self.spent_usd + self._reserved
-            return committed > self.limit_usd - _EPS or committed + estimate > self.limit_usd + _EPS
+    def _blocking_cross_locked(
+        self, estimate_usd: float, estimate_tokens: int
+    ) -> tuple[str, str, float, float] | None:
+        """The ONE choke point, now across two dimensions and two scopes. Caller
+        must hold ``self._lock``. Returns the first ceiling that blocks as
+        ``(dimension, scope, spent, limit)`` — dimension ``"usd" | "tokens"``,
+        scope ``"aggregate" | "step"`` — or ``None`` if the call fits everywhere.
+        The ``spent`` / ``limit`` pair is the crossed ceiling's own figures (USD
+        for a USD block, token counts for a token block), captured HERE under the
+        lock so :meth:`_raise_block` (which runs after the lock is released) builds
+        the error and fires ``on_block`` with a snapshot — never re-reading shared
+        state, so a concurrent write or step() exit can't make the reported values
+        inconsistent or raise an ``IndexError``.
 
-    def _block(self) -> None:
+        Order (aggregate before step) is deliberate: the guard-wide ceiling is
+        the hard money/token limit, so it's reported first when both would block.
+        The token ceilings are only consulted when ``token_limit`` / the step's
+        ``max_tokens`` is set — an unset dimension never blocks.
+        """
+        # Aggregate USD — same comparison the original _would_cross used. The
+        # message/callback report the accrued total (spent_usd), as _block did.
+        committed = self.spent_usd + self._reserved
+        if committed > self.limit_usd - _EPS or committed + estimate_usd > self.limit_usd + _EPS:
+            return ("usd", "aggregate", self.spent_usd, self.limit_usd)
+        # Aggregate tokens (integers — no epsilon needed).
+        if self.token_limit is not None:
+            committed_t = self.spent_tokens + self._reserved_tokens
+            if committed_t >= self.token_limit or committed_t + estimate_tokens > self.token_limit:
+                return ("tokens", "aggregate", committed_t, self.token_limit)
+        # Innermost active step's caps (an outer step can only be crossed by
+        # first crossing the inner one, so checking the innermost is sufficient).
+        step = self._steps[-1] if self._steps else None
+        if step is not None:
+            if step.max_usd is not None:
+                s_committed = step.spent_usd + step.reserved_usd
+                if (
+                    s_committed > step.max_usd - _EPS
+                    or s_committed + estimate_usd > step.max_usd + _EPS
+                ):
+                    # USD message stays aggregate-shaped (matches the original
+                    # _raise_block, which reported spent_usd/limit_usd for a step
+                    # USD block too).
+                    return ("usd", "step", self.spent_usd, self.limit_usd)
+            if step.max_tokens is not None:
+                s_committed_t = step.spent_tokens + step.reserved_tokens
+                if (
+                    s_committed_t >= step.max_tokens
+                    or s_committed_t + estimate_tokens > step.max_tokens
+                ):
+                    return ("tokens", "step", s_committed_t, step.max_tokens)
+        return None
+
+    def _block(self) -> NoReturn:
+        """Notify + raise a USD :class:`BudgetExceeded`. The aggregate-USD path
+        used by :class:`~floe_guard.stream.StreamGuard`; :meth:`_raise_block` is
+        the dimension-aware generalisation used by check/reserve."""
         self._on_block(self.spent_usd, self.limit_usd)
         raise BudgetExceeded(self.spent_usd, self.limit_usd)
+
+    def _raise_block(self, blocked: tuple[str, str, float, float]) -> NoReturn:
+        """Notify + raise the right error for a (dimension, scope) block. Called
+        OUTSIDE the lock (like the original _block). ``spent`` / ``limit`` were
+        snapshotted under the lock by :meth:`_blocking_cross_locked`, so this path
+        reads no shared state — the reported figures stay consistent with the
+        blocking decision and can't race a concurrent write or step() exit."""
+        dimension, scope, spent, limit = blocked
+        if dimension == "usd":
+            self._on_block(spent, limit)
+            raise BudgetExceeded(spent, limit)
+        # Token block — counts came in with `blocked`; on_block is dollar-shaped
+        # so a token block skips it.
+        raise TokenBudgetExceeded(int(spent), int(limit), scope)
 
     def _resolve(self, model: str, price: ManualPrice | None):
         overrides = self.price_overrides

@@ -174,6 +174,16 @@ ignore it; `check()` is what enforces the ceiling. See
 [`examples/budget_aware.py`](examples/budget_aware.py) for a runnable taper demo
 (no API key).
 
+Model choice is only one axis. The same signal drives **any** cost lever, and in
+most agents the bigger levers are elsewhere — retrieval depth
+([`examples/retrieval_depth.py`](examples/retrieval_depth.py): RAG `top_k` falls
+20 → 12 → 5), context size
+([`examples/context_size.py`](examples/context_size.py): stop resending the whole
+transcript, cap replies shorter), and plan complexity
+([`examples/plan_complexity.py`](examples/plan_complexity.py): thin the reasoning,
+then drop the optional sub-tasks to protect the required ones). Each holds the
+model fixed and shrinks a non-model parameter as the budget drains (no API key).
+
 ### Budget-aware retry
 
 Blind retries can spend the same expensive path again right when the agent is
@@ -266,6 +276,55 @@ call never shrinks the hold ahead of an expensive LLM call.) The caller supplies
 is no tool cost-map); every tool call lands in `spend_log` as a
 `kind: "tool"` event. Same API in TS (`reserveTool`/`settleTool`/`recordTool`/
 `toolCosts`). See [`examples/tool_budget.py`](examples/tool_budget.py).
+
+## Token ceilings and per-step budgets
+
+Dollars aren't the only runaway. A token ceiling caps *total recorded token
+usage — every bucket the guard counts: prompt, completion, and cache* regardless
+of price, and a **per-step** cap keeps one step of a sequential loop from
+starving the rest even when the global budget has room.
+Both ride on the same reserve/settle machinery — they're a second dimension, not
+a second guard:
+
+```python
+from floe_guard import BudgetGuard, TokenBudgetExceeded
+
+# aggregate token ceiling alongside the USD ceiling
+guard = BudgetGuard(limit_usd=100.0, token_limit=20_000)
+
+guard.check(estimated_tokens=1_200)      # raises TokenBudgetExceeded if it'd cross
+guard.record("gpt-4o", 800, 400)         # tokens accrue for free from the counts
+
+# a per-step cap for one step of a sequential loop
+with guard.step(max_tokens=5_000) as g:  # g IS guard — adapters pass it through
+    g.record("gpt-4o", 3_000, 1_500)
+    g.check(estimated_tokens=1_000)       # 4_500 + 1_000 > 5_000 → scope="step"
+
+adv = guard.advisory()
+adv.token_used_bps        # aggregate token utilization (None if no token_limit)
+adv.remaining_tokens      # tokens left before the ceiling (None if no token_limit)
+adv.step_remaining_tokens # active step's headroom (None if no step, or its token cap is unset)
+```
+
+`TokenBudgetExceeded` subclasses `BudgetExceeded`, so budget-aware retry treats a
+token block as terminal automatically. With no `token_limit` and no `step()`, USD
+enforcement is unchanged and `reserve()` still returns a plain `float` — a
+`BudgetReservation` handle appears only when tokens are actually reserved or a
+step is active. (`advisory()` gains the token/step fields shown above; they're
+additive and `None` when their dimension is unused.) In TS the step is a callback
+and fields are camelCase:
+
+```ts
+const guard = new BudgetGuard(100, { tokenLimit: 20_000 });
+guard.check(undefined, { estimatedTokens: 1_200 });
+guard.step({ maxTokens: 5_000 }, (g) => {
+  g.record("gpt-4o", 3_000, 1_500);
+  g.check(undefined, { estimatedTokens: 1_000 }); // throws TokenBudgetExceeded
+});
+guard.advisory().stepRemainingTokens;
+```
+
+See [`examples/step_budget.py`](examples/step_budget.py) (no network).
 
 ## LatencyBudget — deadlines, the same way
 

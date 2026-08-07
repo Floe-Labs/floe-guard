@@ -9,7 +9,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { BudgetExceeded, BudgetGuard, UnpriceableModelError, budgetGuardMiddleware } from "../src/index.js";
+import { BudgetExceeded, BudgetGuard, type ReservationHandle, UnpriceableModelError, budgetGuardMiddleware } from "../src/index.js";
 
 function fakeModel(modelId: string) {
   return { modelId } as never;
@@ -24,7 +24,7 @@ describe("BudgetGuard — concurrency (issue #18)", () => {
 
     let blocked = 0;
     const agent = async () => {
-      let reserved: number;
+      let reserved: ReservationHandle;
       try {
         reserved = guard.reserve();
       } catch (err) {

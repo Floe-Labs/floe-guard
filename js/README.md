@@ -79,6 +79,40 @@ guard.recordTool("exa.search", 0.004); // post-hoc, for metered APIs
 guard.toolCosts; // { "apollo.people_lookup": 0.42, "exa.search": 0.11 }
 ```
 
+## Token ceilings and per-step budgets
+
+Cap *total token usage — every bucket the guard counts: prompt, completion, and
+cache* (a token ceiling) and keep one step of a sequential loop from starving the
+rest (a per-step cap) — a second dimension on the same reserve/settle machinery,
+not a second guard:
+
+```ts
+import { BudgetGuard, TokenBudgetExceeded } from "floe-guard";
+
+// aggregate token ceiling alongside the USD one
+const guard = new BudgetGuard(100, { tokenLimit: 20_000 });
+guard.check(undefined, { estimatedTokens: 1_200 }); // throws TokenBudgetExceeded if it'd cross
+guard.record("gpt-4o", 800, 400); // tokens accrue for free from the counts
+
+// a per-step cap for one step of a sequential loop (callback — g IS guard)
+guard.step({ maxTokens: 5_000 }, (g) => {
+  g.record("gpt-4o", 3_000, 1_500);
+  g.check(undefined, { estimatedTokens: 1_000 }); // 4_500 + 1_000 > 5_000 → scope "step"
+});
+
+const adv = guard.advisory();
+adv.tokenUsedBps; // aggregate token utilization (null if no tokenLimit)
+adv.remainingTokens; // tokens left before the ceiling (null if no tokenLimit)
+adv.stepRemainingTokens; // active step's headroom (null if no step, or its token cap is unset)
+```
+
+`TokenBudgetExceeded` extends `BudgetExceeded`, so budget-aware retry treats a
+token block as terminal automatically. With no `tokenLimit` and no `step()`, USD
+enforcement is unchanged and `reserve()` still returns a plain `number` — a
+`BudgetReservation` handle appears only when tokens are actually reserved or a
+step is active. (`advisory()` gains the token/step fields above; additive and
+`null` when their dimension is unused.)
+
 ## Per-call spend log
 
 The guard keeps a typed, in-memory ledger of everything it priced: each

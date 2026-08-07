@@ -22,10 +22,17 @@ from .errors import (
     DeadlineExceeded,
     FloeGuardError,
     HostedEnforcementError,
+    TokenBudgetExceeded,
     UnpriceableModelError,
     UnpriceableModelWarning,
 )
-from .guard import BudgetAdvisory, BudgetGuard, SpendEvent
+from .guard import (
+    BudgetAdvisory,
+    BudgetGuard,
+    BudgetReservation,
+    ReservationHandle,
+    SpendEvent,
+)
 from .hosted import hosted_enforcement_available, hosted_remaining_usd
 from .latency import LatencyAdvisory, LatencyBudget
 from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
@@ -34,7 +41,7 @@ from .stream import StreamGuard, guard_stream
 
 # Single-sourced from the installed package metadata, which pyproject.toml
 # already fills in. The hand-maintained literal that used to live here drifted:
-# the published 0.11.0 wheel ships __version__ == "0.10.0".
+# the published 0.11.0 wheel shipped __version__ == "0.10.0".
 try:
     __version__ = _package_version("floe-guard")
 except PackageNotFoundError:  # source tree with no install
@@ -43,6 +50,8 @@ except PackageNotFoundError:  # source tree with no install
 __all__ = [
     "BudgetGuard",
     "BudgetAdvisory",
+    "BudgetReservation",
+    "ReservationHandle",
     "SpendEvent",
     "LatencyBudget",
     "LatencyAdvisory",
@@ -52,6 +61,7 @@ __all__ = [
     "with_budget_retry",
     "async_with_budget_retry",
     "BudgetExceeded",
+    "TokenBudgetExceeded",
     "DeadlineExceeded",
     "FloeGuardError",
     "HostedEnforcementError",
