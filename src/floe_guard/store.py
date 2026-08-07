@@ -69,12 +69,15 @@ class SqliteStore:
         try:
             # WAL lets readers proceed while one writer commits, so the read-heavy
             # check()/advisory() paths don't queue behind a settling process. The
-            # mode is persisted on the file. Some network filesystems can't back
-            # WAL's shared memory — fall back to the default journal rather than
-            # failing to open the store.
+            # mode is persisted on the file. Some SQLite build/mount combinations
+            # can't back WAL's shared memory — catch the whole sqlite3.Error family
+            # (not just OperationalError; some raise DatabaseError) so the store
+            # falls back to the default journal instead of failing to open. The
+            # PRAGMA reports the mode actually in effect — fetch it so the fallback
+            # is observable rather than silently discarded.
             try:
-                connection.execute("PRAGMA journal_mode = WAL")
-            except sqlite3.OperationalError:
+                connection.execute("PRAGMA journal_mode = WAL").fetchone()
+            except sqlite3.Error:
                 pass
             connection.execute(
                 """
