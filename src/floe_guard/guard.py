@@ -37,6 +37,7 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Literal, NoReturn
 
 from .errors import (
@@ -46,6 +47,7 @@ from .errors import (
     UnpriceableModelWarning,
 )
 from .pricing import ManualPrice, price_tokens, resolve_price
+from .store import StateStore
 
 # Tolerance for float rounding in the running spend total (well below $0.000001).
 _EPS = 1e-12
@@ -84,6 +86,27 @@ class BudgetReservation:
 # A plain float when USD-only (backward compatible); a BudgetReservation when a
 # token ceiling or an active step is in play.
 ReservationHandle = float | BudgetReservation
+
+
+class _PersistentReservation(float):
+    """Numeric reservation handle carrying its authoritative store window.
+
+    Returned by :meth:`BudgetGuard.reserve` only when a persistent ``store`` is
+    configured (USD-only path). Pass it through unchanged: it is float-compatible,
+    but arithmetic or normalization such as ``float()``, ``abs()``, ``round()``,
+    or ``max()`` can return a plain float and discard its issuing-window
+    provenance — which its terminal settle/release needs to hit the right window.
+    """
+
+    _window_id: str
+
+    def __new__(cls, amount_usd: float, window_id: str) -> _PersistentReservation:
+        handle = super().__new__(cls, amount_usd)
+        handle._window_id = window_id
+        return handle
+
+    def __reduce__(self) -> tuple[object, tuple[float, str]]:
+        return _PersistentReservation, (float(self), self._window_id)
 
 
 # eq=False: identity, not value, equality. The step stack is popped by identity
@@ -225,10 +248,23 @@ class BudgetGuard:
             ``estimated_tokens`` to pre-emptively block; a cross raises
             :class:`TokenBudgetExceeded` (``scope="aggregate"``). ``None`` (default)
             disables the token dimension entirely.
+        window: optional persistence window. ``"utc-day"`` shares one ceiling from
+            midnight to midnight UTC across every process using the same ``store``;
+            requires ``store``. ``None`` (default) is the in-memory guard.
+        store: persistent :class:`~floe_guard.store.StateStore` (e.g.
+            :class:`~floe_guard.store.SqliteStore`) used with ``window``. When set,
+            ``spent_usd`` / reservations are the store's authoritative window
+            snapshot, so a fresh process continues where the last left off and the
+            cap resets at the UTC-day boundary. Persistence is **USD-only**: it
+            cannot be combined with ``token_limit``, :meth:`step`, or a per-call
+            ``estimated_tokens`` (each raises). ``window`` and ``store`` are
+            all-or-nothing. Note ``spend_log`` / ``tool_costs`` remain
+            process-local (not persisted, not window-reset).
 
     Thread-safe: the running total and in-flight reservations are guarded by a
     lock, so the guard can back a parallel crew (use :meth:`reserve` /
-    :meth:`settle`).
+    :meth:`settle`). A configured ``store`` extends that hard-stop across
+    processes (SQLite transactions), where the in-process lock cannot reach.
     """
 
     def __init__(
@@ -241,6 +277,8 @@ class BudgetGuard:
         near_limit_bps: int = 8000,
         max_log_events: int | None = None,
         token_limit: int | None = None,
+        window: Literal["utc-day"] | None = None,
+        store: StateStore | None = None,
     ) -> None:
         if not math.isfinite(limit_usd) or limit_usd < 0:
             # NaN/inf would make every check() comparison evaluate False and
@@ -261,6 +299,20 @@ class BudgetGuard:
             isinstance(token_limit, bool) or not isinstance(token_limit, int) or token_limit < 0
         ):
             raise ValueError(f"token_limit must be None or a non-negative int, got {token_limit!r}")
+        # Persistence config: window and store are all-or-nothing, and persistence
+        # is USD-only for now — it cannot compose with the token dimension (the
+        # store tracks USD, and a persistent handle can't also carry a token hold).
+        if (window is None) != (store is None):
+            raise ValueError("window and store must be configured together")
+        if window not in (None, "utc-day"):
+            raise ValueError(f"window must be 'utc-day' or None, got {window!r}")
+        if store is not None and token_limit is not None:
+            raise ValueError(
+                "token_limit is not supported with a persistent store (persistence is USD-only)"
+            )
+        self._window = window
+        self._store = store
+        self._active_window_id: str | None = None
         self.limit_usd = float(limit_usd)
         self.token_limit = token_limit
         # Aggregate tokens accrued (prompt + completion + cache buckets), and
@@ -302,6 +354,11 @@ class BudgetGuard:
         # the one shared ceiling, exposed via the tool_costs property.
         self._tool_costs: dict[str, float] = {}
         self._lock = threading.Lock()
+        # Adopt the store's authoritative snapshot for today's window at startup,
+        # so a fresh process (cron/serverless) continues where the last left off.
+        if self._store is not None:
+            with self._lock:
+                self._refresh_persistent_state_locked()
 
     # ── enforcement ───────────────────────────────────────────────────────────
 
@@ -330,7 +387,13 @@ class BudgetGuard:
         """
         self._validate_estimate(estimated_next_cost)
         self._validate_token_estimate(estimated_tokens)
+        self._reject_tokens_with_store(estimated_tokens)
         with self._lock:
+            # Refresh from the store so this peek sees other processes' spend. It's
+            # still a non-binding peek; reserve()/settle() are the cross-process
+            # hard guarantee (atomic in the store).
+            if self._store is not None:
+                self._refresh_persistent_state_locked()
             estimate = (
                 self._default_estimate_locked()
                 if estimated_next_cost is None
@@ -394,6 +457,7 @@ class BudgetGuard:
         """
         self._validate_estimate(estimated_cost)
         self._validate_token_estimate(estimated_tokens)
+        self._reject_tokens_with_store(estimated_tokens)
         tokens = max(0, estimated_tokens)
         with self._lock:
             estimate = (
@@ -401,19 +465,37 @@ class BudgetGuard:
                 if estimated_cost is None
                 else max(0.0, estimated_cost)
             )
-            blocked = self._blocking_cross_locked(estimate, tokens)
-            if blocked is None:
-                self._reserved += estimate
-                self._reserved_tokens += tokens
-                step = self._steps[-1] if self._steps else None
-                if step is not None:
-                    step.reserved_usd += estimate
-                    step.reserved_tokens += tokens
-                # Plain float only when nothing token- or step-shaped is in play,
-                # so pre-existing USD-only callers get byte-for-byte the old handle.
-                if tokens == 0 and step is None:
-                    return estimate
-                return BudgetReservation(usd=estimate, tokens=tokens)
+            if self._store is not None:
+                # Cross-process path: the store atomically checks the ceiling AND
+                # holds the estimate in one transaction, so overlapping processes
+                # can't both clear a stale total. It returns the fresh snapshot.
+                window_id = self._current_window_id_locked()
+                accepted, spent, reserved = self._store.reserve(
+                    window_id, self.limit_usd, estimate
+                )
+                self.spent_usd, self._reserved = spent, reserved
+                if accepted:
+                    return _PersistentReservation(estimate, window_id)
+                blocked: tuple[str, str, float, float] | None = (
+                    "usd",
+                    "aggregate",
+                    self.spent_usd,
+                    self.limit_usd,
+                )
+            else:
+                blocked = self._blocking_cross_locked(estimate, tokens)
+                if blocked is None:
+                    self._reserved += estimate
+                    self._reserved_tokens += tokens
+                    step = self._steps[-1] if self._steps else None
+                    if step is not None:
+                        step.reserved_usd += estimate
+                        step.reserved_tokens += tokens
+                    # Plain float only when nothing token- or step-shaped is in play,
+                    # so pre-existing USD-only callers get byte-for-byte the old handle.
+                    if tokens == 0 and step is None:
+                        return estimate
+                    return BudgetReservation(usd=estimate, tokens=tokens)
         # Blocked — notify and raise outside the lock.
         self._raise_block(blocked)
 
@@ -493,15 +575,27 @@ class BudgetGuard:
             + max(0, cache_read_input_tokens)
         )
         with self._lock:
-            if reserved:
-                self._consume_reservation_locked(reserved)
-            self.spent_usd += cost
+            if self._store is not None:
+                # The store is authoritative for USD: consume the hold and add the
+                # actual cost atomically, then adopt the returned snapshot. Don't
+                # `+= cost` — that would double-count what the store already applied.
+                self._apply_persistent_terminal_locked(
+                    reserved,
+                    lambda window_id: self._store.settle(
+                        window_id, self.limit_usd, reserved_usd, cost
+                    ),
+                )
+            else:
+                if reserved:
+                    self._consume_reservation_locked(reserved)
+                self.spent_usd += cost
+                self._accrue_step_locked(cost, accrued_tokens)
+                # Clamp a sub-epsilon float overshoot back to the limit so the running
+                # total never reports as having crossed the ceiling by a rounding artifact.
+                if 0.0 < self.spent_usd - self.limit_usd < _EPS:
+                    self.spent_usd = self.limit_usd
+            # Process-local either way (tokens aren't persisted; the store is USD-only).
             self.spent_tokens += accrued_tokens
-            self._accrue_step_locked(cost, accrued_tokens)
-            # Clamp a sub-epsilon float overshoot back to the limit so the running
-            # total never reports as having crossed the ceiling by a rounding artifact.
-            if 0.0 < self.spent_usd - self.limit_usd < _EPS:
-                self.spent_usd = self.limit_usd
             self._last_llm_cost = cost
             self._spend_log.append(
                 SpendEvent(
@@ -609,15 +703,25 @@ class BudgetGuard:
         # return value are always float, like every other cost in the guard.
         cost_usd = float(cost_usd)
         with self._lock:
-            if reserved:
-                self._consume_reservation_locked(reserved)
-            self.spent_usd += cost_usd
-            # A paid tool spends the step's USD too (no tokens to price).
-            self._accrue_step_locked(cost_usd, 0)
-            # Same sub-epsilon clamp as settle(): never report a rounding-artifact
-            # crossing of the ceiling.
-            if 0.0 < self.spent_usd - self.limit_usd < _EPS:
-                self.spent_usd = self.limit_usd
+            if self._store is not None:
+                # Store is authoritative for USD (see settle()): consume + accrue
+                # atomically and adopt the snapshot rather than `+= cost_usd`.
+                self._apply_persistent_terminal_locked(
+                    reserved,
+                    lambda window_id: self._store.settle(
+                        window_id, self.limit_usd, reserved_usd, cost_usd
+                    ),
+                )
+            else:
+                if reserved:
+                    self._consume_reservation_locked(reserved)
+                self.spent_usd += cost_usd
+                # A paid tool spends the step's USD too (no tokens to price).
+                self._accrue_step_locked(cost_usd, 0)
+                # Same sub-epsilon clamp as settle(): never report a rounding-artifact
+                # crossing of the ceiling.
+                if 0.0 < self.spent_usd - self.limit_usd < _EPS:
+                    self.spent_usd = self.limit_usd
             self._last_tool_cost = cost_usd
             self._tool_costs[tool] = self._tool_costs.get(tool, 0.0) + cost_usd
             self._spend_log.append(
@@ -651,16 +755,26 @@ class BudgetGuard:
         # Validate before the zero-check so a NaN handle raises instead of being
         # silently dropped (which would leak the hold). A bad handle here corrupts
         # _reserved for other in-flight calls. _reserved_usd_of validates a raw float.
-        self._reserved_usd_of(reserved)
+        reserved_usd = self._reserved_usd_of(reserved)
         if not reserved:
             return
         with self._lock:
-            self._consume_reservation_locked(reserved)
+            if self._store is not None:
+                self._apply_persistent_terminal_locked(
+                    reserved,
+                    lambda window_id: self._store.release(
+                        window_id, self.limit_usd, reserved_usd
+                    ),
+                )
+            else:
+                self._consume_reservation_locked(reserved)
 
     @property
     def remaining_usd(self) -> float:
         """USD left before the ceiling, net of in-flight reservations (never negative)."""
         with self._lock:
+            if self._store is not None:
+                self._refresh_persistent_state_locked()
             return max(0.0, self.limit_usd - self.spent_usd - self._reserved)
 
     @property
@@ -668,9 +782,15 @@ class BudgetGuard:
         """Per-tool running USD totals, keyed by the name given to
         :meth:`settle_tool` / :meth:`record_tool` — e.g.
         ``{"apollo.people_lookup": 0.42, "exa.search": 0.11}``. Makes the
-        token/tool split of the one shared ceiling inspectable
-        (``spent_usd - sum(tool_costs.values())`` is the token side).
-        Returns a snapshot copy."""
+        token/tool split of the one shared ceiling inspectable: in the in-memory
+        guard, ``spent_usd - sum(tool_costs.values())`` is the token side.
+        Returns a snapshot copy.
+
+        With a persistent ``store``, ``spent_usd`` is the current UTC-day window's
+        authoritative total while ``tool_costs`` is this process's own cumulative
+        tally (not windowed, not shared), so that identity does not hold across a
+        day rollover or a second process — use it for per-process attribution, not
+        as a cross-window invariant."""
         with self._lock:
             return dict(self._tool_costs)
 
@@ -725,6 +845,12 @@ class BudgetGuard:
         steps on one guard** — that's a per-step identity registry, out of scope
         for issue #46. Use one guard per parallel branch instead.
         """
+        if self._store is not None:
+            # Steps are an in-process, token-aware construct; persistence is USD-only
+            # and cross-process. Combining them needs a unified handle (not yet).
+            raise ValueError(
+                "step() is not supported with a persistent store (persistence is USD-only)"
+            )
         if max_usd is not None and (not math.isfinite(max_usd) or max_usd < 0):
             raise ValueError(
                 f"max_usd must be None or a finite, non-negative number, got {max_usd!r}"
@@ -762,6 +888,10 @@ class BudgetGuard:
         # the last step between the truthiness check and the index (IndexError).
         # The arithmetic below runs on the snapshot, lock-free.
         with self._lock:
+            # Adopt the store's authoritative window snapshot before snapshotting,
+            # so the advisory reflects other processes' spend (USD-only path).
+            if self._store is not None:
+                self._refresh_persistent_state_locked()
             limit_usd = self.limit_usd
             spent_usd = self.spent_usd
             last_llm = self._last_llm_cost
@@ -912,6 +1042,74 @@ class BudgetGuard:
         if isinstance(estimated_tokens, bool) or not isinstance(estimated_tokens, int):
             raise ValueError(f"estimated_tokens must be an int, got {estimated_tokens!r}")
 
+    def _reject_tokens_with_store(self, estimated_tokens: int) -> None:
+        # Persistence is USD-only. token_limit is already forbidden at construction;
+        # this also rejects a per-call token estimate so the store path never has to
+        # return a token-shaped handle it can't round-trip to the store.
+        if self._store is not None and estimated_tokens:
+            raise ValueError(
+                "estimated_tokens is not supported with a persistent store "
+                "(persistence is USD-only)"
+            )
+
+    # ── persistent-window internals ─────────────────────────────────────────────
+
+    def _current_window_id_locked(self) -> str:
+        """Today's store key. On a UTC-day rollover, reset the process-local
+        next-call estimate (a new day starts fresh); the spend_log / tool_costs
+        ledgers are deliberately NOT cleared here — they are process-local history,
+        and a read path must never destroy them as a side effect."""
+        window_id = _utc_day_window_id()
+        if window_id != self._active_window_id:
+            self._active_window_id = window_id
+            self._last_llm_cost = 0.0
+            self._last_tool_cost = 0.0
+        return window_id
+
+    def _refresh_persistent_state_locked(self) -> None:
+        """Adopt the authoritative store snapshot for the current window."""
+        if self._store is None:
+            return
+        self.spent_usd, self._reserved = self._store.load(
+            self._current_window_id_locked(), self.limit_usd
+        )
+
+    def _reservation_window_id_locked(self, reserved: ReservationHandle) -> str:
+        """A persistent handle settles/releases against its ISSUING window, so a
+        hold taken just before midnight is consumed from the right day even after
+        the guard has rolled to a new window."""
+        if isinstance(reserved, _PersistentReservation):
+            return reserved._window_id
+        return self._current_window_id_locked()
+
+    def _apply_persistent_terminal_locked(
+        self,
+        reserved: ReservationHandle,
+        operation: Callable[[str], tuple[float, float]],
+    ) -> None:
+        """Run a store terminal op (settle/release) against the reservation's
+        issuing window, then adopt the returned snapshot ONLY when that window is
+        the active one — a cross-midnight settlement must not overwrite today's
+        live totals with yesterday's. The single home for this ordered protocol
+        (load-before-consume) so the three call sites can't drift."""
+        window_id = self._reservation_window_id_locked(reserved)
+        updates_active_window = self._prepare_persistent_terminal_locked(window_id)
+        snapshot = operation(window_id)
+        if updates_active_window:
+            self.spent_usd, self._reserved = snapshot
+
+    def _prepare_persistent_terminal_locked(self, window_id: str) -> bool:
+        """True when ``window_id`` is the active window (so its snapshot should be
+        adopted). When it differs (a handle from a prior window), load the current
+        window first so a stale terminal op can't leave the live totals wrong."""
+        current_window_id = self._current_window_id_locked()
+        if window_id == current_window_id:
+            return True
+        if self._store is None:  # pragma: no cover - persistent callers only
+            raise RuntimeError("persistent terminal operation requires a configured store")
+        self.spent_usd, self._reserved = self._store.load(current_window_id, self.limit_usd)
+        return False
+
     @staticmethod
     def _reserved_usd_of(reserved: ReservationHandle) -> float:
         """The USD amount of a handle, validated. A ``BudgetReservation`` self-
@@ -1059,3 +1257,8 @@ def _default_on_block(spent_usd: float, limit_usd: float) -> None:
         "before it ran.",
         file=sys.stderr,
     )
+
+
+def _utc_day_window_id() -> str:
+    """The current UTC calendar date, used as the persistent window key."""
+    return datetime.now(timezone.utc).date().isoformat()
