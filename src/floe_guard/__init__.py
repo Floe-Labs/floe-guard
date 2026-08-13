@@ -26,6 +26,7 @@ from .errors import (
     TokenBudgetExceeded,
     UnpriceableModelError,
     UnpriceableModelWarning,
+    UnpriceableVoiceError,
 )
 from .guard import (
     BudgetAdvisory,
@@ -40,6 +41,13 @@ from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
 from .retry import RetryPlan, async_with_budget_retry, with_budget_retry
 from .store import SqliteStore, StateStore
 from .stream import StreamGuard, guard_stream
+from .voice_pricing import (
+    VoiceRate,
+    lookup_voice_rate,
+    price_voice_leg,
+    resolve_voice_rate,
+    voice_leg_cost,
+)
 
 # Single-sourced from the installed package metadata, which pyproject.toml
 # already fills in. The hand-maintained literal that used to live here drifted:
@@ -71,10 +79,16 @@ __all__ = [
     "HostedEnforcementError",
     "UnpriceableModelError",
     "UnpriceableModelWarning",
+    "UnpriceableVoiceError",
     "ManualPrice",
     "PricedModel",
     "price_tokens",
     "resolve_price",
+    "VoiceRate",
+    "lookup_voice_rate",
+    "resolve_voice_rate",
+    "voice_leg_cost",
+    "price_voice_leg",
     "hosted_enforcement_available",
     "hosted_remaining_usd",
 ]

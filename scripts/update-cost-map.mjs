@@ -73,6 +73,117 @@ const GROQ_KEY_MAP = new Map([
 // adapter detects them via `client.vertexai`.
 const PREFIX_STRIPPED_PROVIDERS = new Set(["gemini"]);
 
+// ── Voice rates (STT / TTS / telephony) ─────────────────────────────────────
+//
+// The token map above is fetched from LiteLLM; the voice map is NOT — LiteLLM
+// does not carry STT/TTS/telephony list prices, so these are hand-curated from
+// each vendor's public pricing page and injected under the reserved "__voice__"
+// key (see src/floe_guard/pricing.py, which splits it back out so the token
+// resolver never sees it). They are a DRIFT-PRONE SNAPSHOT: vendors change these
+// far more often than this file is refreshed, so treat them as an estimate and
+// re-verify against the live pricing page before trusting a figure. Telephony is
+// US-only in v1.
+//
+// Units are canonical per mode and a mismatch fails closed downstream:
+//   stt -> usd_per_second, tts -> usd_per_1k_chars, telephony -> usd_per_minute.
+// Where a vendor lists a different unit, the arithmetic to convert is shown.
+const VOICE_RATES = {
+  // Deepgram Nova-3 streaming, billed per minute -> ÷60 for $/sec.
+  "deepgram-nova-3": {
+    mode: "stt",
+    unit: "usd_per_second",
+    rate: 0.0001283333, // $0.0077/min mono ÷ 60
+    provider: "deepgram",
+  },
+  "deepgram-nova-3-multilingual": {
+    mode: "stt",
+    unit: "usd_per_second",
+    rate: 0.0001533333, // $0.0092/min ÷ 60
+    provider: "deepgram",
+  },
+  "deepgram-nova-3-base": {
+    mode: "stt",
+    unit: "usd_per_second",
+    rate: 0.0002416667, // $0.0145/min ÷ 60
+    provider: "deepgram",
+  },
+  // AssemblyAI Universal Streaming. Note: ~$0.0042/min effective once you
+  // include the per-session idle/overhead billing; the list rate is $0.0025/min.
+  "assemblyai-universal-streaming": {
+    mode: "stt",
+    unit: "usd_per_second",
+    rate: 0.0000416667, // $0.0025/min ÷ 60
+    provider: "assemblyai",
+  },
+  // ElevenLabs bills in credits/char: Multilingual v2 = 1 credit/char,
+  // Flash/Turbo = 0.5 credit/char. On the standard $/credit these list at
+  // ~$0.10 and ~$0.05 per 1k chars respectively.
+  "elevenlabs-multilingual-v2": {
+    mode: "tts",
+    unit: "usd_per_1k_chars",
+    rate: 0.1, // 1 credit/char
+    provider: "elevenlabs",
+  },
+  "elevenlabs-flash-v2.5": {
+    mode: "tts",
+    unit: "usd_per_1k_chars",
+    rate: 0.05, // 0.5 credit/char
+    provider: "elevenlabs",
+  },
+  "elevenlabs-turbo-v2.5": {
+    mode: "tts",
+    unit: "usd_per_1k_chars",
+    rate: 0.05, // 0.5 credit/char
+    provider: "elevenlabs",
+  },
+  // Cartesia is billed per minute of audio; converted to $/1k-chars at an
+  // assumed 1000 chars/min of synthesised speech (≈150 wpm). Sonic ≈ $0.03/min;
+  // the phone-optimised "Line" product ≈ $0.06/min.
+  "cartesia-sonic": {
+    mode: "tts",
+    unit: "usd_per_1k_chars",
+    rate: 0.03, // $0.03/min ÷ 1000 chars/min = $0.03/1k chars
+    provider: "cartesia",
+  },
+  "cartesia-line": {
+    mode: "telephony",
+    unit: "usd_per_minute",
+    rate: 0.06, // Cartesia Line — telephony, $0.06/min list rate (per-minute)
+    provider: "cartesia",
+  },
+  // Rime is billed per minute; converted at the same 1000 chars/min assumption.
+  "rime-mist-v2": {
+    mode: "tts",
+    unit: "usd_per_1k_chars",
+    rate: 0.03, // $0.030/min ÷ 1000 chars/min = $0.03/1k chars
+    provider: "rime",
+  },
+  // Twilio Programmable Voice, US only. Outbound lists as a $0.013–0.014/min
+  // range; we keep the top of the range because over-pricing a spend guard
+  // stops one call early (safe) while under-pricing lets a crossing call through.
+  "twilio-us-inbound-local": {
+    mode: "telephony",
+    unit: "usd_per_minute",
+    rate: 0.0085, // US inbound to a local number
+    provider: "twilio",
+  },
+  "twilio-us-outbound-local": {
+    mode: "telephony",
+    unit: "usd_per_minute",
+    rate: 0.014, // $0.013–0.014/min — top of range
+    provider: "twilio",
+  },
+  "twilio-us-sip-inbound": {
+    mode: "telephony",
+    unit: "usd_per_minute",
+    rate: 0.004, // US SIP inbound
+    provider: "twilio",
+  },
+  // TODO(telnyx): unverified list rate — deferred. Do not invent a number; add a
+  // telnyx-us-* entry only after confirming the current per-minute list price on
+  // the Telnyx pricing page.
+};
+
 /** The key a model is vendored under: "gemini/gemini-2.5-flash" -> "gemini-2.5-flash". */
 function vendoredKey(k) {
   const mapped = GROQ_KEY_MAP.get(k);
@@ -243,6 +354,11 @@ for (const [k, v] of entries) {
       `bucket (${input_cost_per_token}/${output_cost_per_token}).`,
   );
 }
+
+// Inject the hand-curated voice rates under the reserved "__voice__" key, last,
+// so a token refresh preserves them (they are not in the fetched LiteLLM data).
+// pricing.py splits this key back out, so it never reaches the token resolver.
+out.__voice__ = VOICE_RATES;
 
 const json = `${JSON.stringify(out, null, 2)}\n`;
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");

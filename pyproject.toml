@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "floe-guard"
-version = "0.13.0"
+version = "0.14.0"
 description = "Local budget guardrail for AI agents — hard-stops a runaway loop before its next LLM call crosses a spend ceiling. No account, no network."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Floe Labs" }]
-keywords = ["llm", "agents", "budget", "guardrail", "crewai", "litellm", "langchain", "langgraph", "cost", "openai", "anthropic", "gemini"]
+keywords = ["llm", "agents", "budget", "guardrail", "crewai", "litellm", "langchain", "langgraph", "cost", "openai", "anthropic", "gemini", "voice", "stt", "tts", "livekit", "deepgram", "elevenlabs", "twilio"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
