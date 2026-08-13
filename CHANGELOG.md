@@ -23,6 +23,11 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   (Sonic TTS + Line telephony), Rime, Twilio (Telnyx deferred); rates are a
   drift-prone snapshot. The **js** package carries the same `__voice__` cost-map
   data in lockstep (no JS voice adapter this release).
+
+## py 0.13.0 / js 0.9.0 — 2026-08-06
+
+### Added (py)
+
 - **Persistent UTC-day budgets** (issue #47): `BudgetGuard(...,
   window="utc-day", store=SqliteStore(path))` keeps spend and in-flight
   reservations in dependency-free SQLite transactions, so sequential and
