@@ -769,7 +769,7 @@ adapter set like the Python package.
 **text-only**: it guards a wrapped `LanguageModel`, not a running STT → LLM → TTS
 session. A voice/telephony builder on a Node stack should either drive the LLM
 turn through the Vercel AI middleware and meter STT/TTS spend by hand via
-`recordTool`, or run the LLM leg through the **hosted [Floe proxy](#upgrade-to-hosted-floe)**
+`recordTool`, or run the LLM leg through the **hosted [Floe proxy](#when-you-outgrow-local-guardrails)**
 (un-bypassable, cross-vendor) — or use the Python Pipecat / LiveKit adapters
 above, which enforce the whole turn. No native TypeScript Pipecat/LiveKit voice
 adapter ships in this release.
@@ -802,7 +802,7 @@ metrics, no "zero defaults" claims — it's a free local stop, not a vault.
 floe-guard does **not** phone home. It sends no usage events, no install pings,
 no identifiers — nothing leaves your process at runtime except hosted-budget
 reads you explicitly opt into by setting `FLOE_API_KEY` (the
-[hosted Floe](#upgrade-to-hosted-floe) path) — never otherwise.
+[hosted Floe](#when-you-outgrow-local-guardrails) path) — never otherwise.
 
 This is a choice, not an oversight. A guardrail's whole value is trust: a
 library that silently exfiltrates usage from people's agents is the opposite of
@@ -819,6 +819,12 @@ enforcement server-side.
 | Runs | Locally, in your process | Server-side |
 | Scope | One process | Every vendor and agent |
 | Control | Hard stop at your cap | Kill switch + one unified ledger |
+
+Already on hosted Floe? The package's only network call is the opt-in hosted
+budget read: set `FLOE_API_KEY` (agent key `floe_…`) and `hosted_remaining_usd()`
+returns the server-side budget headroom via `GET /v1/agents/credit-remaining`.
+`FLOE_API_BASE_URL` overrides the API host (default
+`https://credit-api.floelabs.xyz`). Nothing runs unless the key is set.
 
 → [dev-dashboard.floelabs.xyz](https://dev-dashboard.floelabs.xyz/)
 
