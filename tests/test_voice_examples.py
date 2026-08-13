@@ -16,9 +16,6 @@ import pytest
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
-pytest.importorskip("livekit.agents")
-pytest.importorskip("pipecat")
-
 
 def _load(module_name: str):
     sys.path.insert(0, str(EXAMPLES))
@@ -38,6 +35,7 @@ def _assert_four_legs_sum_to_total(guard, expected_tools: set[str]) -> None:
 
 @pytest.mark.asyncio
 async def test_livekit_voice_call_cost_example(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("livekit.agents")
     monkeypatch.delenv("FLOE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     demo = _load("voice_call_cost_livekit")
@@ -52,6 +50,7 @@ async def test_livekit_voice_call_cost_example(monkeypatch: pytest.MonkeyPatch) 
 
 @pytest.mark.asyncio
 async def test_pipecat_voice_call_cost_example(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("pipecat")
     monkeypatch.delenv("FLOE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     demo = _load("voice_call_cost_pipecat")

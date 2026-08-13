@@ -690,7 +690,7 @@ closed** (`UnpriceableVoiceError`) rather than metering it at a silent $0.
 Per-leg breakdown from one call (no manual prices — `python
 examples/voice_call_cost_livekit.py`, no API key, no network):
 
-```
+```text
 Per-leg call cost (all priced from the bundled cost map, no manual rates):
   livekit-stt          $0.001027   # 8s  × ($0.0077/min ÷ 60)   Deepgram Nova-3
   gpt-4o               $0.003700   # 600 in / 220 out tokens    LLM

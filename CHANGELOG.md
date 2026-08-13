@@ -8,10 +8,21 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.13.0 / js 0.9.0
+## Unreleased — py 0.14.0 / js 0.10.0
 
 ### Added (py)
 
+- **Voice cost map — meter the whole call by default** (P0): STT/TTS/telephony
+  rates ship under the reserved `__voice__` key of `cost_map.json` (units: STT
+  $/sec, TTS $/1k-chars, telephony $/min). The Pipecat + LiveKit adapters now
+  price the full call — STT + LLM + TTS + telephony — from the map with no
+  hand-typed rates (`stt_model` / `tts_model` / `telephony`); per-unit overrides
+  still win. A vendor the map can't price (or a wrong unit/mode) fails closed via
+  the new `UnpriceableVoiceError` (parity with `UnpriceableModelError`), never a
+  silent $0. Seeded US-only v1 — Deepgram, AssemblyAI, ElevenLabs, Cartesia
+  (Sonic TTS + Line telephony), Rime, Twilio (Telnyx deferred); rates are a
+  drift-prone snapshot. The **js** package carries the same `__voice__` cost-map
+  data in lockstep (no JS voice adapter this release).
 - **Persistent UTC-day budgets** (issue #47): `BudgetGuard(...,
   window="utc-day", store=SqliteStore(path))` keeps spend and in-flight
   reservations in dependency-free SQLite transactions, so sequential and
