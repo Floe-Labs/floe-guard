@@ -68,7 +68,8 @@ imports nothing from `ai` (see `js/src/middleware.ts`) — keep it that way.
   integrations belong in `src/floe_guard/integrations/` behind an optional extra.
 - The cost map is vendored twice (`src/floe_guard/cost_map.json` and
   `js/src/cost_map.json`) and must stay byte-identical — CI fails on drift.
-  Refresh both together (`scripts/update-cost-map.mjs`).
+  Refresh both together (`scripts/update-cost-map.mjs`; `LITELLM_COST_MAP_URL`
+  overrides the upstream LiteLLM map URL it fetches from).
 - Prefer small, focused changes with tests that describe behavior.
 
 ## Areas we'd love help with
