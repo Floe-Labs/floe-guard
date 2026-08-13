@@ -7,18 +7,20 @@
 [![CI](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**A local budget guardrail for AI agents.** It hard-stops your agent *before its
-next LLM or paid tool call* when it would cross a spend ceiling — tokens and
-tool calls under **one local ceiling**, so a runaway loop dies at $0.10 instead
-of $4,000. No account, no signup, no network, **no telemetry**. Runs in your
-process.
+**A local budget guardrail for AI agents — including voice.** It hard-stops your
+agent *before its next turn or LLM call* when it would cross a spend ceiling:
+**per-turn enforcement for [Pipecat](#pipecat-voice) and [LiveKit](#livekit-voice)**
+voice pipelines, and a hard stop for runaway LLM loops — a loop dies at $0.10
+instead of $4,000. No account, no signup, no network, **no telemetry**. Runs in
+your process.
 
-Works with [CrewAI](#crewai) · [LiteLLM](#litellm) · [LangChain](#langchain) ·
-[LangGraph](#langgraph) · [OpenAI](#openai) · [Anthropic](#anthropic) ·
-[Gemini](#google-gemini) · [Vercel AI SDK](#vercel-ai-sdk) — and voice pipelines
-via [Pipecat](#pipecat-voice) · [LiveKit](#livekit-voice) — or any stack, via
-plain `check()` / `record()`. See the [adapter matrix](#adapter-matrix) for what
-ships in Python vs TypeScript.
+**Voice:** [Pipecat](#pipecat-voice) · [LiveKit](#livekit-voice) — reserve before
+each turn, settle on real usage, so a turn that would cross the ceiling never
+starts. **Any agent:** [CrewAI](#crewai) · [LiteLLM](#litellm) ·
+[LangChain](#langchain) · [LangGraph](#langgraph) · [OpenAI](#openai) ·
+[Anthropic](#anthropic) · [Gemini](#google-gemini) · [Vercel AI SDK](#vercel-ai-sdk)
+— or any stack, via plain `check()` / `record()`. See the
+[adapter matrix](#adapter-matrix) for what ships in Python vs TypeScript.
 The hard-stop is contract-based: gate each call through the guard — adapters do
 it for LLM calls; for paid tools, [`reserve_tool()` / `settle_tool()`](#tool-spend-under-the-same-ceiling)
 block *before* the call runs (`record_tool()` alone meters a call after the
