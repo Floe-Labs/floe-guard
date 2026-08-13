@@ -33,13 +33,17 @@ from pipecat.frames.frames import (  # noqa: E402
     LLMFullResponseStartFrame,
     MetricsFrame,
 )
-from pipecat.metrics.metrics import LLMTokenUsage, LLMUsageMetricsData  # noqa: E402
+from pipecat.metrics.metrics import (  # noqa: E402
+    LLMTokenUsage,
+    LLMUsageMetricsData,
+    TTSUsageMetricsData,
+)
 from pipecat.pipeline.pipeline import Pipeline  # noqa: E402
 from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
 from pipecat.pipeline.task import PipelineParams, PipelineTask  # noqa: E402
 
 from floe_guard import BudgetGuard  # noqa: E402
-from floe_guard.errors import BudgetExceeded  # noqa: E402
+from floe_guard.errors import BudgetExceeded, UnpriceableVoiceError  # noqa: E402
 from floe_guard.integrations.pipecat import FloeBudgetGuardProcessor  # noqa: E402
 
 
@@ -50,6 +54,10 @@ def _metrics_frame(prompt_tokens, completion_tokens, model="gpt-4o") -> MetricsF
         total_tokens=prompt_tokens + completion_tokens,
     )
     return MetricsFrame(data=[LLMUsageMetricsData(processor="test-llm", model=model, value=usage)])
+
+
+def _tts_frame(characters: int) -> MetricsFrame:
+    return MetricsFrame(data=[TTSUsageMetricsData(processor="test-tts", value=characters)])
 
 
 async def _run_frames(
@@ -249,6 +257,95 @@ async def test_settles_usage_even_without_a_start_frame():
     assert guard.advisory().spent_usd > 0
     assert not processor._pending
     assert processor._reserved == 0.0
+
+
+@pytest.mark.asyncio
+async def test_tts_metered_from_voice_cost_map_by_default():
+    # No hand-typed rate -- name the vendor, meter the TTSUsageMetricsData Pipecat
+    # emits at the bundled per-1k-chars rate.
+    guard = BudgetGuard(limit_usd=100.00)
+    processor = FloeBudgetGuardProcessor(
+        guard, model="gpt-4o", tts_model="elevenlabs-flash-v2.5"
+    )
+
+    await _run_frames(processor, [_tts_frame(2000)])
+
+    # 2000 chars / 1000 * $0.05 = $0.10
+    assert guard.tool_costs["pipecat-tts"] == pytest.approx(0.10)
+
+
+@pytest.mark.asyncio
+async def test_tts_ignored_by_default_without_a_vendor():
+    guard = BudgetGuard(limit_usd=100.00)
+    processor = FloeBudgetGuardProcessor(guard, model="gpt-4o")
+
+    await _run_frames(processor, [_tts_frame(2000)])
+
+    assert guard.advisory().spent_usd == 0.0
+
+
+@pytest.mark.asyncio
+async def test_unpriceable_tts_vendor_pushes_fatal_error():
+    # A configured-but-unpriceable TTS vendor must hard-stop, not silently $0.
+    guard = BudgetGuard(limit_usd=100.00)
+    processor = FloeBudgetGuardProcessor(guard, model="gpt-4o", tts_model="ghost-tts")
+
+    pipeline = Pipeline([processor])
+    task = PipelineTask(
+        pipeline, params=PipelineParams(enable_metrics=True, enable_usage_metrics=True)
+    )
+    runner = PipelineRunner()
+
+    captured_errors = []
+
+    @task.event_handler("on_pipeline_error")
+    async def _on_pipeline_error(task, frame):
+        captured_errors.append(frame)
+
+    async def drive():
+        await task.queue_frame(_tts_frame(2000))
+        await asyncio.sleep(0.05)
+        if not task.has_finished():
+            await task.queue_frame(EndFrame())
+
+    await asyncio.gather(runner.run(task), drive())
+
+    assert len(captured_errors) == 1
+    assert captured_errors[0].fatal is True
+    assert guard.advisory().spent_usd == 0.0
+
+
+def test_meter_stt_and_telephony_from_map():
+    # STT + telephony have no native Pipecat usage frame, so they're driven
+    # explicitly -- still priced from the map, no hand-typed rate.
+    guard = BudgetGuard(limit_usd=100.00)
+    processor = FloeBudgetGuardProcessor(
+        guard,
+        model="gpt-4o",
+        stt_model="deepgram-nova-3",
+        telephony="twilio-us-inbound-local",
+    )
+
+    stt_cost = processor.meter_stt(60.0)  # 60s
+    tel_cost = processor.meter_telephony(2.0)  # 2 min
+
+    assert stt_cost == pytest.approx(60.0 * (0.0077 / 60), rel=1e-4)
+    assert tel_cost == pytest.approx(2.0 * 0.0085)
+    assert set(guard.tool_costs) == {"pipecat-stt", "pipecat-telephony"}
+
+
+def test_meter_stt_unconfigured_is_noop():
+    guard = BudgetGuard(limit_usd=100.00)
+    processor = FloeBudgetGuardProcessor(guard, model="gpt-4o")
+    assert processor.meter_stt(60.0) is None
+    assert guard.advisory().spent_usd == 0.0
+
+
+def test_meter_stt_unpriceable_vendor_fails_closed():
+    guard = BudgetGuard(limit_usd=100.00)
+    processor = FloeBudgetGuardProcessor(guard, model="gpt-4o", stt_model="ghost-stt")
+    with pytest.raises(UnpriceableVoiceError):
+        processor.meter_stt(60.0)
 
 
 @pytest.mark.asyncio

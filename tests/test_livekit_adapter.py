@@ -20,7 +20,7 @@ pytest.importorskip("livekit.agents")
 from livekit.agents.metrics import LLMMetrics, STTMetrics, TTSMetrics  # noqa: E402
 
 from floe_guard import BudgetGuard  # noqa: E402
-from floe_guard.errors import BudgetExceeded  # noqa: E402
+from floe_guard.errors import BudgetExceeded, UnpriceableVoiceError  # noqa: E402
 from floe_guard.integrations.livekit import LiveKitBudgetGuard  # noqa: E402
 
 
@@ -316,3 +316,103 @@ async def test_stt_tts_ignored_by_default():
     )
 
     assert guard.advisory().spent_usd == 0.0
+
+
+def _stt_metric(audio_duration):
+    return STTMetrics(
+        label="stt",
+        request_id="r",
+        timestamp=0.0,
+        duration=0.0,
+        audio_duration=audio_duration,
+        streamed=True,
+    )
+
+
+def _tts_metric(characters_count):
+    return TTSMetrics(
+        label="tts",
+        request_id="r",
+        timestamp=0.0,
+        ttfb=0.0,
+        duration=0.0,
+        audio_duration=0.0,
+        cancelled=False,
+        characters_count=characters_count,
+        streamed=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_stt_and_tts_metered_from_voice_cost_map_by_default():
+    # No hand-typed rates -- name the vendor and the rate comes from the map.
+    guard = BudgetGuard(limit_usd=100.00)
+    _, _, session = _attached(
+        guard, stt_model="deepgram-nova-3", tts_model="elevenlabs-flash-v2.5"
+    )
+
+    session.emit("metrics_collected", _event(_stt_metric(60.0)))  # 60s of audio
+    session.emit("metrics_collected", _event(_tts_metric(2000)))  # 2000 chars
+
+    # STT: 60s * ($0.0077/min ÷ 60) = $0.0077. TTS: 2000/1000 * $0.05 = $0.10.
+    expected = 60.0 * (0.0077 / 60) + 2000 / 1000 * 0.05
+    assert guard.advisory().spent_usd == pytest.approx(expected, rel=1e-4)
+    assert set(guard.tool_costs) == {"livekit-stt", "livekit-tts"}
+
+
+@pytest.mark.asyncio
+async def test_override_wins_over_voice_map():
+    guard = BudgetGuard(limit_usd=100.00)
+    _, _, session = _attached(
+        guard, stt_model="deepgram-nova-3", stt_usd_per_second=0.001
+    )
+    session.emit("metrics_collected", _event(_stt_metric(10.0)))
+    # Override ($0.001/s), not the Deepgram map rate.
+    assert guard.advisory().spent_usd == pytest.approx(10.0 * 0.001)
+
+
+@pytest.mark.asyncio
+async def test_unpriceable_stt_vendor_fails_closed():
+    guard = BudgetGuard(limit_usd=100.00)
+    _, _, session = _attached(guard, stt_model="not-a-real-stt-vendor")
+    with pytest.raises(UnpriceableVoiceError):
+        session.emit("metrics_collected", _event(_stt_metric(10.0)))
+
+
+@pytest.mark.asyncio
+async def test_telephony_metered_per_minute_from_map():
+    guard = BudgetGuard(limit_usd=100.00)
+    budget, _, _ = _attached(guard, telephony="twilio-us-inbound-local")
+    cost = budget.meter_telephony(3.0)  # 3 minutes
+    assert cost == pytest.approx(3.0 * 0.0085)
+    assert guard.tool_costs["livekit-telephony"] == pytest.approx(3.0 * 0.0085)
+
+
+@pytest.mark.asyncio
+async def test_telephony_unconfigured_is_noop():
+    guard = BudgetGuard(limit_usd=100.00)
+    budget, _, _ = _attached(guard)
+    assert budget.meter_telephony(3.0) is None
+    assert guard.advisory().spent_usd == 0.0
+
+
+@pytest.mark.asyncio
+async def test_full_call_per_leg_breakdown_sums_to_total():
+    # AC1: STT + LLM + TTS + telephony, all from the map (no hand-typed rates),
+    # sum to the total call cost.
+    guard = BudgetGuard(limit_usd=100.00)
+    budget, agent, session = _attached(
+        guard,
+        stt_model="deepgram-nova-3",
+        tts_model="elevenlabs-flash-v2.5",
+        telephony="twilio-us-inbound-local",
+    )
+    await _drive_turn(agent)  # LLM turn (model="gpt-4o", priced from the LLM map)
+    session.emit("metrics_collected", _event(_llm_metrics(500, 200)))
+    session.emit("metrics_collected", _event(_stt_metric(30.0)))
+    session.emit("metrics_collected", _event(_tts_metric(1200)))
+    budget.meter_telephony(1.0)
+
+    legs = {e.model_or_tool: e.cost_usd for e in guard.spend_log}
+    assert set(legs) == {"gpt-4o", "livekit-stt", "livekit-tts", "livekit-telephony"}
+    assert sum(legs.values()) == pytest.approx(guard.advisory().spent_usd)

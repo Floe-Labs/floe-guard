@@ -22,7 +22,13 @@ usage, after). ``LiveKitBudgetGuard`` holds the reservation state across both.
 LiveKit's ``LLMMetrics`` does not report the served model, so cost is settled
 against the ``model`` passed here (unlike the Pipecat adapter, which reads it
 off the frame). STT/TTS spend — often a voice agent's larger bill — is metered
-only if per-unit prices are supplied, since the bundled cost map is LLM-only.
+whenever you name the vendor: pass ``stt_model`` / ``tts_model`` and the rate
+comes from the bundled voice cost map (no hand-typed rate needed), or pass a
+per-unit override (``stt_usd_per_second`` / ``tts_usd_per_1k_chars``) which wins
+over the map. Telephony (per-minute) is metered via :meth:`meter_telephony`,
+since LiveKit emits no telephony metric. A leg with neither a vendor nor an
+override is left un-metered (the token-only contract); a vendor the voice map
+cannot price fails closed (:class:`~floe_guard.errors.UnpriceableVoiceError`).
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ from livekit.agents.metrics import LLMMetrics, STTMetrics, TTSMetrics
 
 from ..errors import BudgetExceeded
 from ..guard import BudgetGuard
+from ..voice_pricing import price_voice_leg
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +74,23 @@ class LiveKitBudgetGuard:
             ``BudgetExceeded`` when a turn is blocked, so a bot can speak a
             graceful "wrapping up" line before the turn ends silently. If
             omitted, the ``BudgetExceeded`` propagates out of ``llm_node``.
-        stt_usd_per_second: if set, meter ``STTMetrics.audio_duration`` via
-            ``record_tool`` (per-second). Omit to keep the token-only contract.
-        tts_usd_per_1k_chars: if set, meter ``TTSMetrics.characters_count`` via
-            ``record_tool`` (per 1k chars). Omit to keep the token-only contract.
+        stt_model: voice-map vendor key for the STT leg (e.g.
+            ``"deepgram-nova-3"``). When set, ``STTMetrics.audio_duration`` is
+            metered via ``record_tool`` at the bundled per-second rate — no
+            hand-typed rate needed. A key the voice map cannot price fails closed
+            (:class:`~floe_guard.errors.UnpriceableVoiceError`).
+        tts_model: voice-map vendor key for the TTS leg (e.g.
+            ``"elevenlabs-flash-v2.5"``). When set, ``TTSMetrics.characters_count``
+            is metered via ``record_tool`` at the bundled per-1k-chars rate.
+        telephony: voice-map vendor key for the telephony leg (e.g.
+            ``"twilio-us-inbound-local"``), metered per minute via
+            :meth:`meter_telephony`. US-only in v1.
+        stt_usd_per_second: per-second STT override — wins over ``stt_model``.
+            Omit both to keep the token-only contract (STT un-metered).
+        tts_usd_per_1k_chars: per-1k-chars TTS override — wins over ``tts_model``.
+            Omit both to keep the token-only contract (TTS un-metered).
+        telephony_usd_per_minute: per-minute telephony override — wins over
+            ``telephony``.
     """
 
     def __init__(
@@ -79,14 +99,22 @@ class LiveKitBudgetGuard:
         model: str,
         on_budget_exceeded: Callable[[BudgetExceeded], Awaitable[None]] | None = None,
         *,
+        stt_model: str | None = None,
+        tts_model: str | None = None,
+        telephony: str | None = None,
         stt_usd_per_second: float | None = None,
         tts_usd_per_1k_chars: float | None = None,
+        telephony_usd_per_minute: float | None = None,
     ):
         self._guard = guard
         self._model = model
         self._on_budget_exceeded = on_budget_exceeded
+        self._stt_model = stt_model
+        self._tts_model = tts_model
+        self._telephony = telephony
         self._stt_usd_per_second = stt_usd_per_second
         self._tts_usd_per_1k_chars = tts_usd_per_1k_chars
+        self._telephony_usd_per_minute = telephony_usd_per_minute
         self._reserved: float = 0.0
         self._pending = False
         self._active: _TurnSlot | None = None
@@ -170,12 +198,43 @@ class LiveKitBudgetGuard:
             else:
                 reserved = 0.0
             self._guard.settle(self._model, m.prompt_tokens, m.completion_tokens, reserved=reserved)
-        elif self._stt_usd_per_second is not None and isinstance(m, STTMetrics):
-            self._guard.record_tool("livekit-stt", m.audio_duration * self._stt_usd_per_second)
-        elif self._tts_usd_per_1k_chars is not None and isinstance(m, TTSMetrics):
-            self._guard.record_tool(
-                "livekit-tts", m.characters_count / 1000 * self._tts_usd_per_1k_chars
+        elif isinstance(m, STTMetrics):
+            # Priced from the voice map when stt_model is set, or the override;
+            # None (neither configured) leaves STT un-metered, an unpriceable
+            # vendor fails closed. Quantity is audio-seconds.
+            cost = price_voice_leg(
+                "stt", m.audio_duration, model=self._stt_model, override=self._stt_usd_per_second
             )
+            if cost is not None:
+                self._guard.record_tool("livekit-stt", cost)
+        elif isinstance(m, TTSMetrics):
+            cost = price_voice_leg(
+                "tts",
+                m.characters_count,
+                model=self._tts_model,
+                override=self._tts_usd_per_1k_chars,
+            )
+            if cost is not None:
+                self._guard.record_tool("livekit-tts", cost)
+
+    def meter_telephony(self, minutes: float) -> float | None:
+        """Accrue telephony spend for ``minutes`` of call time (per-minute).
+
+        LiveKit emits no telephony metric, so the transport/caller drives this —
+        call it as the call accrues minutes, or once with the final duration.
+        This is **per-minute accrual, not live line-cutting**: the guard meters
+        the leg, it does not cut the phone line mid-call. Priced from the voice
+        map when ``telephony`` is set, or the ``telephony_usd_per_minute``
+        override; returns ``None`` (no-op) when the leg is unconfigured, and
+        fails closed on a vendor the voice map cannot price. Returns the USD
+        accrued, if any.
+        """
+        cost = price_voice_leg(
+            "telephony", minutes, model=self._telephony, override=self._telephony_usd_per_minute
+        )
+        if cost is not None:
+            self._guard.record_tool("livekit-telephony", cost)
+        return cost
 
     def _on_close(self, ev) -> None:
         # Session torn down with a turn still reserved — release it. Drop any

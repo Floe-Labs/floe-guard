@@ -662,9 +662,42 @@ function wrapper, these adapters enforce **per turn** — reserve before the LLM
 call (so a turn is blocked *before* its TTS/audio spend piles on top of a call
 that would already cross the ceiling), settle on the real usage the pipeline
 reports, and release a turn that ends without ever reporting usage (an
-interrupted turn) so the reservation never leaks against the ceiling. The token
-cost map is LLM-only, so STT/TTS spend is metered only when you supply per-unit
-prices. Both voice adapters are **Python-only** today.
+interrupted turn) so the reservation never leaks against the ceiling. Both voice
+adapters are **Python-only** today.
+
+**The whole call is priced from the bundled map — no hand-typed rates.** Name each
+leg's vendor (`stt_model`, `tts_model`, `telephony`) and floe-guard prices the
+full call — STT (per second) + LLM (per token) + TTS (per 1k chars) + telephony
+(per minute) — from the vendored voice cost map, so it answers *"what did this
+call cost"* at the $0 tier out of the box. A per-unit override
+(`stt_usd_per_second` / `tts_usd_per_1k_chars` / `telephony_usd_per_minute`) still
+works and wins over the map; a leg with neither a vendor nor an override is left
+un-metered (the token-only contract), and a vendor the map cannot price **fails
+closed** (`UnpriceableVoiceError`) rather than metering it at a silent $0.
+
+> **Telephony is US-only in v1**, and every voice rate is a **drift-prone
+> snapshot** of each vendor's public list price — vendors change these more often
+> than the map is refreshed, so treat them as an estimate and re-verify against
+> the live pricing page before trusting a figure. The rates live under the
+> `"__voice__"` key of [`cost_map.json`](src/floe_guard/cost_map.json); refresh
+> them with [`scripts/update-cost-map.mjs`](scripts/update-cost-map.mjs). Seeded
+> vendors: Deepgram, AssemblyAI (STT); ElevenLabs, Cartesia Sonic, Rime (TTS);
+> Twilio, Cartesia Line (telephony). Telnyx is deferred pending a verified list
+> rate. Enforcement stays
+> **pre-turn admission** (reserve-before-turn) — telephony is **per-minute
+> accrual**, not live line-cutting.
+
+Per-leg breakdown from one call (no manual prices — `python
+examples/voice_call_cost_livekit.py`, no API key, no network):
+
+```
+Per-leg call cost (all priced from the bundled cost map, no manual rates):
+  livekit-stt          $0.001027   # 8s  × ($0.0077/min ÷ 60)   Deepgram Nova-3
+  gpt-4o               $0.003700   # 600 in / 220 out tokens    LLM
+  livekit-tts          $0.009000   # 180 chars / 1k × $0.05     ElevenLabs Flash
+  livekit-telephony    $0.012750   # 1.5 min × $0.0085/min      Twilio US inbound
+  TOTAL                $0.026477
+```
 
 ### Pipecat (voice)
 
@@ -708,6 +741,14 @@ pipeline — the hard-stop every other adapter gives you. Pass an
 `on_budget_exceeded` async callback to speak a graceful "wrapping up" line first
 instead of cutting the call dead.
 
+Name the vendors to meter the rest of the call from the map:
+`tts_model="elevenlabs-flash-v2.5"` auto-meters the `TTSUsageMetricsData` Pipecat
+emits; `stt_model` / `telephony` are metered explicitly (Pipecat emits no STT/
+telephony usage frame) via `processor.meter_stt(seconds)` /
+`processor.meter_telephony(minutes)`. See
+[`examples/voice_call_cost_pipecat.py`](examples/voice_call_cost_pipecat.py) for
+the full per-leg breakdown (no API key, no network).
+
 ### LiveKit (voice)
 
 ```bash
@@ -738,10 +779,16 @@ await session.start(agent=agent, room=ctx.room)
 
 > **Fragment** — `session`, `agent`, and `ctx.room` come from your LiveKit agent entrypoint (`JobContext`); this shows only where the guard attaches.
 
-Pass `stt_usd_per_second` / `tts_usd_per_1k_chars` to also meter STT/TTS spend
-(often a voice agent's larger bill) via `record_tool`, and an `on_budget_exceeded`
-async callback to speak a wrap-up line before a turn ends. See
-[`examples/voice_turn_budget.py`](examples/voice_turn_budget.py).
+Name the vendors — `stt_model="deepgram-nova-3"`, `tts_model="elevenlabs-flash-v2.5"`,
+`telephony="twilio-us-inbound-local"` — to meter STT/TTS/telephony (often a voice
+agent's larger bill) from the map via `record_tool`, no hand-typed rates. STT/TTS
+settle automatically off LiveKit's metrics events; drive telephony per-minute with
+`budget.meter_telephony(minutes)`. Per-unit overrides (`stt_usd_per_second` /
+`tts_usd_per_1k_chars` / `telephony_usd_per_minute`) still work and win over the
+map, and an `on_budget_exceeded` async callback speaks a wrap-up line before a turn
+ends. See [`examples/voice_call_cost_livekit.py`](examples/voice_call_cost_livekit.py)
+for the full per-leg breakdown (no API key) and
+[`examples/voice_turn_budget.py`](examples/voice_turn_budget.py) for the hard-stop.
 
 ## Adapter matrix
 
