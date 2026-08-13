@@ -686,6 +686,13 @@ closed** (`UnpriceableVoiceError`) rather than metering it at a silent $0.
 > rate. Enforcement stays
 > **pre-turn admission** (reserve-before-turn) — telephony is **per-minute
 > accrual**, not live line-cutting.
+>
+> Some vendors don't bill in the map's canonical unit: TTS priced natively
+> per audio-minute (Cartesia Sonic, Rime) is converted at an assumed ~1000
+> chars/min, and per-session overhead (e.g. AssemblyAI) isn't modeled — so a
+> metered leg is an **estimate**, not the exact invoice, and can under- or
+> over-state it. `floe-guard` is a **local pacing ceiling**; the authoritative
+> cap is server-side.
 
 Per-leg breakdown from one call (no manual prices — `python
 examples/voice_call_cost_livekit.py`, no API key, no network):
