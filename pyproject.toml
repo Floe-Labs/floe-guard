@@ -1,10 +1,16 @@
+# hatchling is capped below 1.32 on purpose: 1.32.0 bumped the emitted
+# core-metadata to `Metadata-Version: 2.5`, which the pinned
+# pypa/gh-action-pypi-publish@v1.14.0 (twine 6.1.0 + packaging 25.0) rejects
+# with "InvalidDistribution: '2.5' is not a valid metadata version". 1.31.0 is
+# the last release that emits 2.4, which both twine and PyPI accept. This is
+# why PyPI froze at 0.13.0 (Aug 6) while the repo moved to 0.16.x.
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling<1.32"]
 build-backend = "hatchling.build"
 
 [project]
 name = "floe-guard"
-version = "0.16.0"
+version = "0.16.1"
 description = "Local budget guardrail for AI agents — hard-stops a runaway loop before its next LLM call crosses a spend ceiling. No account, no network."
 readme = "README.md"
 requires-python = ">=3.10"

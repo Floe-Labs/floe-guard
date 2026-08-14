@@ -93,7 +93,12 @@ def retell(
     """
     if budget_exhausted(guard, estimated_call_usd=estimated_call_usd):
         return {"call_inbound": {"reject": True}}
-    return {"call_inbound": dict(admit or {})}
+    # The gate's budget decision — not the caller's overrides — controls admission.
+    # Strip ``reject`` from admit overrides so an errant ``admit={"reject": True}``
+    # on an available-budget call can't flip the response into Retell's reject shape.
+    overrides = dict(admit or {})
+    overrides.pop("reject", None)
+    return {"call_inbound": overrides}
 
 
 def vapi(

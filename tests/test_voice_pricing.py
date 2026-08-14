@@ -170,3 +170,12 @@ def test_every_voice_entry_matches_its_declared_unit() -> None:
             f"{vendor} has a non-positive rate"
         )
         assert entry.get("provider"), f"{vendor} missing provider"
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_voice_leg_cost_rejects_non_finite_quantity(bad: float) -> None:
+    # A NaN/inf quantity would poison the guard's running total — fail closed.
+    with pytest.raises(ValueError, match="finite"):
+        voice_leg_cost("stt", bad, 0.0001)
+    with pytest.raises(ValueError, match="finite"):
+        price_voice_leg("stt", bad, model="deepgram-nova-3")
