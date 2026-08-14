@@ -21,9 +21,11 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   the un-bypassable, cross-vendor cap. Zero-telemetry invariant preserved (no
   network unless a key is set) and fail-closed (a failed read raises
   `HostedEnforcementError`, or degrades to a `fallback_limit_usd` local ceiling
-  with a loud warning). The advisory-symmetry claim (`advisory()` shape ==
-  hosted's `X-Floe-Budget-Advisory` header, so taper logic ports unchanged) is now
-  in the README's core pitch.
+  with a loud warning). The README core pitch now documents the shared near-limit
+  signal (`near_limit` + `used_bps`) between local `advisory()` and hosted's
+  `X-Floe-Budget-Advisory` header, so tapering logic carries over — the header
+  nests it under `tightest` with raw amounts, a light field remap, not an
+  identical shape.
 
 - **Voice cost map — meter the whole call by default** (P0): STT/TTS/telephony
   rates ship under the reserved `__voice__` key of `cost_map.json` (units: STT

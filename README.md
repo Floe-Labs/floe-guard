@@ -94,10 +94,13 @@ of truth for the un-bypassable, cross-vendor cap. No key set → no network (the
 [zero-telemetry](#no-telemetry) invariant holds); a failed read fails closed
 (pass `fallback_limit_usd=` to degrade to a local ceiling instead).
 
-The taper logic ports for free, too: the `advisory()` you read locally is the
-**same shape** hosted Floe returns on every proxied call (the
-`X-Floe-Budget-Advisory` header), so code that tapers as you near the limit works
-unchanged against server-truth headroom across *every* vendor and cap.
+Your tapering logic carries over, too: local `advisory()` and hosted's
+`X-Floe-Budget-Advisory` header expose the same **near-limit signal**
+(`near_limit` + `used_bps` utilization), so the "near the cap? taper now"
+decision you branch on is the same. The wire shapes differ — the hosted header
+nests the tightest cap under `tightest` with raw-integer amounts, so field access
+is a light remap — but it answers that signal across *every* vendor and cap, not
+just the one you instrumented locally.
 
 ## Why floe-guard?
 
@@ -272,8 +275,10 @@ what "cheaper" means in `on_degrade`. TypeScript exposes the same pattern as
 `withBudgetRetry()`. See [`examples/budget_retry.py`](examples/budget_retry.py)
 for a no-network demo.
 
-The taper logic you just wrote ports to hosted unchanged — same `advisory()`
-shape, answered across *every* vendor and cap with server-truth headroom; see
+The taper logic you just wrote carries over to hosted — the same near-limit
+signal (`near_limit` + `used_bps`), answered across *every* vendor and cap; the
+hosted `X-Floe-Budget-Advisory` header nests it under `tightest` with raw-integer
+amounts, so field access is a light remap. See
 [One line to hosted](#one-line-to-hosted). The TS package exposes the identical
 `guard.advisory()`.
 
