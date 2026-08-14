@@ -18,6 +18,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
 
+from . import gates
 from .errors import (
     BudgetExceeded,
     DeadlineExceeded,
@@ -91,4 +92,5 @@ __all__ = [
     "price_voice_leg",
     "hosted_enforcement_available",
     "hosted_remaining_usd",
+    "gates",
 ]

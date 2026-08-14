@@ -170,6 +170,11 @@ class BudgetAdvisory:
     # one. None when no step is active or the dimension is uncapped.
     step_remaining_usd: float | None = None
     step_remaining_tokens: int | None = None
+    # Spend rate in USD per minute over this guard's lifetime (spent_usd ÷ minutes
+    # since the guard was created) — the number voice teams watch. None only when
+    # no wall-clock time has elapsed yet. Make one guard per call/turn for a
+    # per-call burn rate; a long-lived guard reports the session average.
+    burn_rate_usd_per_min: float | None = None
 
 
 @dataclass(frozen=True)
@@ -330,6 +335,9 @@ class BudgetGuard:
         self.fail_closed = fail_closed
         self._on_block = on_block or _default_on_block
         self.near_limit_bps = near_limit_bps
+        # Wall-clock start of this guard's spend window, for the $/min burn rate
+        # (advisory().burn_rate_usd_per_min). One guard per call/turn ⇒ per-call rate.
+        self._created_time = time.time()
         self.spent_usd = 0.0
         # Costs of the most recent priced LLM call and tool call, tracked
         # SEPARATELY: the default next-call prediction is the max of the two, so
@@ -915,7 +923,16 @@ class BudgetGuard:
     def step(
         self, *, max_usd: float | None = None, max_tokens: int | None = None
     ) -> Iterator[BudgetGuard]:
-        """Scope a per-step USD and/or token cap for a **sequential agent loop**.
+        """Scope a per-step USD and/or token cap — the **per-call budget** primitive.
+
+        Voice budgets are per-*call*, not per-day: wrap one call (or one turn) in a
+        ``step`` to cap that call independently of the guard's aggregate ceiling.
+        The step's headroom is ``advisory().step_remaining_usd``, and
+        ``advisory().est_calls_remaining`` reports how many more calls the budget
+        buys at the current per-call estimate::
+
+            with guard.step(max_usd=0.05) as call:    # this call's own $0.05 cap
+                call.check(); call.record("gpt-4o", ...)
 
         Push a step onto the guard's stack on enter, pop it on exit; the
         enforcement/accrual path honours the innermost active step *on top of*
@@ -1010,6 +1027,11 @@ class BudgetGuard:
         # +1e-9 absorbs float noise so e.g. 0.6/0.2 floors to 3 not 2 (same
         # epsilon rationale as used_bps above, and keeps JS Math.floor parity).
         est_calls_remaining = int(remaining / expected_cost + 1e-9) if expected_cost > 0.0 else None
+        # Burn rate: spend ÷ minutes elapsed since the guard was created. None until
+        # any wall-clock time has passed (avoids a divide-by-zero at t0); $0 spent
+        # over real elapsed time is a legitimate 0.0/min, not None.
+        elapsed_min = (time.time() - self._created_time) / 60.0
+        burn_rate_usd_per_min = spent_usd / elapsed_min if elapsed_min > 0.0 else None
         # Aggregate token utilization, mirroring used_bps. None (no signal) when
         # the token dimension is unset — an aggregate-only USD guard is unchanged.
         token_used_bps: int | None = None
@@ -1061,6 +1083,7 @@ class BudgetGuard:
             remaining_tokens=remaining_tokens,
             step_remaining_usd=step_remaining_usd,
             step_remaining_tokens=step_remaining_tokens,
+            burn_rate_usd_per_min=burn_rate_usd_per_min,
         )
 
     # ── internals ──────────────────────────────────────────────────────────────
