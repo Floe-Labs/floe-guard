@@ -73,6 +73,35 @@ This rigs a loop against a **stub LLM** — no real API key, no account, no netw
 It prices each fake `gpt-4o` call offline and the guard halts the loop after a few
 iterations. This is the reproducible "stop the loop" demo.
 
+## One line to hosted
+
+Already on hosted Floe? Keep every line of your code — swap the constructor.
+`from_floe` reads your **server-side budget headroom** and uses it as the local
+ceiling, so the free→hosted upgrade is one line:
+
+```python
+from floe_guard import BudgetGuard
+
+guard = BudgetGuard.from_floe(api_key="floe_…")   # ceiling = your hosted headroom
+guard.check()                                     # everything else is unchanged
+response = call_your_llm(...)
+guard.record("gpt-4o", response.usage.prompt_tokens, response.usage.completion_tokens)
+```
+
+Budget, not balance: the read is a *headroom* signal and enforcement stays
+**local** — [hosted Floe](#when-you-outgrow-local-guardrails) remains the source
+of truth for the un-bypassable, cross-vendor cap. No key set → no network (the
+[zero-telemetry](#no-telemetry) invariant holds); a failed read fails closed
+(pass `fallback_limit_usd=` to degrade to a local ceiling instead).
+
+Your tapering logic carries over, too: local `advisory()` and hosted's
+`X-Floe-Budget-Advisory` header expose the same **near-limit signal**
+(`near_limit` + `used_bps` utilization), so the "near the cap? taper now"
+decision you branch on is the same. The wire shapes differ — the hosted header
+nests the tightest cap under `tightest` with raw-integer amounts, so field access
+is a light remap — but it answers that signal across *every* vendor and cap, not
+just the one you instrumented locally.
+
 ## Why floe-guard?
 
 You can already *see* what your agent spends — the problem is seeing it too late.
@@ -246,12 +275,12 @@ what "cheaper" means in `on_degrade`. TypeScript exposes the same pattern as
 `withBudgetRetry()`. See [`examples/budget_retry.py`](examples/budget_retry.py)
 for a no-network demo.
 
-This is the **same advisory shape** hosted Floe returns on every proxied call
-(the `X-Floe-Budget-Advisory` header), so the logic you write here ports
-unchanged — hosted just answers across *every* vendor and cap with server-truth
-balances and arbitrary rolling-window timing, which a local UTC-day budget can't
-know.
-The TS package exposes the identical `guard.advisory()`.
+The taper logic you just wrote carries over to hosted — the same near-limit
+signal (`near_limit` + `used_bps`), answered across *every* vendor and cap; the
+hosted `X-Floe-Budget-Advisory` header nests it under `tightest` with raw-integer
+amounts, so field access is a light remap. See
+[One line to hosted](#one-line-to-hosted). The TS package exposes the identical
+`guard.advisory()`.
 
 ## Per-call spend log
 
@@ -881,6 +910,9 @@ budget read: set `FLOE_API_KEY` (agent key `floe_…`) and `hosted_remaining_usd
 returns the server-side budget headroom via `GET /v1/agents/credit-remaining`.
 `FLOE_API_BASE_URL` overrides the API host (default
 `https://credit-api.floelabs.xyz`). Nothing runs unless the key is set.
+The [one-line upgrade](#one-line-to-hosted) is `BudgetGuard.from_floe(api_key=…)`,
+which uses that headroom as the local ceiling — budget, not balance, and
+enforcement stays local.
 
 → [dev-dashboard.floelabs.xyz](https://dev-dashboard.floelabs.xyz/)
 

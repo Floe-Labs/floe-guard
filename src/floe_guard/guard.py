@@ -42,6 +42,7 @@ from typing import Literal, NoReturn
 
 from .errors import (
     BudgetExceeded,
+    HostedEnforcementError,
     TokenBudgetExceeded,
     UnpriceableModelError,
     UnpriceableModelWarning,
@@ -363,6 +364,89 @@ class BudgetGuard:
         if self._store is not None:
             with self._lock:
                 self._refresh_persistent_state_locked()
+
+    # ── hosted upgrade ────────────────────────────────────────────────────────
+
+    @classmethod
+    def from_floe(
+        cls,
+        api_key: str | None = None,
+        *,
+        base_url: str | None = None,
+        fallback_limit_usd: float | None = None,
+        timeout: float = 10.0,
+        **guard_kwargs: object,
+    ) -> BudgetGuard:
+        """Build a guard whose local ceiling is set from your hosted Floe headroom.
+
+        The one-line upgrade from a hand-picked ``limit_usd`` to a ceiling that
+        tracks server-side headroom: reads
+        :func:`~floe_guard.hosted.hosted_remaining_usd` once (the **minimum** of
+        auto-borrow headroom and session spend remaining) and constructs a
+        :class:`BudgetGuard` with that number as ``limit_usd``. Everything else —
+        ``check`` / ``record`` / ``reserve`` / ``advisory`` — is unchanged.
+
+        Budget, not balance. The hosted read is a *headroom / budget* signal, not
+        an account balance, and this guard still enforces **locally**. Hosted Floe
+        remains the source of truth for the un-bypassable, cross-vendor cap; the
+        local ceiling is a fresh per-process budget bounded by what the server
+        currently allows.
+
+        Refresh policy: headroom is read **once, at construction**. It moves as you
+        borrow/repay, so to re-read later either call ``from_floe`` again or set
+        ``guard.limit_usd = hosted_remaining_usd(api_key)`` on a schedule you own.
+
+        Zero-telemetry invariant: no network call happens unless a key is supplied
+        (via ``api_key=`` or ``FLOE_API_KEY``). With no key the hosted read raises
+        before touching the network.
+
+        Fail-closed: a failed hosted read (missing/invalid key, 401/403/404,
+        network/timeout) raises
+        :class:`~floe_guard.errors.HostedEnforcementError` — the guard is *not*
+        silently built with an unknown or unbounded ceiling. Pass
+        ``fallback_limit_usd`` to instead degrade to a known local ceiling (with a
+        loud warning), so a transient blip falls back to local enforcement rather
+        than crashing the agent.
+
+        Args:
+            api_key: Floe agent key (``floe_<hex>``). Defaults to ``FLOE_API_KEY``.
+            base_url: API base. Defaults to ``FLOE_API_BASE_URL``, else production.
+            fallback_limit_usd: local ceiling to use if the hosted read fails.
+                ``None`` (default) re-raises the error (fail closed).
+            timeout: socket timeout for the hosted read, in seconds.
+            **guard_kwargs: any other :class:`BudgetGuard` option (``fail_closed``,
+                ``on_block``, ``near_limit_bps``, ``price_overrides``,
+                ``token_limit``, ``window`` / ``store``, …). ``limit_usd`` is
+                derived from headroom and must not be passed here.
+
+        Raises:
+            HostedEnforcementError: the hosted read failed and no
+                ``fallback_limit_usd`` was given.
+            TypeError: ``limit_usd`` was passed in ``guard_kwargs``.
+        """
+        if "limit_usd" in guard_kwargs:
+            raise TypeError(
+                "from_floe derives limit_usd from hosted headroom; pass "
+                "fallback_limit_usd= for the offline fallback instead."
+            )
+        # Local import: hosted.py is a leaf module, but importing it at the top of
+        # guard.py would couple the core guard to the network client for no gain.
+        from .hosted import hosted_remaining_usd
+
+        try:
+            ceiling = hosted_remaining_usd(api_key, base_url=base_url, timeout=timeout)
+        except HostedEnforcementError:
+            if fallback_limit_usd is None:
+                raise
+            fallback = float(fallback_limit_usd)
+            warnings.warn(
+                "floe-guard: could not read hosted Floe headroom; falling back to "
+                f"a local ceiling of ${fallback:.2f}. Enforcement is local-only "
+                "until the hosted read succeeds.",
+                stacklevel=2,
+            )
+            ceiling = fallback
+        return cls(limit_usd=ceiling, **guard_kwargs)  # type: ignore[arg-type]
 
     # ── enforcement ───────────────────────────────────────────────────────────
 
