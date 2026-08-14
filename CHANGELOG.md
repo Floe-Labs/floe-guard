@@ -8,9 +8,28 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.15.0 / js 0.10.0
+## Unreleased — py 0.16.0 / js 0.10.0
 
 ### Added (py)
+
+- **Voice-native primitives — per-call budgets, $/min burn rate, pre-call gates**
+  (P1):
+  - `guard.step(max_usd=…)` is now documented as the **per-call budget** primitive
+    (per-call cap, `advisory().step_remaining_usd` headroom, `est_calls_remaining`)
+    — voice budgets are per-call, not per-day.
+  - `advisory().burn_rate_usd_per_min` — the $/min spend rate voice teams watch,
+    derived from spend ÷ minutes since the guard was created (one guard per
+    call/turn ⇒ a per-call rate).
+  - `floe_guard.gates` — **pre-call admission** gates returning each provider's
+    exact inbound-webhook shape, so a local user rejects a call on budget
+    exhaustion with the same contract the hosted gateway serves: `gates.retell()`
+    → `{"call_inbound": {"reject": true}}` (only the boolean rejects; phone/SMS
+    inbound, 10s/3-retry); `gates.vapi()` → `{"error": …}` reject vs
+    `{"assistant"|"assistantId": …}` admit (~7.5s deadline); `gates.pre_call()` /
+    `gates.budget_exhausted()` for Pipecat/custom. **Pre-call admission only** — no
+    mid-call intervention. Bland's *Send Call* metadata field name is an open
+    verification item and is **not** invented (use `gates.pre_call`). US-only v1.
+    Budget, not balance.
 
 - **One line to hosted — `BudgetGuard.from_floe(api_key=…)`**: constructs a guard
   whose local ceiling is read from your **server-side budget headroom** (the min

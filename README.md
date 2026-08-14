@@ -227,7 +227,10 @@ guard.record(model, response.usage.prompt_tokens, response.usage.completion_toke
 `remaining_usd`, and the budget totals. It also reports `expected_cost` (the
 guard's own next-call estimate) and `est_calls_remaining` (how many more calls
 the remaining budget buys, `None` until the first call is recorded) — call
-headroom, not just dollars. It's a **soft** signal — the model may
+headroom, not just dollars. For voice, it also reports `burn_rate_usd_per_min`
+(spend ÷ minutes since the guard was created — the $/min voice teams watch;
+make one guard per call/turn for a per-call rate, `None` before any time
+elapses). It's a **soft** signal — the model may
 ignore it; `check()` is what enforces the ceiling. See
 [`examples/budget_aware.py`](examples/budget_aware.py) for a runnable taper demo
 (no API key).
@@ -827,6 +830,47 @@ map, and an `on_budget_exceeded` async callback speaks a wrap-up line before a t
 ends. See [`examples/voice_call_cost_livekit.py`](examples/voice_call_cost_livekit.py)
 for the full per-leg breakdown (no API key) and
 [`examples/voice_turn_budget.py`](examples/voice_turn_budget.py) for the hard-stop.
+
+## Voice admission gates (pre-call)
+
+The adapters above meter a call that's already running. `floe_guard.gates` is the
+step *before* that: at the call boundary, **admit or reject** an inbound call from
+the budget left — and it returns the exact JSON shape each orchestrator's inbound
+webhook expects, so the same reject contract you serve locally is the one hosted
+Floe serves. The paid upgrade is a URL swap, not a rewrite.
+
+```python
+from floe_guard import BudgetGuard, gates
+
+guard = BudgetGuard.from_floe(api_key="floe_…")   # or a local BudgetGuard(limit_usd=…)
+
+# Retell inbound webhook — only the boolean `true` rejects:
+gates.retell(guard)
+#  budget left → {"call_inbound": {}}          (admit; pass admit={"dynamic_variables": …})
+#  exhausted   → {"call_inbound": {"reject": True}}
+
+# Vapi assistant-request webhook — respond within ~7.5s:
+gates.vapi(guard, assistant_id="asst_…")
+#  budget left → {"assistantId": "asst_…"}     (or assistant={…} for an inline assistant)
+#  exhausted   → {"error": "Sorry, this agent is out of budget right now."}
+
+# Pipecat / custom / Bland — the provider-agnostic decision:
+if not gates.pre_call(guard):
+    ...  # reject at your call boundary
+```
+
+Pass `estimated_call_usd=` to reject when the remaining budget can't cover the
+next call (e.g. `$/min × expected minutes`), not just when it's fully spent.
+
+**Pre-call admission only.** A gate decides whether a call *starts*; it does not
+intervene mid-call. Once admitted, a call runs to completion — nothing here cuts
+one off partway. (`guard_stream` can stop a single LLM *generation*, which is not
+call-level intervention.) Budget, not balance. US-only telephony, v1.
+
+> **Verification notes.** Retell's inbound webhook fires for inbound **phone/SMS**
+> calls (not dial-to-sip); its web-call behaviour isn't documented. Bland's *Send
+> Call* metadata field name is unconfirmed, so there's no `gates.bland()` yet — use
+> `gates.pre_call(guard)` and wire the reject into Bland's Pathway Webhook node.
 
 ## Adapter matrix
 
