@@ -8,6 +8,25 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.16.2
+
+### Fixed (py)
+
+- **LiveKit adapter: migrate off the deprecated session-level `metrics_collected`
+  event.** `livekit-agents` 1.5 deprecated `AgentSession.on("metrics_collected", …)`
+  (it now logs a warning and points at `session_usage_updated` / `ChatMessage.metrics`).
+  `LiveKitBudgetGuard` now settles/meter each turn off the **per-component**
+  `metrics_collected` event (the LLM / STT / TTS plugins each emit it and it is
+  **not** deprecated) instead of the session facade. The LLM plugin fires per
+  LLM turn, so the reserve-before-turn → settle-real-usage contract is preserved
+  exactly; `session_usage_updated` was rejected because it delivers a *cumulative*
+  `UsageSummary` (itself deprecated), which would force diffing successive
+  summaries and lose clean per-turn settlement. Components are resolved from the
+  agent first, then the session, mirroring LiveKit's own runtime pick. No public
+  API change; the `livekit` extra floor stays `>=1.0` (the per-component event
+  predates the deprecation). (The TS `@livekit/agents` does not deprecate the
+  event, so the Vercel-AI/js package is unaffected.)
+
 ## Unreleased — py 0.16.1 / js 0.11.0
 
 ### Fixed (py)

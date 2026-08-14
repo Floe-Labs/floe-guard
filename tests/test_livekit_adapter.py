@@ -1,9 +1,12 @@
 """Tests for the LiveKit Agents integration.
 
-The adapter hooks two surfaces — the agent's ``llm_node`` (reserve) and the
-session's ``metrics_collected`` / ``close`` events (settle / release). These
-drive them directly through a minimal fake agent + event-emitter session, which
-is all ``attach`` touches; a full LiveKit room/runner isn't needed.
+The adapter hooks two surfaces — the agent's ``llm_node`` (reserve) and each
+component's ``metrics_collected`` event plus the session ``close`` (settle /
+release). The session-level ``metrics_collected`` is deprecated in
+livekit-agents 1.5+, so the adapter listens on the LLM/STT/TTS plugins directly.
+These tests drive them through a minimal fake agent + per-component
+event-emitter session, which is all ``attach`` touches; a full LiveKit
+room/runner isn't needed.
 """
 
 from __future__ import annotations
@@ -24,9 +27,29 @@ from floe_guard.errors import BudgetExceeded, UnpriceableVoiceError  # noqa: E40
 from floe_guard.integrations.livekit import LiveKitBudgetGuard  # noqa: E402
 
 
+class _FakeEmitter:
+    """A LiveKit component (LLM/STT/TTS plugin) — an event emitter that the
+    adapter subscribes to for ``metrics_collected``."""
+
+    def __init__(self):
+        self._handlers = {}
+
+    def on(self, event, cb):
+        self._handlers[event] = cb
+
+    def emit(self, event, arg):
+        if event in self._handlers:
+            self._handlers[event](arg)
+
+
 class _FakeSession:
     def __init__(self):
         self._handlers = {}
+        # Components live on the session (the canonical LiveKit pattern). Each
+        # emits its own metrics_collected; the adapter meters straight off them.
+        self.llm = _FakeEmitter()
+        self.stt = _FakeEmitter()
+        self.tts = _FakeEmitter()
 
     def on(self, event, cb):
         self._handlers[event] = cb
@@ -68,10 +91,6 @@ def _llm_metrics(prompt_tokens, completion_tokens, cancelled=False):
     )
 
 
-def _event(metric):
-    return types.SimpleNamespace(metrics=metric)
-
-
 @pytest.mark.asyncio
 async def test_turn_streams_through_and_settles_on_metrics():
     guard = BudgetGuard(limit_usd=100.00)
@@ -81,7 +100,7 @@ async def test_turn_streams_through_and_settles_on_metrics():
     assert chunks == ["hello", " world"]  # original llm_node output is preserved
     assert budget._pending  # reservation held until usage is reported
 
-    session.emit("metrics_collected", _event(_llm_metrics(100, 50)))
+    session.llm.emit("metrics_collected", _llm_metrics(100, 50))
 
     assert guard.advisory().spent_usd > 0
     assert not budget._pending
@@ -99,7 +118,7 @@ async def test_on_budget_exceeded_callback_used_instead_of_raising():
     budget, agent, session = _attached(guard, on_budget_exceeded=handle)
 
     await _drive_turn(agent)  # first turn reserves $0 (no prior cost) and passes
-    session.emit("metrics_collected", _event(_llm_metrics(1000, 500)))  # now over ceiling
+    session.llm.emit("metrics_collected", _llm_metrics(1000, 500))  # now over ceiling
 
     chunks = await _drive_turn(agent)  # second turn should be blocked
     assert chunks == []  # blocked turn yields nothing
@@ -112,7 +131,7 @@ async def test_blocked_turn_raises_without_callback():
     budget, agent, session = _attached(guard)
 
     await _drive_turn(agent)
-    session.emit("metrics_collected", _event(_llm_metrics(1000, 500)))
+    session.llm.emit("metrics_collected", _llm_metrics(1000, 500))
 
     with pytest.raises(BudgetExceeded):
         await _drive_turn(agent)
@@ -124,7 +143,7 @@ async def test_cancelled_turn_settles_and_releases_reservation():
     budget, agent, session = _attached(guard)
 
     await _drive_turn(agent)
-    session.emit("metrics_collected", _event(_llm_metrics(0, 0, cancelled=True)))
+    session.llm.emit("metrics_collected", _llm_metrics(0, 0, cancelled=True))
 
     assert not budget._pending
     assert budget._reserved == 0.0
@@ -174,7 +193,7 @@ async def test_failing_turn_does_not_release_later_turns_reservation():
     seed = LiveKitBudgetGuard(guard, model="gpt-4o")
     seed.attach(seed_session, seed_agent)
     await _drive_turn(seed_agent)
-    seed_session.emit("metrics_collected", _event(_llm_metrics(1000, 500)))
+    seed_session.llm.emit("metrics_collected", _llm_metrics(1000, 500))
 
     a_ready = asyncio.Event()
     a_may_fail = asyncio.Event()
@@ -226,7 +245,7 @@ async def test_delayed_metrics_do_not_steal_later_turns_reservation():
 
     # Seed a non-zero default estimate so holds are real USD.
     await _drive_turn(agent)
-    session.emit("metrics_collected", _event(_llm_metrics(1000, 500)))
+    session.llm.emit("metrics_collected", _llm_metrics(1000, 500))
 
     # Turn A reserves and finishes streaming; metrics not yet emitted.
     await _drive_turn(agent)
@@ -242,7 +261,7 @@ async def test_delayed_metrics_do_not_steal_later_turns_reservation():
     assert guard._reserved == pytest.approx(b_reserved)
 
     # A's delayed metrics arrive first — must meter A without consuming B.
-    session.emit("metrics_collected", _event(_llm_metrics(100, 50)))
+    session.llm.emit("metrics_collected", _llm_metrics(100, 50))
     assert budget._pending
     assert budget._reserved == pytest.approx(b_reserved)
     assert guard._reserved == pytest.approx(b_reserved)
@@ -250,7 +269,7 @@ async def test_delayed_metrics_do_not_steal_later_turns_reservation():
     spent_after_a = guard.advisory().spent_usd
 
     # B's metrics settle B's own hold.
-    session.emit("metrics_collected", _event(_llm_metrics(200, 100)))
+    session.llm.emit("metrics_collected", _llm_metrics(200, 100))
     assert not budget._pending
     assert budget._reserved == 0.0
     assert guard._reserved == pytest.approx(0.0)
@@ -262,33 +281,29 @@ async def test_stt_and_tts_metered_only_when_priced():
     guard = BudgetGuard(limit_usd=100.00)
     _, _, session = _attached(guard, stt_usd_per_second=0.01, tts_usd_per_1k_chars=0.10)
 
-    session.emit(
+    session.stt.emit(
         "metrics_collected",
-        _event(
-            STTMetrics(
-                label="stt",
-                request_id="r",
-                timestamp=0.0,
-                duration=0.0,
-                audio_duration=10.0,
-                streamed=True,
-            )
+        STTMetrics(
+            label="stt",
+            request_id="r",
+            timestamp=0.0,
+            duration=0.0,
+            audio_duration=10.0,
+            streamed=True,
         ),
     )
-    session.emit(
+    session.tts.emit(
         "metrics_collected",
-        _event(
-            TTSMetrics(
-                label="tts",
-                request_id="r",
-                timestamp=0.0,
-                ttfb=0.0,
-                duration=0.0,
-                audio_duration=0.0,
-                cancelled=False,
-                characters_count=1000,
-                streamed=True,
-            )
+        TTSMetrics(
+            label="tts",
+            request_id="r",
+            timestamp=0.0,
+            ttfb=0.0,
+            duration=0.0,
+            audio_duration=0.0,
+            cancelled=False,
+            characters_count=1000,
+            streamed=True,
         ),
     )
 
@@ -301,17 +316,15 @@ async def test_stt_tts_ignored_by_default():
     guard = BudgetGuard(limit_usd=100.00)
     _, _, session = _attached(guard)  # no per-unit prices
 
-    session.emit(
+    session.stt.emit(
         "metrics_collected",
-        _event(
-            STTMetrics(
-                label="stt",
-                request_id="r",
-                timestamp=0.0,
-                duration=0.0,
-                audio_duration=10.0,
-                streamed=True,
-            )
+        STTMetrics(
+            label="stt",
+            request_id="r",
+            timestamp=0.0,
+            duration=0.0,
+            audio_duration=10.0,
+            streamed=True,
         ),
     )
 
@@ -351,8 +364,8 @@ async def test_stt_and_tts_metered_from_voice_cost_map_by_default():
         guard, stt_model="deepgram-nova-3", tts_model="elevenlabs-flash-v2.5"
     )
 
-    session.emit("metrics_collected", _event(_stt_metric(60.0)))  # 60s of audio
-    session.emit("metrics_collected", _event(_tts_metric(2000)))  # 2000 chars
+    session.stt.emit("metrics_collected", _stt_metric(60.0))  # 60s of audio
+    session.tts.emit("metrics_collected", _tts_metric(2000))  # 2000 chars
 
     # STT: 60s * ($0.0077/min ÷ 60) = $0.0077. TTS: 2000/1000 * $0.05 = $0.10.
     expected = 60.0 * (0.0077 / 60) + 2000 / 1000 * 0.05
@@ -366,7 +379,7 @@ async def test_override_wins_over_voice_map():
     _, _, session = _attached(
         guard, stt_model="deepgram-nova-3", stt_usd_per_second=0.001
     )
-    session.emit("metrics_collected", _event(_stt_metric(10.0)))
+    session.stt.emit("metrics_collected", _stt_metric(10.0))
     # Override ($0.001/s), not the Deepgram map rate.
     assert guard.advisory().spent_usd == pytest.approx(10.0 * 0.001)
 
@@ -376,7 +389,7 @@ async def test_unpriceable_stt_vendor_fails_closed():
     guard = BudgetGuard(limit_usd=100.00)
     _, _, session = _attached(guard, stt_model="not-a-real-stt-vendor")
     with pytest.raises(UnpriceableVoiceError):
-        session.emit("metrics_collected", _event(_stt_metric(10.0)))
+        session.stt.emit("metrics_collected", _stt_metric(10.0))
 
 
 @pytest.mark.asyncio
@@ -408,9 +421,9 @@ async def test_full_call_per_leg_breakdown_sums_to_total():
         telephony="twilio-us-inbound-local",
     )
     await _drive_turn(agent)  # LLM turn (model="gpt-4o", priced from the LLM map)
-    session.emit("metrics_collected", _event(_llm_metrics(500, 200)))
-    session.emit("metrics_collected", _event(_stt_metric(30.0)))
-    session.emit("metrics_collected", _event(_tts_metric(1200)))
+    session.llm.emit("metrics_collected", _llm_metrics(500, 200))
+    session.stt.emit("metrics_collected", _stt_metric(30.0))
+    session.tts.emit("metrics_collected", _tts_metric(1200))
     budget.meter_telephony(1.0)
 
     legs = {e.model_or_tool: e.cost_usd for e in guard.spend_log}

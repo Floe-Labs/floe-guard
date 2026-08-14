@@ -3,8 +3,13 @@
 Like Pipecat, a LiveKit ``AgentSession`` (STT -> LLM -> TTS) has no single call
 site to wrap: turns fire for the life of a call. The two enforcement points are
 the agent's ``llm_node`` (before the LLM call, so a turn is blocked before its
-TTS/audio spend piles on) and the session's ``metrics_collected`` event (real
-usage, after). ``LiveKitBudgetGuard`` holds the reservation state across both.
+TTS/audio spend piles on) and each component's ``metrics_collected`` event —
+the LLM/STT/TTS plugins each emit their real usage right after doing their work.
+(The session-level ``metrics_collected`` event was deprecated in
+``livekit-agents`` 1.5; the per-component event carries the same per-turn metric
+object and is not deprecated, so we settle each turn straight off the LLM plugin
+— cleanly per-turn, unlike the cumulative ``session_usage_updated`` summary.)
+``LiveKitBudgetGuard`` holds the reservation state across both.
 
     from floe_guard import BudgetGuard, ManualPrice
     from floe_guard.integrations.livekit import LiveKitBudgetGuard
@@ -122,8 +127,9 @@ class LiveKitBudgetGuard:
         self._slots: deque[_TurnSlot] = deque()
 
     def attach(self, session, agent) -> None:
-        """Wire reserve (agent.llm_node), settle/meter (metrics_collected) and
-        release (close) onto a session + agent pair."""
+        """Wire reserve (agent.llm_node), settle/meter (each component's
+        ``metrics_collected``) and release (session close) onto a session + agent
+        pair."""
         orig_llm_node = agent.llm_node
 
         # forward LiveKit's (chat_ctx, tools, model_settings) unchanged, so an
@@ -163,8 +169,32 @@ class LiveKitBudgetGuard:
                 raise
 
         agent.llm_node = _guarded_llm_node
-        session.on("metrics_collected", self._on_metrics)
+        # Settle/meter off each component's own metrics_collected — the LLM plugin
+        # fires per LLM turn (so settlement lands right after the turn we reserved),
+        # STT/TTS per utterance. The session-level metrics_collected is deprecated
+        # in livekit-agents 1.5+, so we no longer listen on the session for it.
+        for component in self._metric_sources(session, agent):
+            component.on("metrics_collected", self._on_metric)
         session.on("close", self._on_close)
+
+    @staticmethod
+    def _metric_sources(session, agent) -> list:
+        """Resolve the LLM/STT/TTS plugins to meter, mirroring LiveKit's runtime
+        pick (an agent component overrides the session's). Deduped by identity so
+        a unified model exposed under two slots is subscribed once."""
+        sources: list = []
+        seen: set[int] = set()
+        for name in ("llm", "stt", "tts"):
+            component = getattr(agent, name, None)
+            if component is None or not hasattr(component, "on"):
+                component = getattr(session, name, None)
+            if component is None or not hasattr(component, "on"):
+                continue
+            if id(component) in seen:
+                continue
+            seen.add(id(component))
+            sources.append(component)
+        return sources
 
     def _clear_active(self) -> None:
         self._active = None
@@ -182,8 +212,10 @@ class LiveKitBudgetGuard:
         slot.amount = 0.0
         self._clear_active()
 
-    def _on_metrics(self, ev) -> None:
-        m = ev.metrics
+    def _on_metric(self, m) -> None:
+        # Component-level metrics_collected hands us the raw metric object
+        # (LLMMetrics / STTMetrics / TTSMetrics) directly, not wrapped in a
+        # session MetricsCollectedEvent.
         if isinstance(m, LLMMetrics):
             # Pop the oldest turn slot. Early-released turns contribute 0 so a
             # delayed metrics event meters usage without consuming a later hold.
