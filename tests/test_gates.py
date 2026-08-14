@@ -35,6 +35,27 @@ def test_estimated_call_usd_reserves_headroom() -> None:
     assert gates.pre_call(guard, estimated_call_usd=0.20) is True
 
 
+def test_estimate_exactly_equal_to_remaining_admits() -> None:
+    # Exact fit admits — inclusive ceiling, matching BudgetGuard.reserve().
+    guard = _spent(1.00, 0.50)  # $0.50 remaining
+    assert gates.budget_exhausted(guard, estimated_call_usd=0.50) is False
+    assert gates.budget_exhausted(guard, estimated_call_usd=0.5001) is True
+
+
+def test_fully_spent_is_exhausted_regardless_of_estimate() -> None:
+    guard = _spent(1.00, 1.00)  # $0 remaining
+    assert gates.budget_exhausted(guard) is True
+    assert gates.budget_exhausted(guard, estimated_call_usd=0.0) is True
+
+
+@pytest.mark.parametrize("bad", [-1.0, -0.01, float("nan"), float("inf")])
+def test_bad_estimate_raises_not_admits(bad: float) -> None:
+    # A negative/NaN/inf estimate must not silently admit an exhausted guard.
+    guard = _spent(1.00, 1.00)  # exhausted
+    with pytest.raises(ValueError, match="finite, non-negative"):
+        gates.budget_exhausted(guard, estimated_call_usd=bad)
+
+
 # ── Retell ────────────────────────────────────────────────────────────────────
 
 

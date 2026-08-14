@@ -18,6 +18,7 @@ ceiling signal — not an account balance. US-only telephony, v1.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from .guard import BudgetGuard
@@ -28,13 +29,33 @@ __all__ = ["budget_exhausted", "pre_call", "retell", "vapi"]
 def budget_exhausted(guard: BudgetGuard, *, estimated_call_usd: float = 0.0) -> bool:
     """True when there isn't budget left to admit one more call.
 
-    With ``estimated_call_usd`` (a per-minute × expected-length estimate, say), the
-    call is rejected when the remaining budget can't cover it; with the default
-    ``0.0`` it's rejected only once the budget is fully spent (``remaining_usd`` at
-    or below zero). Reads the guard's ``remaining_usd`` (net of in-flight
-    reservations) — a local budget signal, not a balance.
+    A **non-binding preflight read**: it checks the guard's ``remaining_usd`` but
+    does *not* reserve anything, so under concurrent inbound calls it can admit
+    more than the budget strictly covers (two calls may see the same headroom and
+    both pass). It is coarse admission control — the binding, atomic hard-stop is
+    the in-call guard (``check`` / ``reserve`` while the call runs). This mirrors
+    the hosted pre-dial gate, which is likewise check-only.
+
+    With the default ``estimated_call_usd=0.0`` a call is rejected only once the
+    budget is fully spent (``remaining_usd`` at or below zero). Pass an estimate
+    (e.g. ``$/min × expected minutes``) to reject earlier, when the remaining
+    budget can't cover it; an estimate that *exactly* equals the remaining budget
+    still admits (inclusive ceiling, matching ``BudgetGuard.reserve``). Budget
+    signal, not a balance.
+
+    Raises:
+        ValueError: ``estimated_call_usd`` is negative or non-finite — a bad
+            estimate must not silently admit an exhausted guard (NaN/negative
+            comparisons are always false, the same trap ``BudgetGuard`` rejects for
+            ``limit_usd``).
     """
-    return guard.remaining_usd <= estimated_call_usd
+    if not math.isfinite(estimated_call_usd) or estimated_call_usd < 0.0:
+        raise ValueError(
+            "estimated_call_usd must be a finite, non-negative number, "
+            f"got {estimated_call_usd!r}"
+        )
+    remaining_usd = guard.remaining_usd
+    return remaining_usd <= 0.0 or remaining_usd < estimated_call_usd
 
 
 def pre_call(guard: BudgetGuard, *, estimated_call_usd: float = 0.0) -> bool:
@@ -86,8 +107,10 @@ def vapi(
     """Response for Vapi's ``assistant-request`` webhook — reject or admit the call.
 
     On budget exhaustion returns ``{"error": error_message}`` (Vapi speaks it, then
-    ends the call). Otherwise admits with ``{"assistantId": assistant_id}`` if given,
-    else ``{"assistant": assistant}``.
+    ends the call) — e.g. ``{"error": "No budget."}``. Otherwise admits with
+    ``{"assistantId": assistant_id}`` if given (``assistant_id`` takes precedence),
+    else ``{"assistant": assistant}`` — e.g.
+    ``{"assistant": {"model": {"provider": "openai", "model": "gpt-4o"}}}``.
 
     Vapi has **no** ``reject: true`` boolean — rejection *is* returning an error, and
     admission *is* returning an assistant. Respond within **~7.5 s** or the call may

@@ -862,6 +862,12 @@ if not gates.pre_call(guard):
 Pass `estimated_call_usd=` to reject when the remaining budget can't cover the
 next call (e.g. `$/min × expected minutes`), not just when it's fully spent.
 
+**Non-binding preflight.** A gate *reads* the remaining budget; it does not
+reserve it, so under concurrent inbound calls it can admit more than the budget
+strictly covers. It's coarse admission control — the binding, atomic money-gate
+stays the in-call guard (`check` / `reserve` while the call runs), same as hosted
+Floe's check-only pre-dial gate.
+
 **Pre-call admission only.** A gate decides whether a call *starts*; it does not
 intervene mid-call. Once admitted, a call runs to completion — nothing here cuts
 one off partway. (`guard_stream` can stop a single LLM *generation*, which is not
