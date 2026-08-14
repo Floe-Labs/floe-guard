@@ -1,7 +1,7 @@
 {
   "name": "floe-guard",
-  "version": "0.11.0",
-  "description": "A local budget guardrail for AI agents — hard-stops your agent before its next LLM call crosses a USD ceiling. Vercel AI SDK middleware.",
+  "version": "0.12.0",
+  "description": "A local budget guardrail for AI agents — hard-stops your agent before its next LLM call crosses a USD ceiling. Vercel AI SDK middleware + LiveKit / Vapi / Retell voice adapters.",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -26,6 +26,21 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./adapters/livekit": {
+      "types": "./dist/adapters/livekit.d.ts",
+      "import": "./dist/adapters/livekit.js",
+      "require": "./dist/adapters/livekit.cjs"
+    },
+    "./adapters/vapi": {
+      "types": "./dist/adapters/vapi.d.ts",
+      "import": "./dist/adapters/vapi.js",
+      "require": "./dist/adapters/vapi.cjs"
+    },
+    "./adapters/retell": {
+      "types": "./dist/adapters/retell.d.ts",
+      "import": "./dist/adapters/retell.js",
+      "require": "./dist/adapters/retell.cjs"
     }
   },
   "main": "./dist/index.cjs",
@@ -44,9 +59,16 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "ai": ">=4.0.0 <6.0.0"
+    "ai": ">=4.0.0 <6.0.0",
+    "@livekit/agents": ">=1.5.0"
+  },
+  "peerDependenciesMeta": {
+    "@livekit/agents": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@livekit/agents": "^1.6.3",
     "ai": "^4.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",
