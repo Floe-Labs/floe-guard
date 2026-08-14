@@ -8,9 +8,22 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.14.0 / js 0.10.0
+## Unreleased — py 0.15.0 / js 0.10.0
 
 ### Added (py)
+
+- **One line to hosted — `BudgetGuard.from_floe(api_key=…)`**: constructs a guard
+  whose local ceiling is read from your **server-side budget headroom** (the min
+  of auto-borrow headroom and session spend remaining, via
+  `hosted_remaining_usd()`), so the free→hosted upgrade is a one-line constructor
+  swap with no other code changes. Budget, not balance: the read is a headroom
+  signal and enforcement stays local — hosted Floe remains the source of truth for
+  the un-bypassable, cross-vendor cap. Zero-telemetry invariant preserved (no
+  network unless a key is set) and fail-closed (a failed read raises
+  `HostedEnforcementError`, or degrades to a `fallback_limit_usd` local ceiling
+  with a loud warning). The advisory-symmetry claim (`advisory()` shape ==
+  hosted's `X-Floe-Budget-Advisory` header, so taper logic ports unchanged) is now
+  in the README's core pitch.
 
 - **Voice cost map — meter the whole call by default** (P0): STT/TTS/telephony
   rates ship under the reserved `__voice__` key of `cost_map.json` (units: STT
