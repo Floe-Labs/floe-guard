@@ -93,3 +93,19 @@ describe("gates — Vapi", () => {
     expect(() => gates.vapi(spent(1.0, 0.1))).toThrow(RangeError);
   });
 });
+
+describe("gates — input hardening", () => {
+  it("a null estimate throws rather than coercing to 0", () => {
+    // null is malformed input; it must reach validation, not silently admit.
+    expect(() =>
+      gates.budgetExhausted(spent(1.0, 1.0), { estimatedCallUsd: null as unknown as number }),
+    ).toThrow(RangeError);
+  });
+
+  it("a retell admit override cannot inject a reject on an available-budget call", () => {
+    const resp = gates.retell(spent(1.0, 0.1), {
+      admit: { reject: true, dynamic_variables: { name: "Ada" } },
+    });
+    expect(resp).toEqual({ call_inbound: { dynamic_variables: { name: "Ada" } } });
+  });
+});

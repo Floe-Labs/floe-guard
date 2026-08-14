@@ -119,6 +119,12 @@ export function resolveVoiceRate(
  * (telephony); negative quantities clamp to zero.
  */
 export function voiceLegCost(mode: VoiceMode, quantity: number, rate: number): number {
+  // Reject non-finite quantities: Math.max(0, NaN) is NaN, so a NaN/Infinity
+  // quantity would return a non-finite USD amount that then poisons the guard's
+  // running total (NaN disables every ceiling comparison). Negatives still clamp.
+  if (!Number.isFinite(quantity)) {
+    throw new RangeError(`voice ${mode} quantity must be a finite number, got ${quantity}`);
+  }
   const q = Math.max(0, quantity);
   if (mode === "stt") return q * rate; // seconds * $/second
   if (mode === "tts") return (q / 1000) * rate; // chars / 1000 * $/1k-chars

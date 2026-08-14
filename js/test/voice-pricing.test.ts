@@ -111,3 +111,14 @@ describe("priceVoiceLeg — entry point", () => {
     expect(priceVoiceLeg("stt", 60, { model: "deepgram-nova-3" })).toBeCloseTo(0.0077, 6);
   });
 });
+
+describe("voiceLegCost — non-finite quantities fail closed", () => {
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "throws rather than returning a non-finite cost (%s)",
+    (q) => {
+      // A NaN/Infinity quantity would poison the guard's running total.
+      expect(() => voiceLegCost("stt", q, 0.0001)).toThrow(RangeError);
+      expect(() => priceVoiceLeg("stt", q, { model: "deepgram-nova-3" })).toThrow(RangeError);
+    },
+  );
+});

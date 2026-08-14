@@ -43,7 +43,10 @@ export function budgetExhausted(
   guard: BudgetGuard,
   options: { estimatedCallUsd?: number } = {},
 ): boolean {
-  const estimatedCallUsd = options.estimatedCallUsd ?? 0;
+  // Default ONLY undefined — a `null` estimate is malformed input and must reach
+  // validation (below) rather than being silently coerced to 0 (which would admit
+  // the call with no intended headroom). Mirrors Python raising on a None estimate.
+  const estimatedCallUsd = options.estimatedCallUsd === undefined ? 0 : options.estimatedCallUsd;
   if (!Number.isFinite(estimatedCallUsd) || estimatedCallUsd < 0) {
     throw new RangeError(
       `estimatedCallUsd must be a finite, non-negative number, got ${estimatedCallUsd}`,
@@ -89,7 +92,12 @@ export function retell(
   if (budgetExhausted(guard, { estimatedCallUsd: options.estimatedCallUsd })) {
     return { call_inbound: { reject: true } };
   }
-  return { call_inbound: { ...(options.admit ?? {}) } };
+  // The gate's budget decision — not the caller's overrides — controls admission.
+  // Strip `reject` from admit overrides so an errant `admit: { reject: true }` on
+  // an available-budget call can't flip the response into Retell's reject shape.
+  const safeAdmit = { ...(options.admit ?? {}) };
+  delete safeAdmit.reject;
+  return { call_inbound: safeAdmit };
 }
 
 /**
