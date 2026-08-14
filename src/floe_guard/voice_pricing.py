@@ -110,7 +110,17 @@ def resolve_voice_rate(
 
 def voice_leg_cost(mode: VoiceMode, quantity: float, rate: float) -> float:
     """USD for one leg. ``quantity`` is seconds (stt), characters (tts), or
-    minutes (telephony); negative quantities clamp to zero."""
+    minutes (telephony); negative quantities clamp to zero.
+
+    Raises:
+        ValueError: ``quantity`` is non-finite (NaN/inf) — a non-finite cost would
+            poison the guard's running total, so it fails closed.
+    """
+    # Reject non-finite quantities: max(0.0, nan) is nan, so a NaN/inf quantity
+    # would return a non-finite USD amount that then poisons the guard's running
+    # total (NaN disables every ceiling comparison). Negatives still clamp.
+    if not math.isfinite(quantity):
+        raise ValueError(f"voice {mode} quantity must be a finite number, got {quantity!r}")
     q = max(0.0, quantity)
     if mode == "stt":
         return q * rate  # seconds * $/second

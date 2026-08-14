@@ -83,7 +83,9 @@ def retell(
 
     On budget exhaustion returns ``{"call_inbound": {"reject": True}}``; otherwise
     ``{"call_inbound": {...}}`` carrying any ``admit`` overrides you pass
-    (``dynamic_variables``, ``metadata``, ``override_agent_id``, …).
+    (``dynamic_variables``, ``metadata``, ``override_agent_id``, …). A top-level
+    ``reject`` key in ``admit`` is **ignored** — the gate's budget decision, not the
+    caller's overrides, controls admission.
 
     Retell contract (verified against docs.retellai.com/features/inbound-call-webhook):
     **only the boolean ``true`` rejects** — any other value is ignored. The webhook
@@ -93,7 +95,12 @@ def retell(
     """
     if budget_exhausted(guard, estimated_call_usd=estimated_call_usd):
         return {"call_inbound": {"reject": True}}
-    return {"call_inbound": dict(admit or {})}
+    # The gate's budget decision — not the caller's overrides — controls admission.
+    # Strip ``reject`` from admit overrides so an errant ``admit={"reject": True}``
+    # on an available-budget call can't flip the response into Retell's reject shape.
+    overrides = dict(admit or {})
+    overrides.pop("reject", None)
+    return {"call_inbound": overrides}
 
 
 def vapi(

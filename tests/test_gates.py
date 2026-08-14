@@ -95,3 +95,11 @@ def test_vapi_admits_with_inline_assistant() -> None:
 def test_vapi_admit_without_target_raises() -> None:
     with pytest.raises(ValueError, match="assistant"):
         gates.vapi(_spent(1.00, 0.10))
+
+
+def test_retell_admit_cannot_inject_reject() -> None:
+    # An errant admit override must not flip an available-budget call into a reject.
+    resp = gates.retell(
+        _spent(1.00, 0.10), admit={"reject": True, "dynamic_variables": {"name": "Ada"}}
+    )
+    assert resp == {"call_inbound": {"dynamic_variables": {"name": "Ada"}}}
