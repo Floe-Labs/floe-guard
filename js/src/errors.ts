@@ -96,6 +96,38 @@ export class UnpriceableModelError extends FloeGuardError {
 }
 
 /**
+ * Thrown when a voice leg (STT/TTS/telephony) cannot be priced and the guard is
+ * fail-closed.
+ *
+ * The voice twin of {@link UnpriceableModelError}: we refuse rather than silently
+ * accrue $0 — "we cannot cap what we cannot price". It fires when an adapter is
+ * asked to meter a leg for a vendor that is absent from the bundled voice cost map
+ * (or whose entry has the wrong unit/mode for the leg) and no per-unit override was
+ * given. Pass a per-unit rate (`stt_usd_per_second` / `tts_usd_per_1k_chars` /
+ * `telephony_usd_per_minute`) to make the leg enforceable.
+ *
+ * Mirrors `UnpriceableVoiceError` in `src/floe_guard/errors.py`.
+ */
+export class UnpriceableVoiceError extends FloeGuardError {
+  readonly vendor: string | null;
+  readonly mode: string;
+
+  constructor(vendor: string | null, mode: string) {
+    // Match Python's `{vendor!r}`: a string is quoted, None renders as `None`.
+    const shown = vendor === null ? "None" : `'${vendor}'`;
+    super(
+      `Cannot price ${mode} vendor ${shown}: not in the bundled voice cost ` +
+        `map (or its entry has the wrong unit for a ${mode} leg) and no per-unit ` +
+        `override was given. The guard cannot enforce a budget on spend it ` +
+        `cannot measure. Pass a per-unit rate to enable enforcement.`,
+    );
+    this.name = "UnpriceableVoiceError";
+    this.vendor = vendor;
+    this.mode = mode;
+  }
+}
+
+/**
  * Thrown before a call whose projected duration would blow the SLA.
  *
  * The latency twin of {@link BudgetExceeded}: `LatencyBudget.check()` throws this

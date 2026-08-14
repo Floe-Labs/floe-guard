@@ -8,7 +8,7 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.16.0 / js 0.10.0
+## Unreleased — py 0.16.0 / js 0.11.0
 
 ### Added (py)
 
@@ -57,6 +57,30 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   (Sonic TTS + Line telephony), Rime, Twilio (Telnyx deferred); rates are a
   drift-prone snapshot. The **js** package carries the same `__voice__` cost-map
   data in lockstep (no JS voice adapter this release).
+
+### Added (js)
+
+- **Voice foundation ported to TypeScript — cost-map pricing, pre-call gates,
+  $/min burn rate** (parity with py, no voice adapter yet):
+  - **Offline voice cost-map pricing** (`voice-pricing.ts`): `priceVoiceLeg` /
+    `resolveVoiceRate` / `lookupVoiceRate` / `voiceLegCost` price a leg from the
+    `__voice__` section of `cost_map.json` (STT $/sec, TTS $/1k-chars, telephony
+    $/min). A per-unit override wins over the map; a vendor the map can't price (or
+    a wrong unit/mode) fails closed via the new `UnpriceableVoiceError` (parity with
+    `UnpriceableModelError`), never a silent $0. An unconfigured leg (no vendor, no
+    override) returns `null` so the token-only contract is preserved.
+  - **`gates` — pre-call admission** (`gates.ts`, exported as the `gates`
+    namespace): `gates.retell()` → `{ call_inbound: { reject: true } }` (only the
+    boolean rejects; phone/SMS inbound, 10s/3-retry); `gates.vapi()` → `{ error }`
+    reject vs `{ assistantId | assistant }` admit (`assistantId` takes precedence;
+    ~7.5s deadline); `gates.preCall()` / `gates.budgetExhausted()` for
+    Pipecat/custom. A non-finite/negative estimate throws rather than silently
+    admitting. **Pre-call admission only** — no mid-call intervention. Bland's
+    *Send Call* metadata field name is an open verification item and is **not**
+    invented (use `gates.preCall`). US-only v1. Budget, not balance.
+  - **`advisory().burnRateUsdPerMin`** — the $/min spend rate voice teams watch,
+    spend ÷ minutes since the guard was created (`null` until wall-clock time has
+    elapsed; one guard per call/turn ⇒ a per-call rate).
 
 ## py 0.13.0 / js 0.9.0 — 2026-08-06
 

@@ -899,15 +899,19 @@ adapter set like the Python package.
 
 ### TypeScript voice parity
 
-**This release ships no TypeScript voice adapter.** The JS package
-([`js/`](js/)) ships one surface — the Vercel AI SDK middleware — and it is
-**text-only**: it guards a wrapped `LanguageModel`, not a running STT → LLM → TTS
-session. A voice/telephony builder on a Node stack should either drive the LLM
-turn through the Vercel AI middleware and meter STT/TTS spend by hand via
-`recordTool`, or run the LLM leg through the **hosted [Floe proxy](#when-you-outgrow-local-guardrails)**
-(un-bypassable, cross-vendor) — or use the Python Pipecat / LiveKit adapters
-above, which enforce the whole turn. No native TypeScript Pipecat/LiveKit voice
-adapter ships in this release.
+**TypeScript ships the voice foundation — pricing and admission — not yet a
+full-session adapter.** The JS package ([`js/`](js/)) now prices voice legs
+offline (`priceVoiceLeg` — STT/TTS/telephony from the same `__voice__` cost map,
+fail-closed via `UnpriceableVoiceError`) and ships **pre-call admission gates**
+(`gates.retell` / `gates.vapi` / `gates.preCall`) that return each provider's
+exact reject/admit shape — the same contract as the Python `gates`. What it does
+**not** yet ship is a native STT → LLM → TTS *session* adapter (Vapi custom-LLM
+proxy / Retell WS / LiveKit Agents) that meters a whole running turn. Until then,
+drive the LLM turn through the Vercel AI SDK middleware and meter STT/TTS via
+`recordTool` (price the legs with `priceVoiceLeg`), run the LLM leg through the
+**hosted [Floe proxy](#when-you-outgrow-local-guardrails)** (un-bypassable,
+cross-vendor), or use the Python Pipecat / LiveKit adapters above, which enforce
+the whole turn.
 
 For wiring floe-guard into an existing voice pipeline, see the Floe docs:
 **[Add Floe to your existing pipeline](https://floe-labs.gitbook.io/docs/getting-started/integrate-existing-pipeline)**.

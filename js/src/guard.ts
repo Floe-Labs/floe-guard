@@ -187,11 +187,25 @@ export interface BudgetAdvisory {
    */
   stepRemainingUsd?: number | null;
   stepRemainingTokens?: number | null;
+  /**
+   * Spend rate in USD per minute over this guard's lifetime (spentUsd ÷ minutes
+   * since the guard was created) — the number voice teams watch. null only when no
+   * wall-clock time has elapsed yet. Make one guard per call/turn for a per-call
+   * burn rate; a long-lived guard reports the session average. Optional for the
+   * same additive reason as the fields above; `advisory()` always sets it.
+   */
+  burnRateUsdPerMin?: number | null;
 }
 
 export class BudgetGuard {
   readonly limitUsd: number;
   spentUsd = 0;
+  /**
+   * Wall-clock start (ms since epoch) of this guard's spend window, for the $/min
+   * burn rate (advisory().burnRateUsdPerMin). One guard per call/turn ⇒ a per-call
+   * rate. Set at construction; tests set it directly to control elapsed time.
+   */
+  createdAtMs = Date.now();
   priceOverrides?: Record<string, ManualPrice>;
   failClosed: boolean;
   nearLimitBps: number;
@@ -861,6 +875,11 @@ export class BudgetGuard {
     // rationale as usedBps above, and keeps Python int() parity).
     const estCallsRemaining =
       expectedCost > 0 ? Math.floor(remainingUsd / expectedCost + 1e-9) : null;
+    // Burn rate: spend ÷ minutes elapsed since the guard was created. null until
+    // any wall-clock time has passed (avoids a divide-by-zero at t0); $0 spent over
+    // real elapsed time is a legitimate 0/min, not null.
+    const elapsedMin = (Date.now() - this.createdAtMs) / 60000;
+    const burnRateUsdPerMin = elapsedMin > 0 ? this.spentUsd / elapsedMin : null;
     // Aggregate token utilization, mirroring usedBps. null (no signal) when the
     // token dimension is unset — a pure USD guard's advisory is unchanged.
     let tokenUsedBps: number | null = null;
@@ -922,6 +941,7 @@ export class BudgetGuard {
       remainingTokens,
       stepRemainingUsd,
       stepRemainingTokens,
+      burnRateUsdPerMin,
     };
   }
 }
