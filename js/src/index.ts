@@ -25,6 +25,7 @@ export {
   TokenBudgetExceeded,
   DeadlineExceeded,
   UnpriceableModelError,
+  UnpriceableVoiceError,
 } from "./errors.js";
 export {
   budgetGuardMiddleware,
@@ -43,3 +44,16 @@ export {
 } from "./retry.js";
 
 export * as pricing from "./pricing.js";
+
+export {
+  type VoiceMode,
+  type VoiceRate,
+  lookupVoiceRate,
+  resolveVoiceRate,
+  voiceLegCost,
+  priceVoiceLeg,
+} from "./voice-pricing.js";
+
+// gates as a namespace, mirroring Python's `floe_guard.gates` — so
+// `import { gates } from "floe-guard"` reads like the Python package.
+export * as gates from "./gates.js";
