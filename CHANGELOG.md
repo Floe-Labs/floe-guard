@@ -8,7 +8,23 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.16.0 / js 0.11.0
+## Unreleased — py 0.16.1 / js 0.11.0
+
+### Fixed (py)
+
+- **Unblock PyPI publishing** — cap `hatchling<1.32` in `[build-system]`.
+  hatchling 1.32.0 bumped the emitted core-metadata to `Metadata-Version: 2.5`,
+  which the release action's twine (`pypa/gh-action-pypi-publish@v1.14.0`) rejects
+  (`InvalidDistribution: '2.5' is not a valid metadata version`) — that is why
+  PyPI froze at 0.13.0 (Aug 6) while the repo moved to 0.16.x. Pinning to the last
+  2.4-emitting hatchling restores a wheel both twine and PyPI accept (verified:
+  `Metadata-Version: 2.4`, `twine check` passes). Publishing 0.16.1 catches up
+  everything since 0.13.0.
+- **`gates` / voice-pricing input hardening** (parity with the JS fixes):
+  `gates.retell` strips `reject` from `admit` overrides so an errant
+  `admit={"reject": True}` on an available-budget call can't flip the response into
+  Retell's reject shape; `voice_leg_cost` raises on a non-finite `quantity`
+  (`max(0.0, nan)` is `nan`, which would poison the guard's running total).
 
 ### Added (py)
 
