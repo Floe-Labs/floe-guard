@@ -113,6 +113,12 @@
     "litellm_provider": "anthropic",
     "mode": "chat"
   },
+  "claude-opus-5": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000025,
+    "litellm_provider": "anthropic",
+    "mode": "chat"
+  },
   "claude-sonnet-4-20250514": {
     "input_cost_per_token": 0.000003,
     "output_cost_per_token": 0.000015,
@@ -428,6 +434,18 @@
   "gemini-robotics-er-1.5-preview": {
     "input_cost_per_token": 3e-7,
     "output_cost_per_token": 0.0000025,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-robotics-er-1.6-preview": {
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.000005,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-robotics-er-2-preview": {
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.00001,
     "litellm_provider": "gemini",
     "mode": "chat"
   },
@@ -786,8 +804,8 @@
     "mode": "chat"
   },
   "gpt-5.6-luna": {
-    "input_cost_per_token": 0.000001,
-    "output_cost_per_token": 0.000006,
+    "input_cost_per_token": 2e-7,
+    "output_cost_per_token": 0.0000012,
     "litellm_provider": "openai",
     "mode": "chat"
   },
@@ -798,8 +816,8 @@
     "mode": "chat"
   },
   "gpt-5.6-terra": {
-    "input_cost_per_token": 0.0000025,
-    "output_cost_per_token": 0.000015,
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.000012,
     "litellm_provider": "openai",
     "mode": "chat"
   },
@@ -952,6 +970,86 @@
     "output_cost_per_token": 0,
     "litellm_provider": "openai",
     "mode": "embedding"
+  },
+  "__voice__": {
+    "deepgram-nova-3": {
+      "mode": "stt",
+      "unit": "usd_per_second",
+      "rate": 0.0001283333,
+      "provider": "deepgram"
+    },
+    "deepgram-nova-3-multilingual": {
+      "mode": "stt",
+      "unit": "usd_per_second",
+      "rate": 0.0001533333,
+      "provider": "deepgram"
+    },
+    "deepgram-nova-3-base": {
+      "mode": "stt",
+      "unit": "usd_per_second",
+      "rate": 0.0002416667,
+      "provider": "deepgram"
+    },
+    "assemblyai-universal-streaming": {
+      "mode": "stt",
+      "unit": "usd_per_second",
+      "rate": 0.0000416667,
+      "provider": "assemblyai"
+    },
+    "elevenlabs-multilingual-v2": {
+      "mode": "tts",
+      "unit": "usd_per_1k_chars",
+      "rate": 0.1,
+      "provider": "elevenlabs"
+    },
+    "elevenlabs-flash-v2.5": {
+      "mode": "tts",
+      "unit": "usd_per_1k_chars",
+      "rate": 0.05,
+      "provider": "elevenlabs"
+    },
+    "elevenlabs-turbo-v2.5": {
+      "mode": "tts",
+      "unit": "usd_per_1k_chars",
+      "rate": 0.05,
+      "provider": "elevenlabs"
+    },
+    "cartesia-sonic": {
+      "mode": "tts",
+      "unit": "usd_per_1k_chars",
+      "rate": 0.03,
+      "provider": "cartesia"
+    },
+    "cartesia-line": {
+      "mode": "telephony",
+      "unit": "usd_per_minute",
+      "rate": 0.06,
+      "provider": "cartesia"
+    },
+    "rime-mist-v2": {
+      "mode": "tts",
+      "unit": "usd_per_1k_chars",
+      "rate": 0.03,
+      "provider": "rime"
+    },
+    "twilio-us-inbound-local": {
+      "mode": "telephony",
+      "unit": "usd_per_minute",
+      "rate": 0.0085,
+      "provider": "twilio"
+    },
+    "twilio-us-outbound-local": {
+      "mode": "telephony",
+      "unit": "usd_per_minute",
+      "rate": 0.014,
+      "provider": "twilio"
+    },
+    "twilio-us-sip-inbound": {
+      "mode": "telephony",
+      "unit": "usd_per_minute",
+      "rate": 0.004,
+      "provider": "twilio"
+    }
   },
   "claude-3-5-sonnet-20241022": {
     "input_cost_per_token": 3e-06,

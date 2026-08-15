@@ -104,9 +104,6 @@ describe("resolvePrice", () => {
   it("only strips ASCII-digit date suffixes (parity with Python's re.ASCII)", () => {
     expect(resolvePrice("gpt-4o-٢٠٢٥٠١٠١")).toBeNull();
   });
-  it("only strips ASCII-digit date suffixes (parity with Python's re.ASCII)", () => {
-    expect(resolvePrice("gpt-4o-٢٠٢٥٠١٠١")).toBeNull();
-  });
 
   it("resolves claude-3-5-sonnet and claude-3-5-haiku without an override", () => {
     const expected: Record<string, [number, number]> = {
