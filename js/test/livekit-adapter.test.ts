@@ -222,19 +222,36 @@ describe("LiveKitBudgetGuard — voice legs price via the cost map", () => {
     expect(guard.spentUsd).toBe(0);
   });
 
-  it("fails closed on a vendor the voice map cannot price", () => {
+  it("fails closed at construction on a vendor the voice map cannot price", () => {
     const guard = new BudgetGuard(10.0, { priceOverrides: { m: PRICE } });
-    const session = new FakeSession();
-    new LiveKitBudgetGuard(guard, { model: "m", sttModel: "no-such-vendor" }).attach(
-      session,
-      fakeAgent(),
-    );
-
-    expect(() =>
-      session.emit("metrics_collected", {
-        metrics: { type: "stt_metrics", audioDurationMs: 1_000 },
-      }),
+    // Validated in the constructor — a typo'd vendor throws before any turn runs,
+    // not deep in a metrics callback mid-call.
+    expect(
+      () => new LiveKitBudgetGuard(guard, { model: "m", sttModel: "no-such-vendor" }),
     ).toThrow(UnpriceableVoiceError);
+  });
+
+  it("releases the hold when the wrapped llmNode throws", async () => {
+    const guard = new BudgetGuard(1.0, { priceOverrides: { m: PRICE } });
+    guard.recordTool("prior", 0.1); // set a non-zero next-call estimate to reserve
+    const before = guard.remainingUsd; // 0.90
+    const agent: LiveKitAgentLike & { calls: number } = {
+      calls: 0,
+      async llmNode() {
+        this.calls += 1;
+        throw new Error("upstream boom");
+      },
+    };
+    new LiveKitBudgetGuard(guard, { model: "m" }).attach(new FakeSession(), agent);
+    await expect(agent.llmNode()).rejects.toThrow("upstream boom");
+    expect(guard.remainingUsd).toBe(before); // hold released — a failed turn never leaks
+  });
+
+  it("attach is single-use — a second attach throws", () => {
+    const guard = new BudgetGuard(1.0, { priceOverrides: { m: PRICE } });
+    const budget = new LiveKitBudgetGuard(guard, { model: "m" });
+    budget.attach(new FakeSession(), fakeAgent());
+    expect(() => budget.attach(new FakeSession(), fakeAgent())).toThrow(/twice/);
   });
 });
 
@@ -243,6 +260,9 @@ describe("LiveKitBudgetGuard — pre-call admission", () => {
     const guard = new BudgetGuard(1.0);
     const budget = new LiveKitBudgetGuard(guard, { model: "m" });
     expect(budget.admitCall()).toBe(true);
+    // estimatedCallUsd rejects before the remaining budget can cover the call.
+    expect(budget.admitCall({ estimatedCallUsd: 1.5 })).toBe(false);
+    expect(budget.admitCall({ estimatedCallUsd: 0.5 })).toBe(true);
     guard.recordTool("prior", 1.0);
     expect(budget.admitCall()).toBe(false);
   });
@@ -251,12 +271,21 @@ describe("LiveKitBudgetGuard — pre-call admission", () => {
 // --- Type pins: the adapter is structurally typed; assert those shapes accept the
 // --- REAL @livekit/agents exports so this test breaks if the SDK surface drifts.
 // --- Type-only — never executed.
-import type { Agent, AgentSession, LLMMetrics, MetricsCollectedEvent } from "@livekit/agents";
+import type {
+  Agent,
+  AgentSession,
+  LLMMetrics,
+  MetricsCollectedEvent,
+  STTMetrics,
+  TTSMetrics,
+} from "@livekit/agents";
 
 function __typePins(
   realSession: AgentSession,
   realEvent: MetricsCollectedEvent,
   realLlm: LLMMetrics,
+  realStt: STTMetrics,
+  realTts: TTSMetrics,
 ): void {
   // The real Agent.llmNode takes exactly 3 args (chatCtx, toolCtx, modelSettings)
   // — the arity we forward unchanged. Breaks here if the SDK changes it.
@@ -266,11 +295,19 @@ function __typePins(
   // promptTokens/completionTokens (what we settle against).
   const kind: string = realEvent.metrics.type;
   const tokens: number = realLlm.promptTokens + realLlm.completionTokens;
-  // The real AgentSession is a typed emitter we can attach onto.
-  const sessionLike: LiveKitSessionLike = realSession as unknown as LiveKitSessionLike;
+  // The STT/TTS metric fields we meter against: STT audio duration in ms (we
+  // divide by 1000), TTS character count. Breaks here if either field is renamed.
+  const sttMs: number = realStt.audioDurationMs;
+  const ttsChars: number = realTts.charactersCount;
+  // The real AgentSession is a typed emitter we can attach onto — a DIRECT
+  // assignment (no cast) so the compiler actually checks AgentSession satisfies
+  // LiveKitSessionLike; breaks here if the SDK's `on(...)` surface drifts.
+  const sessionLike: LiveKitSessionLike = realSession;
   void arity;
   void kind;
   void tokens;
+  void sttMs;
+  void ttsChars;
   void sessionLike;
 }
 void __typePins;

@@ -181,9 +181,18 @@ export class LiveKitBudgetGuard {
   private readonly telephonyUsdPerMinute?: number;
 
   private pending = false;
+  private attached = false;
   private active: TurnSlot | null = null;
   /** FIFO of turns that may still emit `LLMMetrics` (including early-released). */
   private readonly slots: TurnSlot[] = [];
+  /**
+   * Cap on the FIFO. A realtime / text-only turn returns no stream and emits
+   * `realtime_metrics` (not `llm_metrics`), so its slot never settles and would
+   * linger; on a long call the queue would grow without bound. Past this many
+   * slots we drop the oldest (releasing an open hold), bounding memory and the
+   * settlement drift a stale slot introduces.
+   */
+  private static readonly MAX_SLOTS = 64;
 
   constructor(guard: BudgetGuard, options: LiveKitBudgetGuardOptions) {
     this.guard = guard;
@@ -198,6 +207,12 @@ export class LiveKitBudgetGuard {
     // Bound once so the emitter calls them with the right `this`.
     this.onMetrics = this.onMetrics.bind(this);
     this.onClose = this.onClose.bind(this);
+    // Fail fast: a misconfigured voice vendor throws UnpriceableVoiceError at
+    // construction, not mid-call. quantity 0 resolves the rate (priced at $0)
+    // without metering; an unconfigured leg is a no-op (null).
+    priceVoiceLeg("stt", 0, { model: this.sttModel, override: this.sttUsdPerSecond });
+    priceVoiceLeg("tts", 0, { model: this.ttsModel, override: this.ttsUsdPer1kChars });
+    priceVoiceLeg("telephony", 0, { model: this.telephony, override: this.telephonyUsdPerMinute });
   }
 
   /**
@@ -206,6 +221,17 @@ export class LiveKitBudgetGuard {
    * blocks a turn before its TTS/audio spend piles on.
    */
   attach(session: LiveKitSessionLike, agent: LiveKitAgentLike): void {
+    // One guard binds one session/agent pair. A second attach() would wrap the
+    // wrapper and register duplicate listeners — each turn would then reserve and
+    // settle twice, double-counting spend. Reject the repeat (a reconnect / retried
+    // setup should create a fresh LiveKitBudgetGuard).
+    if (this.attached) {
+      throw new Error(
+        "LiveKitBudgetGuard.attach() called twice — a guard instance binds one " +
+          "session/agent pair. Create a new LiveKitBudgetGuard to re-attach.",
+      );
+    }
+    this.attached = true;
     // Bind so the original keeps its `this` when we call it from the wrapper.
     const origLlmNode = agent.llmNode.bind(agent);
 
@@ -232,6 +258,7 @@ export class LiveKitBudgetGuard {
       this.slots.push(slot);
       this.active = slot;
       this.pending = true;
+      this.trimSlots(slot);
 
       let stream: LlmNodeStream | null;
       try {
@@ -304,9 +331,11 @@ export class LiveKitBudgetGuard {
         // Clean completion: do NOT release — leave the hold for the metrics event
         // to settle against (mirrors Python's generator finishing normally).
         flush() {},
-        // Interrupt / downstream cancel: free the held budget. `cancel` is valid
-        // per the Streams spec and supported in Node 18+, but TS's Transformer lib
-        // type lags and omits it — cast to keep the type check (as the middleware does).
+        // Interrupt / downstream cancel: free the held budget. `Transformer.cancel`
+        // is honored on Node >=20.14; Node 18 does NOT invoke it — there the hold is
+        // released at the next turn's early-release or on session close instead
+        // (delayed, never leaked). TS's Transformer lib type lags and omits cancel —
+        // cast to keep the type check (as the Vercel-AI middleware does).
         cancel() {
           release();
         },
@@ -372,5 +401,17 @@ export class LiveKitBudgetGuard {
     slot.open = false;
     slot.amount = 0;
     this.clearActive();
+  }
+
+  /**
+   * Bound the FIFO: drop oldest slots past {@link MAX_SLOTS}, releasing an open
+   * hold as it goes. Never drops the just-reserved active slot. Prevents a long
+   * call from accumulating slots for turns that never emit `llm_metrics`.
+   */
+  private trimSlots(active: TurnSlot): void {
+    while (this.slots.length > LiveKitBudgetGuard.MAX_SLOTS && this.slots[0] !== active) {
+      const stale = this.slots.shift();
+      if (stale !== undefined && stale.open) this.guard.release(stale.amount);
+    }
   }
 }

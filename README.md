@@ -696,8 +696,10 @@ function wrapper, these adapters enforce **per turn** — reserve before the LLM
 call (so a turn is blocked *before* its TTS/audio spend piles on top of a call
 that would already cross the ceiling), settle on the real usage the pipeline
 reports, and release a turn that ends without ever reporting usage (an
-interrupted turn) so the reservation never leaks against the ceiling. Both voice
-adapters are **Python-only** today.
+interrupted turn) so the reservation never leaks against the ceiling. This
+section covers the **Python** Pipecat and LiveKit adapters; TypeScript ships
+native LiveKit / Vapi / Retell adapters too — see
+[TypeScript voice adapters](#typescript-voice-adapters).
 
 **The whole call is priced from the bundled map — no hand-typed rates.** Name each
 leg's vendor (`stt_model`, `tts_model`, `telephony`) and floe-guard prices the

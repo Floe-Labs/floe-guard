@@ -237,3 +237,22 @@ describe("VapiBudgetGuard — voice legs price via the cost map", () => {
     expect(() => budget.meterStt(1)).toThrow(UnpriceableVoiceError);
   });
 });
+
+describe("VapiBudgetGuard — no double release", () => {
+  it("does not double-release when a streaming settle throws (non-priceable model)", async () => {
+    const guard = new BudgetGuard(1.0); // failClosed default; "mystery-model" unpriceable
+    guard.recordTool("prior", 0.1); // non-zero next-call estimate → the reserve holds 0.10
+    const before = guard.remainingUsd; // 0.90
+    const budget = new VapiBudgetGuard(guard, { model: "mystery-model" });
+    const stream = budget.guardStream(() =>
+      (async function* () {
+        yield { usage: { prompt_tokens: 100, completion_tokens: 50 } };
+      })(),
+    );
+    // Draining triggers settle("mystery-model", …) → UnpriceableModelError, which
+    // releases the reservation ITSELF. The finally must not release it again — a
+    // double release would drive `reserved` negative and inflate remainingUsd.
+    await expect(drainStream(stream)).rejects.toThrow();
+    expect(guard.remainingUsd).toBe(before); // released exactly once — ceiling intact
+  });
+});

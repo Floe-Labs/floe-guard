@@ -290,10 +290,15 @@ export class VapiBudgetGuard {
       }
       // Clean end: settle on real usage, or fail loudly if none was ever seen.
       if (usage === null) throw new VapiUsageMissingError(model);
-      this.guard.settle(model, usage.prompt, usage.completion, { reserved });
+      // Mark settled BEFORE the call: guard.settle owns the reservation on every
+      // exit — it releases the hold on its own failure paths (unpriceable model,
+      // priceTokens error) before throwing — so the finally must not release it a
+      // second time (a double release drives `reserved` negative and weakens the
+      // ceiling for other in-flight turns).
       settled = true;
+      this.guard.settle(model, usage.prompt, usage.completion, { reserved });
     } finally {
-      // Any exit without a settle — error mid-stream, missing usage, or an early
+      // Any exit before settle — error mid-stream, missing usage, or an early
       // consumer abort (for-await break -> generator.return()) — frees the hold.
       if (!settled) this.guard.release(reserved);
     }
