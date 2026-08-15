@@ -13,7 +13,6 @@ Run:
 from __future__ import annotations
 
 import asyncio
-import types
 
 from livekit.agents.metrics import LLMMetrics, STTMetrics, TTSMetrics
 
@@ -21,11 +20,31 @@ from floe_guard import BudgetGuard
 from floe_guard.integrations.livekit import LiveKitBudgetGuard
 
 
-class _FakeSession:
-    """The tiny event-emitter surface attach() wires onto."""
+class _FakeEmitter:
+    """A LiveKit component (LLM/STT/TTS plugin) — an event emitter that emits its
+    own ``metrics_collected``, which is where the adapter meters usage."""
 
     def __init__(self) -> None:
         self._handlers: dict = {}
+
+    def on(self, event, cb):
+        self._handlers[event] = cb
+
+    def emit(self, event, arg):
+        if event in self._handlers:
+            self._handlers[event](arg)
+
+
+class _FakeSession:
+    """The tiny event-emitter surface attach() wires onto. The LLM/STT/TTS
+    plugins each carry their own ``metrics_collected`` (the session-level event
+    is deprecated in livekit-agents 1.5+); ``close`` fires on the session."""
+
+    def __init__(self) -> None:
+        self._handlers: dict = {}
+        self.llm = _FakeEmitter()
+        self.stt = _FakeEmitter()
+        self.tts = _FakeEmitter()
 
     def on(self, event, cb):
         self._handlers[event] = cb
@@ -38,10 +57,6 @@ class _FakeAgent:
     async def llm_node(self, chat_ctx, tools, model_settings):
         for chunk in ("Sure,", " one moment."):
             yield chunk
-
-
-def _event(metric):
-    return types.SimpleNamespace(metrics=metric)
 
 
 def _llm_metrics(prompt_tokens, completion_tokens):
@@ -101,9 +116,9 @@ async def run() -> BudgetGuard:
     # One turn: caller speaks (STT) → model answers (LLM) → bot speaks (TTS).
     async for _ in agent.llm_node(None, None, None):
         pass
-    session.emit("metrics_collected", _event(_stt_metrics(8.0)))  # 8s of caller audio
-    session.emit("metrics_collected", _event(_llm_metrics(600, 220)))
-    session.emit("metrics_collected", _event(_tts_metrics(180)))  # 180 chars spoken
+    session.stt.emit("metrics_collected", _stt_metrics(8.0))  # 8s of caller audio
+    session.llm.emit("metrics_collected", _llm_metrics(600, 220))
+    session.tts.emit("metrics_collected", _tts_metrics(180))  # 180 chars spoken
 
     # Telephony is per-minute accrual driven by the transport — a 1.5-minute call.
     budget.meter_telephony(1.5)
