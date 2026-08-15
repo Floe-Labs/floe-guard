@@ -37,6 +37,10 @@ class _FakeEmitter:
     def on(self, event, cb):
         self._handlers[event] = cb
 
+    def off(self, event, cb):
+        if self._handlers.get(event) == cb:
+            del self._handlers[event]
+
     def emit(self, event, arg):
         if event in self._handlers:
             self._handlers[event](arg)
@@ -385,14 +389,6 @@ async def test_override_wins_over_voice_map():
 
 
 @pytest.mark.asyncio
-async def test_unpriceable_stt_vendor_fails_closed():
-    guard = BudgetGuard(limit_usd=100.00)
-    _, _, session = _attached(guard, stt_model="not-a-real-stt-vendor")
-    with pytest.raises(UnpriceableVoiceError):
-        session.stt.emit("metrics_collected", _stt_metric(10.0))
-
-
-@pytest.mark.asyncio
 async def test_telephony_metered_per_minute_from_map():
     guard = BudgetGuard(limit_usd=100.00)
     budget, _, _ = _attached(guard, telephony="twilio-us-inbound-local")
@@ -429,3 +425,117 @@ async def test_full_call_per_leg_breakdown_sums_to_total():
     legs = {e.model_or_tool: e.cost_usd for e in guard.spend_log}
     assert set(legs) == {"gpt-4o", "livekit-stt", "livekit-tts", "livekit-telephony"}
     assert sum(legs.values()) == pytest.approx(guard.advisory().spent_usd)
+
+
+# -- Constructor fail-fast on a misconfigured voice vendor --------------------
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"stt_model": "not-a-real-stt-vendor"},
+        {"tts_model": "not-a-real-tts-vendor"},
+        {"telephony": "not-a-real-telephony-vendor"},
+    ],
+)
+def test_constructor_rejects_unknown_vendor(kwargs):
+    # A typo'd vendor must fail closed at construction, not mid-call.
+    guard = BudgetGuard(limit_usd=100.00)
+    with pytest.raises(UnpriceableVoiceError):
+        LiveKitBudgetGuard(guard, model="gpt-4o", **kwargs)
+
+
+def test_constructor_accepts_configured_vendors_and_unconfigured_legs():
+    # A priceable vendor (and an entirely unconfigured leg) construct cleanly.
+    guard = BudgetGuard(limit_usd=100.00)
+    LiveKitBudgetGuard(
+        guard,
+        model="gpt-4o",
+        stt_model="deepgram-nova-3",
+        tts_usd_per_1k_chars=0.10,  # override leg
+    )
+
+
+# -- attach() idempotency ------------------------------------------------------
+
+
+def test_second_attach_raises():
+    guard = BudgetGuard(limit_usd=100.00)
+    budget, agent, session = _attached(guard)
+    with pytest.raises(RuntimeError, match="attach\\(\\) called twice"):
+        budget.attach(session, agent)
+
+
+# -- _slots FIFO stays bounded when no LLMMetrics ever settle -------------------
+
+
+@pytest.mark.asyncio
+async def test_slots_deque_is_bounded_without_llm_metrics():
+    # A realtime / text-only turn emits no LLMMetrics, so its slot never settles.
+    # Drive far more turns than the cap and assert the FIFO stays bounded and no
+    # guard hold leaks (only the active turn holds budget; close frees it).
+    guard = BudgetGuard(limit_usd=1_000_000.00)
+    budget, agent, session = _attached(guard)
+
+    turns = LiveKitBudgetGuard._MAX_SLOTS * 4
+    for _ in range(turns):
+        await _drive_turn(agent)  # reserves; never emits metrics_collected
+
+    assert len(budget._slots) <= LiveKitBudgetGuard._MAX_SLOTS
+    assert budget._pending  # the last turn is still active/held
+
+    session.emit("close", types.SimpleNamespace())
+    assert not budget._pending
+    assert guard._reserved == pytest.approx(0.0)  # no leaked holds
+
+
+# -- Mid-call component swap: metrics re-subscribed on agent_state_changed ------
+
+
+@pytest.mark.asyncio
+async def test_swapped_component_metrics_captured_after_state_change():
+    guard = BudgetGuard(limit_usd=100.00)
+    budget, agent, session = _attached(guard, stt_usd_per_second=0.01)
+
+    old_stt = session.stt
+    # Simulate Agent.update_options()/update_agent swapping the live STT object.
+    new_stt = _FakeEmitter()
+    session.stt = new_stt
+
+    # Before reconcile the new component isn't wired — its metrics are missed.
+    new_stt.emit("metrics_collected", _stt_metric(10.0))
+    assert guard.advisory().spent_usd == 0.0
+
+    # A turn transition triggers reconcile: new component subscribed, old dropped.
+    session.emit("agent_state_changed", types.SimpleNamespace())
+
+    new_stt.emit("metrics_collected", _stt_metric(10.0))
+    assert guard.advisory().spent_usd == pytest.approx(10.0 * 0.01)
+
+    # The swapped-out component no longer double-counts.
+    old_stt.emit("metrics_collected", _stt_metric(10.0))
+    assert guard.advisory().spent_usd == pytest.approx(10.0 * 0.01)
+
+
+@pytest.mark.asyncio
+async def test_update_agent_metrics_followed_via_current_agent():
+    # AgentSession.update_agent() installs a new agent; we resolve the live
+    # components off session.current_agent so their metrics are still metered.
+    guard = BudgetGuard(limit_usd=100.00)
+    budget, agent, session = _attached(guard, stt_usd_per_second=0.01)
+
+    class _NewAgent:
+        def __init__(self):
+            self.stt = _FakeEmitter()
+
+    new_agent = _NewAgent()
+    # Make session.current_agent report the swapped-in agent.
+    session.__class__ = type(
+        "_SessionWithCurrentAgent",
+        (type(session),),
+        {"current_agent": property(lambda self: new_agent)},
+    )
+
+    session.emit("agent_state_changed", types.SimpleNamespace())
+    new_agent.stt.emit("metrics_collected", _stt_metric(20.0))
+    assert guard.advisory().spent_usd == pytest.approx(20.0 * 0.01)
