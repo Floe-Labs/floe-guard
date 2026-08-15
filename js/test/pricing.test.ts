@@ -104,4 +104,22 @@ describe("resolvePrice", () => {
   it("only strips ASCII-digit date suffixes (parity with Python's re.ASCII)", () => {
     expect(resolvePrice("gpt-4o-٢٠٢٥٠١٠١")).toBeNull();
   });
+  it("only strips ASCII-digit date suffixes (parity with Python's re.ASCII)", () => {
+    expect(resolvePrice("gpt-4o-٢٠٢٥٠١٠١")).toBeNull();
+  });
+
+  it("resolves claude-3-5-sonnet and claude-3-5-haiku without an override", () => {
+    const expected: Record<string, [number, number]> = {
+      "claude-3-5-sonnet-20241022": [3e-6, 1.5e-5],
+      "claude-3-5-sonnet-20240620": [3e-6, 1.5e-5],
+      "claude-3-5-haiku-20241022": [8e-7, 4e-6],
+    };
+    for (const [model, [inputCost, outputCost]] of Object.entries(expected)) {
+      const priced = resolvePrice(model);
+      expect(priced, model).not.toBeNull();
+      expect(priced!.source).toBe("cost_map");
+      expect(priced!.inputCostPerToken).toBe(inputCost);
+      expect(priced!.outputCostPerToken).toBe(outputCost);
+    }
+  });
 });
