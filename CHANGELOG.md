@@ -8,6 +8,25 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.17.0
+
+### Added (py)
+
+- **Opt-in ledger sync → Reconcile Mode / Coverage Score.** A new **explicit,
+  off-by-default** way to push your local spend ledger to Floe so **Coverage
+  Score** can count spend the gateway never routed (BYOK / self-hosted /
+  off-path): `guard.enable_sync(api_key=…)` then `guard.sync()` (programmatic), or
+  `floe-guard push ledger.jsonl` (CLI). **Zero-telemetry stays the default** —
+  nothing leaves the process without the explicit opt-in *and* an explicit send;
+  there is no implicit enablement and no background send (asserted in tests:
+  `urlopen` is never called for a guard that hasn't opted in). What leaves is
+  **exactly the `export_log()` JSONL** — priced spend events (timestamp, kind,
+  model/tool, tokens, `cost_usd`, optional `label`/`reserved`), **no prompts, no
+  content, no identifiers** beyond a `label` you set. `disable_sync()` revokes it.
+  Budget, not balance: it reports what you already spent for coverage/attribution;
+  it moves no money. New: `push_ledger()`, `LedgerSyncError`, the `floe-guard` CLI
+  (`[project.scripts]`). (JS parity + the server ingest endpoint land separately.)
+
 ## Unreleased — py 0.16.2
 
 ### Fixed (py)

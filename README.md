@@ -959,13 +959,49 @@ metrics, no "zero defaults" claims — it's a free local stop, not a vault.
 ## No telemetry
 
 floe-guard does **not** phone home. It sends no usage events, no install pings,
-no identifiers — nothing leaves your process at runtime except hosted-budget
-reads you explicitly opt into by setting `FLOE_API_KEY` (the
-[hosted Floe](#when-you-outgrow-local-guardrails) path) — never otherwise.
+no identifiers — nothing leaves your process at runtime except **two things you
+explicitly opt into**: hosted-budget reads (set `FLOE_API_KEY` / use
+[`from_floe`](#one-line-to-hosted)) and [ledger sync](#sync-your-ledger-for-coverage-score-opt-in)
+(`enable_sync()` / `floe-guard push`). Never otherwise, and never in the
+background.
 
 This is a choice, not an oversight. A guardrail's whole value is trust: a
 library that silently exfiltrates usage from people's agents is the opposite of
 a tool you hand a budget to.
+
+## Sync your ledger for Coverage Score (opt-in)
+
+Floe's gateway can't see spend it never routed — BYOK, self-hosted, or off-path
+LLM/tool calls. **Ledger sync** is the opt-in that closes that gap: it pushes your
+local spend ledger into Floe's Reconcile Mode so your **Coverage Score** (the
+share of your agent's spend Floe can actually enforce) becomes computable for
+off-path spend. Budget, not balance — it reports what you *already spent* for
+coverage and attribution; it moves no money and changes no wallet balance.
+
+**Off by default, always.** Two explicit steps — opt in, then send — and no
+background send ever:
+
+```python
+guard.enable_sync(api_key="floe_…")   # opt in (read_write agent key). Sends nothing yet.
+...                                    # run your agent; spend accrues on the guard
+n = guard.sync()                       # THE send — POSTs export_log() now; returns events accepted
+guard.disable_sync()                   # revoke; the guard sends nothing after this
+```
+
+Or one-shot from a saved ledger:
+
+```bash
+floe-guard push ledger.jsonl --key floe_…   # or: your_export_log_producer | floe-guard push
+```
+
+**Exactly what leaves your process** is the [`export_log()`](#per-call-spend-log)
+JSONL — one line per priced spend event: `timestamp`, `kind` (`llm`/`tool`),
+`model_or_tool`, `prompt_tokens`, `completion_tokens`, `cost_usd`, and the
+optional `label` / `reserved` you set. **No prompts, no message content, no
+identifiers** beyond a `label` you choose. Re-syncing is safe — the server is
+idempotent, so already-ingested events aren't double-counted. A guard that never
+called `enable_sync()` never sends (a `sync()` on it raises, with zero network) —
+the [no-telemetry](#no-telemetry) default holds.
 
 ## When you outgrow local guardrails
 

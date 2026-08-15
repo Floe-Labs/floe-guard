@@ -24,6 +24,7 @@ from .errors import (
     DeadlineExceeded,
     FloeGuardError,
     HostedEnforcementError,
+    LedgerSyncError,
     TokenBudgetExceeded,
     UnpriceableModelError,
     UnpriceableModelWarning,
@@ -42,6 +43,7 @@ from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
 from .retry import RetryPlan, async_with_budget_retry, with_budget_retry
 from .store import SqliteStore, StateStore
 from .stream import StreamGuard, guard_stream
+from .sync import push_ledger
 from .voice_pricing import (
     VoiceRate,
     lookup_voice_rate,
@@ -92,5 +94,7 @@ __all__ = [
     "price_voice_leg",
     "hosted_enforcement_available",
     "hosted_remaining_usd",
+    "push_ledger",
+    "LedgerSyncError",
     "gates",
 ]
