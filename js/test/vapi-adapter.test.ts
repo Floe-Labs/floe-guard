@@ -10,7 +10,13 @@
 
 import { describe, expect, it } from "vitest";
 
-import { BudgetExceeded, BudgetGuard, UnpriceableVoiceError, priceVoiceLeg } from "../src/index.js";
+import {
+  BudgetExceeded,
+  BudgetGuard,
+  UnpriceableModelError,
+  UnpriceableVoiceError,
+  priceVoiceLeg,
+} from "../src/index.js";
 import {
   VapiBudgetGuard,
   VapiUsageMissingError,
@@ -252,7 +258,7 @@ describe("VapiBudgetGuard — no double release", () => {
     // Draining triggers settle("mystery-model", …) → UnpriceableModelError, which
     // releases the reservation ITSELF. The finally must not release it again — a
     // double release would drive `reserved` negative and inflate remainingUsd.
-    await expect(drainStream(stream)).rejects.toThrow();
+    await expect(drainStream(stream)).rejects.toThrow(UnpriceableModelError);
     expect(guard.remainingUsd).toBe(before); // released exactly once — ceiling intact
   });
 });
