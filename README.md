@@ -696,8 +696,10 @@ function wrapper, these adapters enforce **per turn** — reserve before the LLM
 call (so a turn is blocked *before* its TTS/audio spend piles on top of a call
 that would already cross the ceiling), settle on the real usage the pipeline
 reports, and release a turn that ends without ever reporting usage (an
-interrupted turn) so the reservation never leaks against the ceiling. Both voice
-adapters are **Python-only** today.
+interrupted turn) so the reservation never leaks against the ceiling. This
+section covers the **Python** Pipecat and LiveKit adapters; TypeScript ships
+native LiveKit / Vapi / Retell adapters too — see
+[TypeScript voice adapters](#typescript-voice-adapters).
 
 **The whole call is priced from the bundled map — no hand-typed rates.** Name each
 leg's vendor (`stt_model`, `tts_model`, `telephony`) and floe-guard prices the
@@ -890,28 +892,46 @@ call-level intervention.) Budget, not balance. US-only telephony, v1.
 | CrewAI | ✅ | — |
 | LiteLLM | ✅ | — |
 | Vercel AI SDK | — | ✅ |
+| **LiveKit** (voice) | ✅ | ✅ |
+| **Vapi** (voice) | — | ✅ |
+| **Retell** (voice) | — | ✅ |
 | **Pipecat** (voice) | ✅ | — |
-| **LiveKit** (voice) | ✅ | — |
 
-The TypeScript package is a single Vercel AI SDK middleware that guards any model
-the AI SDK wraps (OpenAI, Anthropic, Gemini, …) — it is not a per-framework
-adapter set like the Python package.
+The TypeScript package started as a single Vercel AI SDK middleware; it now also
+ships **voice-leg pricing** (`priceVoiceLeg`), **pre-call admission gates**
+(`gates.retell` / `gates.vapi` / `gates.preCall`), and **native voice adapters**
+for LiveKit, Vapi, and Retell (below).
 
-### TypeScript voice parity
+### TypeScript voice adapters
 
-**TypeScript ships the voice foundation — pricing and admission — not yet a
-full-session adapter.** The JS package ([`js/`](js/)) now prices voice legs
-offline (`priceVoiceLeg` — STT/TTS/telephony from the same `__voice__` cost map,
-fail-closed via `UnpriceableVoiceError`) and ships **pre-call admission gates**
-(`gates.retell` / `gates.vapi` / `gates.preCall`) that return each provider's
-exact reject/admit shape — the same contract as the Python `gates`. What it does
-**not** yet ship is a native STT → LLM → TTS *session* adapter (Vapi custom-LLM
-proxy / Retell WS / LiveKit Agents) that meters a whole running turn. Until then,
-drive the LLM turn through the Vercel AI SDK middleware and meter STT/TTS via
-`recordTool` (price the legs with `priceVoiceLeg`), run the LLM leg through the
-**hosted [Floe proxy](#when-you-outgrow-local-guardrails)** (un-bypassable,
-cross-vendor), or use the Python Pipecat / LiveKit adapters above, which enforce
-the whole turn.
+TypeScript ships native STT → LLM → TTS session adapters for the three Node voice
+stacks. Each reserves before the model turn, settles on real usage, releases on
+interrupt, and meters STT/TTS/telephony legs from the `__voice__` cost map
+(fail-closed via `UnpriceableVoiceError`) — the same enforcement contract as the
+Python Pipecat / LiveKit adapters. **Pre-turn / pre-call admission plus per-turn
+settlement only; no mid-call cutoff.**
+
+```ts
+// LiveKit Agents (Node) — @livekit/agents is an optional peer
+import { LiveKitBudgetGuard } from "floe-guard/adapters/livekit";
+new LiveKitBudgetGuard(guard, { model, sttModel, ttsModel, telephony }).attach(session, agent);
+
+// Vapi custom-LLM proxy — wrap the /chat/completions turn
+import { VapiBudgetGuard } from "floe-guard/adapters/vapi";
+const budget = new VapiBudgetGuard(guard, { sttModel, ttsModel, telephony });
+const completion = await budget.guardCompletion(() => openai.chat.completions.create(req), { model });
+
+// Retell custom-LLM WebSocket — reserve on response_required, settle on content_complete
+import { RetellBudgetGuard } from "floe-guard/adapters/retell";
+const decision = budget.beginTurn(event);        // { admitted } — reserves before the LLM call
+budget.settleTurn(event.response_id, usage);     // settle real usage after content_complete
+```
+
+Each ships a runnable, no-key demo (`js/examples/*_voice_cost.mjs`) that prints a
+pre-call admission decision and a per-leg call-cost receipt; see the module
+docstrings for the full API. Pipecat's server pipeline is Python-only, so its
+budget processor lives in the Python package (`FloeBudgetGuardProcessor`) — there
+is no Node Pipecat server surface to adapt.
 
 For wiring floe-guard into an existing voice pipeline, see the Floe docs:
 **[Add Floe to your existing pipeline](https://floe-labs.gitbook.io/docs/getting-started/integrate-existing-pipeline)**.

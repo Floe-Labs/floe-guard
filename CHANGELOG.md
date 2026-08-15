@@ -8,7 +8,33 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.16.1 / js 0.11.0
+## Unreleased — js 0.12.0
+
+### Added (js)
+
+- **Voice adapters — LiveKit, Vapi, Retell** (the Node voice glue): each wraps its
+  platform's model turn with reserve-before / settle-on-real-usage / release-on-
+  interrupt, meters STT/TTS/telephony legs from the `__voice__` cost map via
+  `priceVoiceLeg` (fail-closed), and answers the platform's inbound admission
+  webhook via `gates`. Pre-turn/pre-call admission + per-turn settlement only — no
+  mid-call cutoff.
+  - `floe-guard/adapters/livekit` → `LiveKitBudgetGuard.attach(session, agent)`:
+    reserves in the agent's `llmNode`, settles on the session's `metrics_collected`
+    (verified **not** deprecated in `@livekit/agents` 1.6.x, unlike Python 1.5.0),
+    releases on stream cancel / close. `@livekit/agents` is an optional peer.
+  - `floe-guard/adapters/vapi` → `VapiBudgetGuard`: `guardCompletion` (JSON) /
+    `guardStream` (SSE) reserve before the upstream call and settle on the real
+    OpenAI `usage`; `assistantRequest` wraps `gates.vapi`. A stream with no `usage`
+    (upstream missing `stream_options.include_usage`) throws `VapiUsageMissingError`
+    rather than metering a silent $0.
+  - `floe-guard/adapters/retell` → `RetellBudgetGuard`: `beginTurn` (returns an
+    admit/block decision) / `settleTurn` keyed by `response_id`, a newer id releases
+    the prior hold (barge-in); `admitCall` wraps `gates.retell`.
+  - Each ships a runnable **stubbed, no-key** demo (`js/examples/*_voice_cost.mjs`)
+    that prints a pre-call admission decision and a per-leg call-cost receipt.
+    Adapters are structurally typed — no hard runtime SDK dependency.
+
+## py 0.16.1 / js 0.11.0 — 2026-08-14
 
 ### Fixed (py)
 
