@@ -26,8 +26,47 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   API change; the `livekit` extra floor stays `>=1.0` (the per-component event
   predates the deprecation). (The TS `@livekit/agents` does not deprecate the
   event, so the Vercel-AI/js package is unaffected.)
+- **LiveKit adapter hardening — parity with the merged JS fixes, plus component
+  swaps.** The constructor validates configured voice vendors (a typo'd
+  `stt_model` / `tts_model` / `telephony` now raises `UnpriceableVoiceError` at
+  construction, not mid-call); `attach()` is single-use (a second call raises
+  rather than double-subscribing and double-counting spend); the internal turn
+  queue is bounded (`_MAX_SLOTS`) so a long call with realtime / text-only turns
+  can't accumulate stale slots. And metric subscriptions are **re-synced on
+  component swaps** — `livekit-agents` emits no swap event, so they're reconciled
+  on every `agent_state_changed` off `session.current_agent`. Honest limitation
+  (documented): `AgentSession.update_agent()` installs a new `Agent` whose
+  `llm_node` isn't wrapped, so its turns are still metered (reconcile) but the
+  pre-turn hard-stop is bypassed until you re-`attach()`; `update_options` (same
+  agent, swapped models) keeps the reserve hook.
 
-## Unreleased — py 0.16.1 / js 0.11.0
+## Unreleased — js 0.12.0
+
+### Added (js)
+
+- **Voice adapters — LiveKit, Vapi, Retell** (the Node voice glue): each wraps its
+  platform's model turn with reserve-before / settle-on-real-usage / release-on-
+  interrupt, meters STT/TTS/telephony legs from the `__voice__` cost map via
+  `priceVoiceLeg` (fail-closed), and answers the platform's inbound admission
+  webhook via `gates`. Pre-turn/pre-call admission + per-turn settlement only — no
+  mid-call cutoff.
+  - `floe-guard/adapters/livekit` → `LiveKitBudgetGuard.attach(session, agent)`:
+    reserves in the agent's `llmNode`, settles on the session's `metrics_collected`
+    (verified **not** deprecated in `@livekit/agents` 1.6.x, unlike Python 1.5.0),
+    releases on stream cancel / close. `@livekit/agents` is an optional peer.
+  - `floe-guard/adapters/vapi` → `VapiBudgetGuard`: `guardCompletion` (JSON) /
+    `guardStream` (SSE) reserve before the upstream call and settle on the real
+    OpenAI `usage`; `assistantRequest` wraps `gates.vapi`. A stream with no `usage`
+    (upstream missing `stream_options.include_usage`) throws `VapiUsageMissingError`
+    rather than metering a silent $0.
+  - `floe-guard/adapters/retell` → `RetellBudgetGuard`: `beginTurn` (returns an
+    admit/block decision) / `settleTurn` keyed by `response_id`, a newer id releases
+    the prior hold (barge-in); `admitCall` wraps `gates.retell`.
+  - Each ships a runnable **stubbed, no-key** demo (`js/examples/*_voice_cost.mjs`)
+    that prints a pre-call admission decision and a per-leg call-cost receipt.
+    Adapters are structurally typed — no hard runtime SDK dependency.
+
+## py 0.16.1 / js 0.11.0 — 2026-08-14
 
 ### Fixed (py)
 
