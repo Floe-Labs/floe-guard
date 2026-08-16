@@ -40,6 +40,30 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   pre-turn hard-stop is bypassed until you re-`attach()`; `update_options` (same
   agent, swapped models) keeps the reserve hook.
 
+## Unreleased — js 0.13.0
+
+### Added (js)
+
+- **Opt-in ledger sync — `BudgetGuard.enableSync()` / `disableSync()` / `sync()`
+  + `pushLedger()`** (parity with the Python client). Pushes the guard's
+  `exportLog()` JSONL to Floe's Reconcile Mode (`POST /v1/agents/ledger/sync`,
+  `Content-Type: application/x-ndjson`, `Authorization: Bearer`) so BYOK /
+  self-hosted / off-path spend the gateway never routed still lands on the ledger
+  and your **Coverage Score** becomes computable. **Budget, not balance:** it
+  reports what you already spent for coverage/attribution; it moves no money and
+  changes no wallet balance.
+  - **Zero-telemetry is preserved as the default.** Sync is OFF until you call
+    `enableSync(apiKey)`, and even then nothing leaves the process until you call
+    `sync()` — there is no implicit enablement and no background send. `sync()` on
+    a guard that never opted in throws (no network); `disableSync()` revokes it.
+  - **Fail-closed.** `pushLedger(jsonl, apiKey?, { baseUrl?, timeoutMs? })` (over
+    `fetch`) refuses to send without a key (arg or `FLOE_API_KEY`) or over a
+    non-https / malformed base URL — the key and ledger are never transmitted in
+    those cases — and throws `LedgerSyncError` on a non-2xx / network / malformed
+    response. An empty ledger is a no-op (`0`, no network). Only the priced spend
+    events leave the process — no prompts, no content, no identifiers beyond a
+    `label` you set. (The `floe-guard push` CLI stays Python-only for now.)
+
 ## Unreleased — js 0.12.0
 
 ### Added (js)

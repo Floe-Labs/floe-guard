@@ -26,7 +26,9 @@ export {
   DeadlineExceeded,
   UnpriceableModelError,
   UnpriceableVoiceError,
+  LedgerSyncError,
 } from "./errors.js";
+export { pushLedger } from "./sync.js";
 export {
   budgetGuardMiddleware,
   type BudgetGuardMiddleware,
