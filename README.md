@@ -7,16 +7,20 @@
 [![CI](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**A local budget guardrail for AI agents — including voice.** It hard-stops your
-agent *before its next turn or LLM call* when it would cross a spend ceiling:
-**per-turn enforcement for [Pipecat](#pipecat-voice) and [LiveKit](#livekit-voice)**
-voice pipelines, and a hard stop for runaway LLM loops — a loop dies at $0.10
-instead of $4,000. No account, no signup, no network, **no telemetry**. Runs in
-your process.
+**The spend meter and budget gate for AI voice agents — and any LLM agent.**
+floe-guard meters the whole call — STT + LLM + TTS + telephony — from a bundled
+cost map (name each leg's vendor; no manual rates), and hard-stops the next turn
+or call *before* it crosses your spend ceiling: **per-turn enforcement for
+[Pipecat](#pipecat-voice) and [LiveKit](#livekit-voice)**, and a hard stop for
+runaway LLM loops — a loop dies at $0.10 instead of $4,000; an over-budget call
+is rejected at the door. Local, in your process. No account, no signup, no
+network, **no telemetry**.
 
-**Voice:** [Pipecat](#pipecat-voice) · [LiveKit](#livekit-voice) — reserve before
-each turn, settle on real usage, so a turn that would cross the ceiling never
-starts. **Any agent:** [CrewAI](#crewai) · [LiteLLM](#litellm) ·
+**Voice:** [Pipecat](#pipecat-voice) · [LiveKit](#livekit-voice) (Python) ·
+LiveKit · Vapi · Retell ([TypeScript](#typescript-voice-adapters)) — reserve
+before each turn, settle on real usage, so a turn that would cross the ceiling
+never starts — plus [pre-call admission gates](#voice-admission-gates-pre-call)
+that speak each orchestrator's inbound webhook shape. **Any agent:** [CrewAI](#crewai) · [LiteLLM](#litellm) ·
 [LangChain](#langchain) · [LangGraph](#langgraph) · [OpenAI](#openai) ·
 [Anthropic](#anthropic) · [Gemini](#google-gemini) · [Vercel AI SDK](#vercel-ai-sdk)
 — or any stack, via plain `check()` / `record()`. See the
@@ -36,7 +40,8 @@ the depth you need:
   for OpenAI / Anthropic / Gemini / CrewAI / LangChain / LangGraph / LiteLLM /
   Vercel AI SDK.
 - **Guard a voice call** — per-turn [voice adapters](#voice-adapters-stt--llm--tts)
-  (Pipecat, LiveKit, Vapi, Retell) that price STT + LLM + TTS + telephony, and
+  (Pipecat + LiveKit in Python; LiveKit, Vapi, Retell in TypeScript) that price
+  STT + LLM + TTS + telephony, and
   [pre-call admission gates](#voice-admission-gates-pre-call) that reject an
   over-budget call at the door.
 - **Adapt before the cap** — [`advisory()`](#context-aware-budgeting) (near-limit
@@ -60,6 +65,10 @@ npx skills add floe-labs/agent-skills
 ```
 
 [Floe agent skill →](https://github.com/Floe-Labs/agent-skills) · [Docs →](https://floe-labs.gitbook.io/docs/getting-started/claude-code-skill)
+
+> **AI agents:** this repo self-onboards — [`AGENTS.md`](AGENTS.md) (install → wire → verify),
+> [`SKILL.md`](SKILL.md), and [`llms.txt`](llms.txt) let a coding agent add and wire the
+> guard unattended.
 
 ```bash
 pip install floe-guard        # Python
@@ -97,6 +106,30 @@ python examples/runaway_loop.py
 This rigs a loop against a **stub LLM** — no real API key, no account, no network.
 It prices each fake `gpt-4o` call offline and the guard halts the loop after a few
 iterations. This is the reproducible "stop the loop" demo.
+
+## What did that call cost?
+
+The other demo — one voice call, every leg priced from the bundled map, no
+manual rates, no API key, no network:
+
+```bash
+pip install "floe-guard[livekit]"     # the demo imports livekit-agents
+python examples/voice_call_cost_livekit.py
+```
+
+```text
+Per-leg call cost (all priced from the bundled cost map, no manual rates):
+  livekit-stt          $0.001027   # 8s  × ($0.0077/min ÷ 60)   Deepgram Nova-3
+  gpt-4o               $0.003700   # 600 in / 220 out tokens    LLM
+  livekit-tts          $0.009000   # 180 chars / 1k × $0.05     ElevenLabs Flash
+  livekit-telephony    $0.012750   # 1.5 min × $0.0085/min      Twilio US inbound
+  TOTAL                $0.026477
+```
+
+That's the answer a token-level tool can't give: it meters the LLM leg and
+misses the rest of the bill. Rates are a snapshot of public US list prices and
+drift — details, caveats, and the Pipecat version in
+[Voice adapters](#voice-adapters-stt--llm--tts).
 
 ## One line to hosted
 

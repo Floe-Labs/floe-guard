@@ -1,0 +1,39 @@
+# floe-guard
+
+> The spend meter and budget gate for AI voice agents. It meters STT + TTS + LLM +
+> telephony per call (Pipecat, LiveKit — Python & TypeScript) and hard-stops the next
+> turn *before* it crosses a USD ceiling, so a runaway loop dies at $0.10 instead of
+> $4,000. Runs in your process: no account, no signup, no network, no telemetry. It
+> also guards any LLM/tool call the same way. Built by Floe — cost controls for Voice AI.
+
+Install `pip install floe-guard` (Python) or `npm i floe-guard` (TypeScript). Drop in a
+voice adapter (Pipecat / LiveKit) for per-turn STT+TTS+LLM+telephony enforcement, or wire
+`guard.check()` before each LLM call and `guard.record(...)` after. Budget, not balance:
+it caps spend, holds no money, needs no account.
+
+## Start here
+
+- [README](https://github.com/Floe-Labs/floe-guard/blob/main/README.md): the full guide — quickstart, adapters, voice, gates, hosted, ledger sync.
+- [AGENTS.md](https://github.com/Floe-Labs/floe-guard/blob/main/AGENTS.md): step-by-step integration for a coding agent (install → wire → verify).
+- [Stop a loop (offline demo)](https://github.com/Floe-Labs/floe-guard#see-it-stop-a-loop-no-api-key-needed): `python examples/runaway_loop.py` — no key, no network.
+- [How it works](https://github.com/Floe-Labs/floe-guard#how-it-works): `check()` before, `record()` after; enforcement lives in the call path.
+
+## Integrations
+
+- [Framework adapters](https://github.com/Floe-Labs/floe-guard#framework-adapters-optional-extras): OpenAI, Anthropic, Gemini, CrewAI, LangChain, LangGraph, LiteLLM, Vercel AI SDK.
+- [Voice adapters](https://github.com/Floe-Labs/floe-guard#voice-adapters-stt--llm--tts): Pipecat, LiveKit, Vapi, Retell — per-turn enforcement over STT + LLM + TTS + telephony.
+- [Pre-call admission gates](https://github.com/Floe-Labs/floe-guard#voice-admission-gates-pre-call): reject an over-budget call at the door (Retell / Vapi / any provider).
+
+## Going further
+
+- [Context-aware budgeting](https://github.com/Floe-Labs/floe-guard#context-aware-budgeting): `advisory()` — near-limit flag + `$/min` burn rate to taper before the hard-stop.
+- [One line to hosted](https://github.com/Floe-Labs/floe-guard#one-line-to-hosted): `from_floe(api_key=…)` reads your server-side budget headroom into the local ceiling. Opt-in.
+- [Coverage Score sync](https://github.com/Floe-Labs/floe-guard#sync-your-ledger-for-coverage-score-opt-in): opt-in ledger sync for BYOK / self-hosted spend. Off by default.
+
+## Skill
+
+- [Floe agent skill](https://github.com/Floe-Labs/agent-skills): `npx skills add floe-labs/agent-skills` — the full govern-your-spend workflow for Claude Code / Cursor.
+
+## Optional
+
+- [PyPI](https://pypi.org/project/floe-guard/) · [npm](https://www.npmjs.com/package/floe-guard) · [SKILL.md](https://github.com/Floe-Labs/floe-guard/blob/main/SKILL.md)
