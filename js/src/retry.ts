@@ -1,4 +1,4 @@
-import { BudgetExceeded } from "./errors.js";
+import { FloeGuardError } from "./errors.js";
 import { type BudgetAdvisory, BudgetGuard } from "./guard.js";
 
 export interface RetryPlan<T> {
@@ -21,12 +21,26 @@ export interface BudgetRetryOptions<T> {
     error: unknown,
     advisory: BudgetAdvisory,
   ) => RetryPlan<T> | Promise<RetryPlan<T> | undefined> | undefined;
-  /** Decide whether an error is retryable. Defaults to all non-budget errors. */
+  /**
+   * Decide whether an error is retryable.
+   *
+   * Defaults to all non-{@link FloeGuardError} errors — every
+   * {@link FloeGuardError} (including {@link BudgetExceeded} and
+   * {@link UnpriceableModelError}) is treated as terminal because retrying a
+   * deterministic guard error cannot fix it and would only multiply LLM spend.
+   */
   retryIf?: (error: unknown) => boolean;
 }
 
+/**
+ * Return `true` only for transient, non-{@link FloeGuardError} errors.
+ *
+ * Every {@link FloeGuardError} — including {@link BudgetExceeded} and
+ * {@link UnpriceableModelError} — is considered terminal: retrying cannot fix
+ * a deterministic guard error and would only multiply LLM spend.
+ */
 function defaultRetryIf(error: unknown): boolean {
-  return !(error instanceof BudgetExceeded);
+  return !(error instanceof FloeGuardError);
 }
 
 /**
