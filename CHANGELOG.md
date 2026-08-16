@@ -19,10 +19,13 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   `floe-guard push ledger.jsonl` (CLI). **Zero-telemetry stays the default** —
   nothing leaves the process without the explicit opt-in *and* an explicit send;
   there is no implicit enablement and no background send (asserted in tests:
-  `urlopen` is never called for a guard that hasn't opted in). What leaves is
-  **exactly the `export_log()` JSONL** — priced spend events (timestamp, kind,
-  model/tool, tokens, `cost_usd`, optional `label`/`reserved`), **no prompts, no
-  content, no identifiers** beyond a `label` you set. `disable_sync()` revokes it.
+  `urlopen` is never called for a guard that hasn't opted in). The **request body**
+  is exactly the `export_log()` JSONL — priced spend events (timestamp, kind,
+  model/tool, tokens, `cost_usd`, optional `label`/`reserved`) — and `push_ledger`
+  **validates every line, rejecting any field outside that schema**, so no prompts,
+  content, or identifiers can leave even from a hand-supplied ledger. Your key
+  travels in the `Authorization` header; redirects are refused so key + ledger
+  can't be re-sent to an unapproved host. `disable_sync()` revokes it.
   Budget, not balance: it reports what you already spent for coverage/attribution;
   it moves no money. New: `push_ledger()`, `LedgerSyncError`, the `floe-guard` CLI
   (`[project.scripts]`). (JS parity + the server ingest endpoint land separately.)

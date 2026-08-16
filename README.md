@@ -994,14 +994,18 @@ Or one-shot from a saved ledger:
 floe-guard push ledger.jsonl --key floe_…   # or: your_export_log_producer | floe-guard push
 ```
 
-**Exactly what leaves your process** is the [`export_log()`](#per-call-spend-log)
-JSONL — one line per priced spend event: `timestamp`, `kind` (`llm`/`tool`),
+**The request body is exactly the [`export_log()`](#per-call-spend-log) JSONL** —
+one line per priced spend event: `timestamp`, `kind` (`llm`/`tool`),
 `model_or_tool`, `prompt_tokens`, `completion_tokens`, `cost_usd`, and the
 optional `label` / `reserved` you set. **No prompts, no message content, no
-identifiers** beyond a `label` you choose. Re-syncing is safe — the server is
-idempotent, so already-ingested events aren't double-counted. A guard that never
-called `enable_sync()` never sends (a `sync()` on it raises, with zero network) —
-the [no-telemetry](#no-telemetry) default holds.
+identifiers** beyond a `label` you choose — and it's *enforced*, not just
+promised: `push_ledger` validates every line and refuses any record with a field
+outside that schema, so nothing extra can leave even from a hand-edited ledger.
+Your key rides the `Authorization` header, and redirects are refused so neither
+key nor ledger can be re-sent to an unapproved host. Re-syncing is safe — the sync
+endpoint is idempotent by design, so already-ingested events aren't
+double-counted. A guard that never called `enable_sync()` never sends (a `sync()`
+on it raises, with zero network) — the [no-telemetry](#no-telemetry) default holds.
 
 ## When you outgrow local guardrails
 

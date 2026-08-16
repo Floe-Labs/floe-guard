@@ -948,17 +948,23 @@ class BudgetGuard:
 
         Revoke: :meth:`disable_sync` turns it back off; the guard sends nothing after.
         """
-        self._sync_enabled = True
-        self._sync_key = api_key
-        self._sync_base = base_url
+        with self._lock:
+            self._sync_enabled = True
+            self._sync_key = api_key
+            self._sync_base = base_url
 
     def disable_sync(self) -> None:
         """Turn ledger sync back off (revoke the opt-in). The guard sends nothing
         after this; :meth:`sync` will raise until :meth:`enable_sync` is called again.
+
+        Thread-safe against a concurrent :meth:`sync`: once this returns, no new
+        upload can start (a ``sync`` that already snapshotted the key while enabled
+        may finish, but one starting after sees the revoked state and raises).
         """
-        self._sync_enabled = False
-        self._sync_key = None
-        self._sync_base = None
+        with self._lock:
+            self._sync_enabled = False
+            self._sync_key = None
+            self._sync_base = None
 
     def sync(self) -> int:
         """Push the current spend ledger to Reconcile Mode; return events accepted.
@@ -973,14 +979,20 @@ class BudgetGuard:
             RuntimeError: sync was not enabled (call :meth:`enable_sync` first).
             LedgerSyncError: the opt-in send failed (missing key, non-2xx, network).
         """
-        if not self._sync_enabled:
-            raise RuntimeError(
-                "ledger sync is not enabled — call guard.enable_sync(api_key=…) first. "
-                "Sync is opt-in and off by default (zero-telemetry)."
-            )
+        # Snapshot opt-in state + key atomically: a concurrent disable_sync() can't
+        # clear the key mid-call (which would silently fall back to $FLOE_API_KEY) or
+        # let an upload start after revocation. A disable happens-before (we raise) or
+        # happens-after (we send the key we snapshotted while still enabled).
+        with self._lock:
+            if not self._sync_enabled:
+                raise RuntimeError(
+                    "ledger sync is not enabled — call guard.enable_sync(api_key=…) "
+                    "first. Sync is opt-in and off by default (zero-telemetry)."
+                )
+            key, base = self._sync_key, self._sync_base
         from .sync import push_ledger
 
-        return push_ledger(self.export_log(), self._sync_key, base_url=self._sync_base)
+        return push_ledger(self.export_log(), key, base_url=base)
 
     @contextmanager
     def step(

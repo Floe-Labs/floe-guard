@@ -1,7 +1,7 @@
 """Opt-in ledger sync — zero-telemetry stays the default.
 
 The load-bearing test here is that a guard which never opted in makes **zero**
-network calls, ever (``urllib.request.urlopen`` is asserted un-called). Sync sends
+network calls, ever (``floe_guard.sync._OPENER.open`` is asserted un-called). Sync sends
 only the ``export_log()`` JSONL, only under the explicit flag, only with a key.
 """
 
@@ -27,6 +27,9 @@ _LEDGER_KEYS = {
     "reserved",
 }
 
+# One schema-valid ledger line, for tests isolating the key/https/network paths.
+_ONE_EVENT = '{"timestamp":1.0,"kind":"tool","model_or_tool":"api","cost_usd":0.01}\n'
+
 
 def _ok(payload: dict[str, object]) -> mock.MagicMock:
     resp = mock.MagicMock()
@@ -49,7 +52,7 @@ def test_no_network_without_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
     # A full guard lifecycle with NO enable_sync must never touch the network,
     # and sync() must raise (not silently send) — the zero-telemetry default.
     monkeypatch.delenv("FLOE_API_KEY", raising=False)
-    with mock.patch("urllib.request.urlopen") as urlopen:
+    with mock.patch("floe_guard.sync._OPENER.open") as urlopen:
         guard = BudgetGuard(limit_usd=10.0)
         guard.record_tool("api", 0.05)
         guard.record("gpt-4o", 1200, 350)
@@ -64,7 +67,7 @@ def test_disable_sync_revokes_no_network() -> None:
     guard = _guard_with_spend()
     guard.enable_sync(api_key="floe_abc")
     guard.disable_sync()
-    with mock.patch("urllib.request.urlopen") as urlopen:
+    with mock.patch("floe_guard.sync._OPENER.open") as urlopen:
         with pytest.raises(RuntimeError, match="not enabled"):
             guard.sync()
     urlopen.assert_not_called()
@@ -73,7 +76,7 @@ def test_disable_sync_revokes_no_network() -> None:
 def test_empty_ledger_syncs_nothing_no_network() -> None:
     guard = BudgetGuard(limit_usd=10.0)  # no spend recorded
     guard.enable_sync(api_key="floe_abc")
-    with mock.patch("urllib.request.urlopen") as urlopen:
+    with mock.patch("floe_guard.sync._OPENER.open") as urlopen:
         assert guard.sync() == 0
     urlopen.assert_not_called()
 
@@ -84,7 +87,7 @@ def test_empty_ledger_syncs_nothing_no_network() -> None:
 def test_sync_posts_export_log_under_key() -> None:
     guard = _guard_with_spend()
     guard.enable_sync(api_key="floe_abc")
-    with mock.patch("urllib.request.urlopen", return_value=_ok({"synced": 1})) as urlopen:
+    with mock.patch("floe_guard.sync._OPENER.open", return_value=_ok({"synced": 1})) as urlopen:
         assert guard.sync() == 1
     request = urlopen.call_args.args[0]
     assert request.get_header("Authorization") == "Bearer floe_abc"
@@ -99,7 +102,7 @@ def test_sync_posts_export_log_under_key() -> None:
 
 def test_sync_requires_enable_first_no_network() -> None:
     guard = _guard_with_spend()
-    with mock.patch("urllib.request.urlopen") as urlopen:
+    with mock.patch("floe_guard.sync._OPENER.open") as urlopen:
         with pytest.raises(RuntimeError, match="enable_sync"):
             guard.sync()
     urlopen.assert_not_called()
@@ -110,14 +113,14 @@ def test_sync_requires_enable_first_no_network() -> None:
 
 def test_push_ledger_missing_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FLOE_API_KEY", raising=False)
-    with mock.patch("urllib.request.urlopen") as urlopen:
+    with mock.patch("floe_guard.sync._OPENER.open") as urlopen:
         with pytest.raises(LedgerSyncError, match="No Floe API key"):
-            push_ledger('{"cost_usd":0.01}\n')
+            push_ledger(_ONE_EVENT)
     urlopen.assert_not_called()
 
 
 def test_push_ledger_empty_is_noop_no_network() -> None:
-    with mock.patch("urllib.request.urlopen") as urlopen:
+    with mock.patch("floe_guard.sync._OPENER.open") as urlopen:
         assert push_ledger("   ") == 0
     urlopen.assert_not_called()
 
@@ -128,9 +131,9 @@ def test_push_ledger_empty_is_noop_no_network() -> None:
 )
 def test_push_ledger_refuses_non_https(bad_base: str) -> None:
     # The request carries the key AND the ledger — never over a non-https/bad URL.
-    with mock.patch("urllib.request.urlopen") as urlopen:
+    with mock.patch("floe_guard.sync._OPENER.open") as urlopen:
         with pytest.raises(LedgerSyncError, match="https"):
-            push_ledger('{"cost_usd":0.01}\n', api_key="floe_abc", base_url=bad_base)
+            push_ledger(_ONE_EVENT, api_key="floe_abc", base_url=bad_base)
     urlopen.assert_not_called()
 
 
@@ -143,9 +146,9 @@ def test_push_ledger_http_error_raises(code: int, needle: str) -> None:
         None,  # type: ignore[arg-type]
         io.BytesIO(b'{"error":"x"}'),
     )
-    with mock.patch("urllib.request.urlopen", side_effect=err):
+    with mock.patch("floe_guard.sync._OPENER.open", side_effect=err):
         with pytest.raises(LedgerSyncError, match=needle):
-            push_ledger('{"cost_usd":0.01}\n', api_key="floe_abc")
+            push_ledger(_ONE_EVENT, api_key="floe_abc")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -159,7 +162,7 @@ def test_cli_push_reads_file_and_posts(tmp_path) -> None:  # type: ignore[no-unt
         '{"timestamp":1.0,"kind":"tool","model_or_tool":"api",'
         '"prompt_tokens":null,"completion_tokens":null,"cost_usd":0.05}\n'
     )
-    with mock.patch("urllib.request.urlopen", return_value=_ok({"synced": 1})) as urlopen:
+    with mock.patch("floe_guard.sync._OPENER.open", return_value=_ok({"synced": 1})) as urlopen:
         rc = main(["push", str(ledger), "--key", "floe_abc"])
     assert rc == 0
     assert urlopen.call_args.args[0].get_header("Authorization") == "Bearer floe_abc"
@@ -171,7 +174,82 @@ def test_cli_push_no_key_returns_1_no_network(tmp_path, monkeypatch: pytest.Monk
     monkeypatch.delenv("FLOE_API_KEY", raising=False)
     ledger = tmp_path / "ledger.jsonl"
     ledger.write_text('{"timestamp":1.0,"kind":"tool","model_or_tool":"api","cost_usd":0.05}\n')
-    with mock.patch("urllib.request.urlopen") as urlopen:
+    with mock.patch("floe_guard.sync._OPENER.open") as urlopen:
         rc = main(["push", str(ledger)])  # non-empty ledger, no key → LedgerSyncError → rc 1
     assert rc == 1
     urlopen.assert_not_called()
+
+
+# ── privacy contract enforced: validate every record before upload ────────────
+
+
+def test_push_ledger_rejects_smuggled_field_no_network() -> None:
+    # A non-schema field (e.g. a prompt) is refused BEFORE any network — the
+    # privacy contract is enforced, not just documented.
+    bad = (
+        '{"timestamp":1.0,"kind":"tool","model_or_tool":"api","cost_usd":0.01,"prompt":"secret"}\n'
+    )
+    with mock.patch("floe_guard.sync._OPENER.open") as opener:
+        with pytest.raises(LedgerSyncError, match="outside the export_log"):
+            push_ledger(bad, api_key="floe_abc")
+    opener.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "bad_line",
+    [
+        '{"kind":"tool","model_or_tool":"api","cost_usd":0.01}',  # missing timestamp
+        '{"timestamp":1.0,"kind":"bogus","model_or_tool":"api","cost_usd":0.01}',  # bad kind
+        '{"timestamp":1.0,"kind":"tool","model_or_tool":"api","cost_usd":-1}',  # negative cost
+        '{"timestamp":1.0,"kind":"tool","model_or_tool":"api","cost_usd":"x"}',  # non-numeric cost
+        '{"timestamp":1.0,"kind":"tool","model_or_tool":123,"cost_usd":0.01}',  # non-str model
+        "not json at all",  # malformed
+    ],
+)
+def test_push_ledger_rejects_bad_schema_no_network(bad_line: str) -> None:
+    with mock.patch("floe_guard.sync._OPENER.open") as opener:
+        with pytest.raises(LedgerSyncError):
+            push_ledger(bad_line + "\n", api_key="floe_abc")
+    opener.assert_not_called()
+
+
+def test_no_redirect_handler_refuses() -> None:
+    # urllib would re-send the key + ledger across a redirect; the handler refuses.
+    from floe_guard.sync import _NoRedirect
+
+    with pytest.raises(LedgerSyncError, match="redirect"):
+        _NoRedirect().redirect_request(None, None, 302, "Found", {}, "https://evil.example.com/x")
+
+
+# ── response count validation ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("bad_synced", [-1, True, "5", 1.9])
+def test_invalid_synced_count_raises(bad_synced: object) -> None:
+    guard = _guard_with_spend()
+    guard.enable_sync(api_key="floe_abc")
+    with mock.patch("floe_guard.sync._OPENER.open", return_value=_ok({"synced": bad_synced})):
+        with pytest.raises(LedgerSyncError, match="Invalid 'synced'"):
+            guard.sync()
+
+
+def test_synced_absent_returns_zero() -> None:
+    guard = _guard_with_spend()
+    guard.enable_sync(api_key="floe_abc")
+    with mock.patch("floe_guard.sync._OPENER.open", return_value=_ok({"duplicates": 1})):
+        assert guard.sync() == 0
+
+
+# ── concurrency: sync uses the snapshotted key, not an env fallback ───────────
+
+
+def test_sync_uses_snapshotted_key_not_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Even with a different key in the env, sync() sends the key it was enabled
+    # with (snapshotted under the lock) — a concurrent disable can't cause an
+    # env-fallback send.
+    monkeypatch.setenv("FLOE_API_KEY", "floe_env_MUST_NOT_be_used")
+    guard = _guard_with_spend()
+    guard.enable_sync(api_key="floe_explicit")
+    with mock.patch("floe_guard.sync._OPENER.open", return_value=_ok({"synced": 1})) as opener:
+        guard.sync()
+    assert opener.call_args.args[0].get_header("Authorization") == "Bearer floe_explicit"
