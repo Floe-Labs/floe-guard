@@ -42,6 +42,7 @@ from typing import Literal, NoReturn
 
 from .errors import (
     BudgetExceeded,
+    HostedEnforcementError,
     TokenBudgetExceeded,
     UnpriceableModelError,
     UnpriceableModelWarning,
@@ -169,6 +170,11 @@ class BudgetAdvisory:
     # one. None when no step is active or the dimension is uncapped.
     step_remaining_usd: float | None = None
     step_remaining_tokens: int | None = None
+    # Spend rate in USD per minute over this guard's lifetime (spent_usd ÷ minutes
+    # since the guard was created) — the number voice teams watch. None only when
+    # no wall-clock time has elapsed yet. Make one guard per call/turn for a
+    # per-call burn rate; a long-lived guard reports the session average.
+    burn_rate_usd_per_min: float | None = None
 
 
 @dataclass(frozen=True)
@@ -329,6 +335,14 @@ class BudgetGuard:
         self.fail_closed = fail_closed
         self._on_block = on_block or _default_on_block
         self.near_limit_bps = near_limit_bps
+        # Wall-clock start of this guard's spend window, for the $/min burn rate
+        # (advisory().burn_rate_usd_per_min). One guard per call/turn ⇒ per-call rate.
+        self._created_time = time.time()
+        # Opt-in ledger sync — OFF by default (zero-telemetry). No key is stored and
+        # nothing is ever sent until enable_sync() is called; see enable_sync()/sync().
+        self._sync_enabled = False
+        self._sync_key: str | None = None
+        self._sync_base: str | None = None
         self.spent_usd = 0.0
         # Costs of the most recent priced LLM call and tool call, tracked
         # SEPARATELY: the default next-call prediction is the max of the two, so
@@ -363,6 +377,89 @@ class BudgetGuard:
         if self._store is not None:
             with self._lock:
                 self._refresh_persistent_state_locked()
+
+    # ── hosted upgrade ────────────────────────────────────────────────────────
+
+    @classmethod
+    def from_floe(
+        cls,
+        api_key: str | None = None,
+        *,
+        base_url: str | None = None,
+        fallback_limit_usd: float | None = None,
+        timeout: float = 10.0,
+        **guard_kwargs: object,
+    ) -> BudgetGuard:
+        """Build a guard whose local ceiling is set from your hosted Floe headroom.
+
+        The one-line upgrade from a hand-picked ``limit_usd`` to a ceiling that
+        tracks server-side headroom: reads
+        :func:`~floe_guard.hosted.hosted_remaining_usd` once (the **minimum** of
+        auto-borrow headroom and session spend remaining) and constructs a
+        :class:`BudgetGuard` with that number as ``limit_usd``. Everything else —
+        ``check`` / ``record`` / ``reserve`` / ``advisory`` — is unchanged.
+
+        Budget, not balance. The hosted read is a *headroom / budget* signal, not
+        an account balance, and this guard still enforces **locally**. Hosted Floe
+        remains the source of truth for the un-bypassable, cross-vendor cap; the
+        local ceiling is a fresh per-process budget bounded by what the server
+        currently allows.
+
+        Refresh policy: headroom is read **once, at construction**. It moves as you
+        borrow/repay, so to re-read later either call ``from_floe`` again or set
+        ``guard.limit_usd = hosted_remaining_usd(api_key)`` on a schedule you own.
+
+        Zero-telemetry invariant: no network call happens unless a key is supplied
+        (via ``api_key=`` or ``FLOE_API_KEY``). With no key the hosted read raises
+        before touching the network.
+
+        Fail-closed: a failed hosted read (missing/invalid key, 401/403/404,
+        network/timeout) raises
+        :class:`~floe_guard.errors.HostedEnforcementError` — the guard is *not*
+        silently built with an unknown or unbounded ceiling. Pass
+        ``fallback_limit_usd`` to instead degrade to a known local ceiling (with a
+        loud warning), so a transient blip falls back to local enforcement rather
+        than crashing the agent.
+
+        Args:
+            api_key: Floe agent key (``floe_<hex>``). Defaults to ``FLOE_API_KEY``.
+            base_url: API base. Defaults to ``FLOE_API_BASE_URL``, else production.
+            fallback_limit_usd: local ceiling to use if the hosted read fails.
+                ``None`` (default) re-raises the error (fail closed).
+            timeout: socket timeout for the hosted read, in seconds.
+            **guard_kwargs: any other :class:`BudgetGuard` option (``fail_closed``,
+                ``on_block``, ``near_limit_bps``, ``price_overrides``,
+                ``token_limit``, ``window`` / ``store``, …). ``limit_usd`` is
+                derived from headroom and must not be passed here.
+
+        Raises:
+            HostedEnforcementError: the hosted read failed and no
+                ``fallback_limit_usd`` was given.
+            TypeError: ``limit_usd`` was passed in ``guard_kwargs``.
+        """
+        if "limit_usd" in guard_kwargs:
+            raise TypeError(
+                "from_floe derives limit_usd from hosted headroom; pass "
+                "fallback_limit_usd= for the offline fallback instead."
+            )
+        # Local import: hosted.py is a leaf module, but importing it at the top of
+        # guard.py would couple the core guard to the network client for no gain.
+        from .hosted import hosted_remaining_usd
+
+        try:
+            ceiling = hosted_remaining_usd(api_key, base_url=base_url, timeout=timeout)
+        except HostedEnforcementError:
+            if fallback_limit_usd is None:
+                raise
+            fallback = float(fallback_limit_usd)
+            warnings.warn(
+                "floe-guard: could not read hosted Floe headroom; falling back to "
+                f"a local ceiling of ${fallback:.2f}. Enforcement is local-only "
+                "until the hosted read succeeds.",
+                stacklevel=2,
+            )
+            ceiling = fallback
+        return cls(limit_usd=ceiling, **guard_kwargs)  # type: ignore[arg-type]
 
     # ── enforcement ───────────────────────────────────────────────────────────
 
@@ -827,11 +924,90 @@ class BudgetGuard:
             for event in self.spend_log
         )
 
+    def enable_sync(self, api_key: str | None = None, *, base_url: str | None = None) -> None:
+        """**Opt in** to pushing this guard's ledger to Floe's Reconcile Mode.
+
+        Off by default — this is the *only* way to turn sync on, and it turns on
+        nothing else: it stores your key/endpoint and does **not** send. Nothing
+        leaves the process until you call :meth:`sync` (or ``floe-guard push``).
+        Zero-telemetry stays the default; there is no background send.
+
+        Why: Floe's gateway can't see spend it never routed (BYOK, self-hosted,
+        off-path). Syncing your local ledger is what makes that spend — and your
+        **Coverage Score** — visible. Budget, not balance: it reports what you
+        already spent for coverage/attribution; it moves no money.
+
+        What will leave the process when you call :meth:`sync`: exactly the
+        :meth:`export_log` JSONL (priced spend events — no prompts, no content, no
+        identifiers beyond a ``label`` you set).
+
+        Args:
+            api_key: Floe agent key (``floe_<hex>``, ``read_write``). Defaults to
+                the ``FLOE_API_KEY`` env var at :meth:`sync` time.
+            base_url: API base. Defaults to ``FLOE_API_BASE_URL``, else production.
+
+        Revoke: :meth:`disable_sync` turns it back off; the guard sends nothing after.
+        """
+        with self._lock:
+            self._sync_enabled = True
+            self._sync_key = api_key
+            self._sync_base = base_url
+
+    def disable_sync(self) -> None:
+        """Turn ledger sync back off (revoke the opt-in). The guard sends nothing
+        after this; :meth:`sync` will raise until :meth:`enable_sync` is called again.
+
+        Thread-safe against a concurrent :meth:`sync`: once this returns, no new
+        upload can start (a ``sync`` that already snapshotted the key while enabled
+        may finish, but one starting after sees the revoked state and raises).
+        """
+        with self._lock:
+            self._sync_enabled = False
+            self._sync_key = None
+            self._sync_base = None
+
+    def sync(self) -> int:
+        """Push the current spend ledger to Reconcile Mode; return events accepted.
+
+        Requires :meth:`enable_sync` first — this is the explicit send, the only
+        thing that transmits the ledger. Raises if sync isn't enabled (so a guard
+        that never opted in can never send). An empty ledger is a no-op (``0``, no
+        network). Re-syncing is safe: the server is idempotent, so already-ingested
+        events are not double-counted.
+
+        Raises:
+            RuntimeError: sync was not enabled (call :meth:`enable_sync` first).
+            LedgerSyncError: the opt-in send failed (missing key, non-2xx, network).
+        """
+        # Snapshot opt-in state + key atomically: a concurrent disable_sync() can't
+        # clear the key mid-call (which would silently fall back to $FLOE_API_KEY) or
+        # let an upload start after revocation. A disable happens-before (we raise) or
+        # happens-after (we send the key we snapshotted while still enabled).
+        with self._lock:
+            if not self._sync_enabled:
+                raise RuntimeError(
+                    "ledger sync is not enabled — call guard.enable_sync(api_key=…) "
+                    "first. Sync is opt-in and off by default (zero-telemetry)."
+                )
+            key, base = self._sync_key, self._sync_base
+        from .sync import push_ledger
+
+        return push_ledger(self.export_log(), key, base_url=base)
+
     @contextmanager
     def step(
         self, *, max_usd: float | None = None, max_tokens: int | None = None
     ) -> Iterator[BudgetGuard]:
-        """Scope a per-step USD and/or token cap for a **sequential agent loop**.
+        """Scope a per-step USD and/or token cap — the **per-call budget** primitive.
+
+        Voice budgets are per-*call*, not per-day: wrap one call (or one turn) in a
+        ``step`` to cap that call independently of the guard's aggregate ceiling.
+        The step's headroom is ``advisory().step_remaining_usd``, and
+        ``advisory().est_calls_remaining`` reports how many more calls the budget
+        buys at the current per-call estimate::
+
+            with guard.step(max_usd=0.05) as call:    # this call's own $0.05 cap
+                call.check(); call.record("gpt-4o", ...)
 
         Push a step onto the guard's stack on enter, pop it on exit; the
         enforcement/accrual path honours the innermost active step *on top of*
@@ -926,6 +1102,11 @@ class BudgetGuard:
         # +1e-9 absorbs float noise so e.g. 0.6/0.2 floors to 3 not 2 (same
         # epsilon rationale as used_bps above, and keeps JS Math.floor parity).
         est_calls_remaining = int(remaining / expected_cost + 1e-9) if expected_cost > 0.0 else None
+        # Burn rate: spend ÷ minutes elapsed since the guard was created. None until
+        # any wall-clock time has passed (avoids a divide-by-zero at t0); $0 spent
+        # over real elapsed time is a legitimate 0.0/min, not None.
+        elapsed_min = (time.time() - self._created_time) / 60.0
+        burn_rate_usd_per_min = spent_usd / elapsed_min if elapsed_min > 0.0 else None
         # Aggregate token utilization, mirroring used_bps. None (no signal) when
         # the token dimension is unset — an aggregate-only USD guard is unchanged.
         token_used_bps: int | None = None
@@ -977,6 +1158,7 @@ class BudgetGuard:
             remaining_tokens=remaining_tokens,
             step_remaining_usd=step_remaining_usd,
             step_remaining_tokens=step_remaining_tokens,
+            burn_rate_usd_per_min=burn_rate_usd_per_min,
         )
 
     # ── internals ──────────────────────────────────────────────────────────────

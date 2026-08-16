@@ -1,17 +1,29 @@
+# hatchling is capped below 1.32 on purpose: 1.32.0 bumped the emitted
+# core-metadata to `Metadata-Version: 2.5`, which the pinned
+# pypa/gh-action-pypi-publish@v1.14.0 (twine 6.1.0 + packaging 25.0) rejects
+# with "InvalidDistribution: '2.5' is not a valid metadata version". 1.31.0 is
+# the last release that emits 2.4, which both twine and PyPI accept. This is
+# why PyPI froze at 0.13.0 (Aug 6) while the repo moved to 0.16.x.
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling<1.32"]
 build-backend = "hatchling.build"
 
 [project]
 name = "floe-guard"
-version = "0.13.0"
+version = "0.17.0"
 description = "Local budget guardrail for AI agents — hard-stops a runaway loop before its next LLM call crosses a spend ceiling. No account, no network."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Floe Labs" }]
-keywords = ["llm", "agents", "budget", "guardrail", "crewai", "litellm", "langchain", "langgraph", "cost", "openai", "anthropic", "gemini"]
+keywords = ["llm", "agents", "budget", "guardrail", "crewai", "litellm", "langchain", "langgraph", "cost", "openai", "anthropic", "gemini", "voice", "stt", "tts", "livekit", "deepgram", "elevenlabs", "twilio"]
 classifiers = [
+    # Kept at Beta for 0.17.0 (decided 2026-08): the README's "Honest about what
+    # this is" caveats — estimate-based enforcement, cold-start concurrency not
+    # bounding the first parallel wave, cross-process persistence needing a shared
+    # SQLite file with reliable locking (not serverless-safe), and approximate
+    # stream cut-offs — are load-bearing limits. "5 - Production/Stable" would
+    # overclaim maturity. Revisit once those are closed or clearly acceptable.
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
@@ -34,6 +46,9 @@ gemini = ["google-genai>=1.0"]
 pipecat = ["pipecat-ai>=1.0"]
 livekit = ["livekit-agents>=1.0"]
 dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
+
+[project.scripts]
+floe-guard = "floe_guard.__main__:main"
 
 [project.urls]
 Homepage = "https://floelabs.xyz"

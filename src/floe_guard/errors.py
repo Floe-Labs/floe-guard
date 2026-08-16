@@ -93,6 +93,30 @@ class UnpriceableModelError(FloeGuardError):
         )
 
 
+class UnpriceableVoiceError(FloeGuardError):
+    """Raised when a voice leg (STT/TTS/telephony) cannot be priced and the guard
+    is fail-closed.
+
+    The voice twin of :class:`UnpriceableModelError`: we refuse rather than
+    silently accrue $0 — "we cannot cap what we cannot price". It fires when an
+    adapter is asked to meter a leg for a vendor that is absent from the bundled
+    voice cost map (or whose entry has the wrong unit/mode for the leg) and no
+    per-unit override was given. Pass a per-unit rate
+    (``stt_usd_per_second`` / ``tts_usd_per_1k_chars`` /
+    ``telephony_usd_per_minute``) to make the leg enforceable.
+    """
+
+    def __init__(self, vendor: str | None, mode: str) -> None:
+        self.vendor = vendor
+        self.mode = mode
+        super().__init__(
+            f"Cannot price {mode} vendor {vendor!r}: not in the bundled voice cost "
+            f"map (or its entry has the wrong unit for a {mode} leg) and no per-unit "
+            f"override was given. The guard cannot enforce a budget on spend it "
+            f"cannot measure. Pass a per-unit rate to enable enforcement."
+        )
+
+
 class HostedEnforcementError(FloeGuardError):
     """Raised when a read against the hosted Floe budget endpoint fails.
 
@@ -100,6 +124,17 @@ class HostedEnforcementError(FloeGuardError):
     closed/suspended, 404 agent not provisioned), a network/timeout failure, or a
     malformed response body. The message states plainly what went wrong — this
     client only *reads* server-side remaining budget; it does not enforce.
+    """
+
+
+class LedgerSyncError(FloeGuardError):
+    """Raised when an **opt-in** ledger sync to Reconcile Mode fails.
+
+    Covers a missing API key, a non-2xx response (401 bad/missing key, 403 agent
+    closed/suspended), a network/timeout failure, or a malformed response. Sync is
+    off by default and only runs when the caller explicitly opts in
+    (:meth:`~floe_guard.BudgetGuard.enable_sync` / ``floe-guard push``) — this error
+    never fires for a guard that hasn't opted in, because such a guard never sends.
     """
 
 

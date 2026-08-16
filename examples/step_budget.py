@@ -29,7 +29,8 @@ def main() -> None:
         adv = g.advisory()
         print(
             f"step 1 (plan): used {adv.step_remaining_tokens} tokens of headroom left, "
-            f"near_limit={adv.near_limit}"
+            f"near_limit={adv.near_limit}",
+            flush=True,
         )
 
     # Step 2 — retrieval: a 5_000-token cap, and a call that would blow it.
@@ -37,21 +38,27 @@ def main() -> None:
         with guard.step(max_tokens=5_000) as g:
             g.record(MODEL, 3_000, 1_500)  # 4_500 into the step
             g.check(estimated_tokens=1_000)  # 4_500 + 1_000 > 5_000 → blocked
-            print("step 2: this line should not print")
+            print("step 2: this line should not print", flush=True)
     except TokenBudgetExceeded as exc:
-        print(f"step 2 (retrieve): hard-stopped at the step cap — {exc} (scope={exc.scope})")
+        print(
+            f"step 2 (retrieve): hard-stopped at the step cap — {exc} (scope={exc.scope})",
+            flush=True,
+        )
 
     # The blocked call consumed no tokens, but Step 2's already-recorded 4,500
     # tokens still count against the global ceiling — the step cap stopped the
     # overshoot, not the run, so the loop keeps going.
-    print(f"global tokens spent so far: {guard.spent_tokens} / {guard.token_limit}")
+    print(f"global tokens spent so far: {guard.spent_tokens} / {guard.token_limit}", flush=True)
 
     # Step 3 — synthesis: fits comfortably.
     with guard.step(max_tokens=3_000) as g:
         g.record(MODEL, 1_000, 800)
-        print(f"step 3 (synthesize): done, {g.advisory().step_remaining_tokens} step tokens left")
+        print(
+            f"step 3 (synthesize): done, {g.advisory().step_remaining_tokens} step tokens left",
+            flush=True,
+        )
 
-    print(f"run complete — {guard.spent_tokens} total tokens across all steps")
+    print(f"run complete — {guard.spent_tokens} total tokens across all steps", flush=True)
 
 
 if __name__ == "__main__":

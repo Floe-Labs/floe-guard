@@ -24,6 +24,7 @@
  */
 
 import { BudgetExceeded, TokenBudgetExceeded, UnpriceableModelError } from "./errors.js";
+import { pushLedger } from "./sync.js";
 import {
   type ManualPrice,
   priceTokens,
@@ -187,11 +188,25 @@ export interface BudgetAdvisory {
    */
   stepRemainingUsd?: number | null;
   stepRemainingTokens?: number | null;
+  /**
+   * Spend rate in USD per minute over this guard's lifetime (spentUsd ÷ minutes
+   * since the guard was created) — the number voice teams watch. null only when no
+   * wall-clock time has elapsed yet. Make one guard per call/turn for a per-call
+   * burn rate; a long-lived guard reports the session average. Optional for the
+   * same additive reason as the fields above; `advisory()` always sets it.
+   */
+  burnRateUsdPerMin?: number | null;
 }
 
 export class BudgetGuard {
   readonly limitUsd: number;
   spentUsd = 0;
+  /**
+   * Wall-clock start (ms since epoch) of this guard's spend window, for the $/min
+   * burn rate (advisory().burnRateUsdPerMin). One guard per call/turn ⇒ a per-call
+   * rate. Set at construction; tests set it directly to control elapsed time.
+   */
+  createdAtMs = Date.now();
   priceOverrides?: Record<string, ManualPrice>;
   failClosed: boolean;
   nearLimitBps: number;
@@ -225,6 +240,14 @@ export class BudgetGuard {
    * plain data instead of mutating the object's prototype.
    */
   private readonly toolCostTotals: Record<string, number> = Object.create(null);
+
+  /**
+   * Opt-in ledger sync — OFF by default (zero-telemetry). No key is stored and
+   * nothing is ever sent until enableSync() is called; see enableSync()/sync().
+   */
+  private syncEnabled = false;
+  private syncKey: string | null = null;
+  private syncBase: string | null = null;
 
   /**
    * @param limitUsd the spend ceiling, in USD. `0` blocks the very first call.
@@ -609,6 +632,76 @@ export class BudgetGuard {
   }
 
   /**
+   * **Opt in** to pushing this guard's ledger to Floe's Reconcile Mode.
+   *
+   * Off by default — this is the *only* way to turn sync on, and it turns on
+   * nothing else: it stores your key/endpoint and does **not** send. Nothing
+   * leaves the process until you call {@link BudgetGuard.sync}. Zero-telemetry
+   * stays the default; there is no background send.
+   *
+   * Why: Floe's gateway can't see spend it never routed (BYOK, self-hosted,
+   * off-path). Syncing your local ledger is what makes that spend — and your
+   * **Coverage Score** — visible. Budget, not balance: it reports what you already
+   * spent for coverage/attribution; it moves no money.
+   *
+   * What will leave the process when you call {@link BudgetGuard.sync}: exactly the
+   * {@link BudgetGuard.exportLog} JSONL (priced spend events — no prompts, no
+   * content, no identifiers beyond a `label` you set).
+   *
+   * @param apiKey Floe agent key (`floe_<hex>`, `read_write`). Defaults to the
+   *   `FLOE_API_KEY` env var at `sync()` time.
+   * @param options.baseUrl API base. Defaults to `FLOE_API_BASE_URL`, else prod.
+   *
+   * Revoke with {@link BudgetGuard.disableSync}; the guard sends nothing after.
+   */
+  enableSync(apiKey?: string, options: { baseUrl?: string } = {}): void {
+    this.syncEnabled = true;
+    this.syncKey = apiKey ?? null;
+    this.syncBase = options.baseUrl ?? null;
+  }
+
+  /**
+   * Turn ledger sync back off (revoke the opt-in). The guard sends nothing after
+   * this; {@link BudgetGuard.sync} throws until {@link BudgetGuard.enableSync} is
+   * called again.
+   */
+  disableSync(): void {
+    this.syncEnabled = false;
+    this.syncKey = null;
+    this.syncBase = null;
+  }
+
+  /**
+   * Push the current spend ledger to Reconcile Mode; resolve with events accepted.
+   *
+   * Requires {@link BudgetGuard.enableSync} first — this is the explicit send, the
+   * only thing that transmits the ledger. Throws if sync isn't enabled (so a guard
+   * that never opted in can never send). An empty ledger is a no-op (`0`, no
+   * network). Re-syncing is safe: the server is idempotent, so already-ingested
+   * events are not double-counted.
+   *
+   * @throws {Error} sync was not enabled (call {@link BudgetGuard.enableSync} first).
+   * @throws {LedgerSyncError} the opt-in send failed (missing key, non-2xx, network).
+   */
+  async sync(): Promise<number> {
+    // Snapshot opt-in state + key/base synchronously, before any await: a
+    // disableSync() interleaved on a later microtask can't clear the key mid-call
+    // (which would silently fall back to $FLOE_API_KEY) or let an upload start
+    // after revocation. A disable happens-before (we throw) or happens-after (we
+    // send the key we captured while still enabled).
+    const enabled = this.syncEnabled;
+    const key = this.syncKey;
+    const base = this.syncBase;
+    if (!enabled) {
+      throw new Error(
+        "ledger sync is not enabled — call guard.enableSync(apiKey) first. " +
+          "Sync is opt-in and off by default (zero-telemetry).",
+      );
+    }
+    return pushLedger(this.exportLog(), key ?? undefined, { baseUrl: base ?? undefined });
+  }
+
+  /**
    * The default next-call prediction when the caller supplies no estimate.
    * Conservative: the costlier of the last LLM call and the last tool call — a
    * mixed loop predicts the pricier kind, which at worst blocks one call early
@@ -861,6 +954,11 @@ export class BudgetGuard {
     // rationale as usedBps above, and keeps Python int() parity).
     const estCallsRemaining =
       expectedCost > 0 ? Math.floor(remainingUsd / expectedCost + 1e-9) : null;
+    // Burn rate: spend ÷ minutes elapsed since the guard was created. null until
+    // any wall-clock time has passed (avoids a divide-by-zero at t0); $0 spent over
+    // real elapsed time is a legitimate 0/min, not null.
+    const elapsedMin = (Date.now() - this.createdAtMs) / 60000;
+    const burnRateUsdPerMin = elapsedMin > 0 ? this.spentUsd / elapsedMin : null;
     // Aggregate token utilization, mirroring usedBps. null (no signal) when the
     // token dimension is unset — a pure USD guard's advisory is unchanged.
     let tokenUsedBps: number | null = null;
@@ -922,6 +1020,7 @@ export class BudgetGuard {
       remainingTokens,
       stepRemainingUsd,
       stepRemainingTokens,
+      burnRateUsdPerMin,
     };
   }
 }

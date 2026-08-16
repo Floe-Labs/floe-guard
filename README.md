@@ -7,22 +7,54 @@
 [![CI](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**A local budget guardrail for AI agents.** It hard-stops your agent *before its
-next LLM or paid tool call* when it would cross a spend ceiling — tokens and
-tool calls under **one local ceiling**, so a runaway loop dies at $0.10 instead
-of $4,000. No account, no signup, no network, **no telemetry**. Runs in your
-process.
+**The spend meter and budget gate for AI voice agents — and any LLM agent.**
+floe-guard meters the whole call — STT + LLM + TTS + telephony — from a bundled
+cost map (name each leg's vendor; no manual rates), and hard-stops the next turn
+or call *before* it crosses your spend ceiling: **per-turn enforcement for
+[Pipecat](#pipecat-voice) and [LiveKit](#livekit-voice)**, and a hard stop for
+runaway LLM loops — a loop dies at $0.10 instead of $4,000; an over-budget call
+is rejected at the door. Local, in your process. No account, no signup, no
+network, **no telemetry**.
 
-Works with [CrewAI](#crewai) · [LiteLLM](#litellm) · [LangChain](#langchain) ·
-[LangGraph](#langgraph) · [OpenAI](#openai) · [Anthropic](#anthropic) ·
-[Gemini](#google-gemini) · [Vercel AI SDK](#vercel-ai-sdk) — and voice pipelines
-via [Pipecat](#pipecat-voice) · [LiveKit](#livekit-voice) — or any stack, via
-plain `check()` / `record()`. See the [adapter matrix](#adapter-matrix) for what
-ships in Python vs TypeScript.
+**Voice:** [Pipecat](#pipecat-voice) · [LiveKit](#livekit-voice) (Python) ·
+LiveKit · Vapi · Retell ([TypeScript](#typescript-voice-adapters)) — reserve
+before each turn, settle on real usage, so a turn that would cross the ceiling
+never starts — plus [pre-call admission gates](#voice-admission-gates-pre-call)
+that speak each orchestrator's inbound webhook shape. **Any agent:** [CrewAI](#crewai) · [LiteLLM](#litellm) ·
+[LangChain](#langchain) · [LangGraph](#langgraph) · [OpenAI](#openai) ·
+[Anthropic](#anthropic) · [Gemini](#google-gemini) · [Vercel AI SDK](#vercel-ai-sdk)
+— or any stack, via plain `check()` / `record()`. See the
+[adapter matrix](#adapter-matrix) for what ships in Python vs TypeScript.
 The hard-stop is contract-based: gate each call through the guard — adapters do
 it for LLM calls; for paid tools, [`reserve_tool()` / `settle_tool()`](#tool-spend-under-the-same-ceiling)
 block *before* the call runs (`record_tool()` alone meters a call after the
 fact — it can't stop one already made).
+
+## What's inside
+
+floe-guard grows from a one-line local ceiling to fleet-wide coverage — take only
+the depth you need:
+
+- **Stop a runaway loop** — the [hard stop](#how-it-works) before the next call
+  (`check()` / `record()`), or a [framework adapter](#framework-adapters-optional-extras)
+  for OpenAI / Anthropic / Gemini / CrewAI / LangChain / LangGraph / LiteLLM /
+  Vercel AI SDK.
+- **Guard a voice call** — per-turn [voice adapters](#voice-adapters-stt--llm--tts)
+  (Pipecat + LiveKit in Python; LiveKit, Vapi, Retell in TypeScript) that price
+  STT + LLM + TTS + telephony, and
+  [pre-call admission gates](#voice-admission-gates-pre-call) that reject an
+  over-budget call at the door.
+- **Adapt before the cap** — [`advisory()`](#context-aware-budgeting) (near-limit
+  flag + `$/min` burn rate) to taper, plus
+  [token / step](#token-ceilings-and-per-step-budgets) and
+  [latency](#latencybudget--deadlines-the-same-way) budgets.
+- **Upgrade to hosted** — [`from_floe()`](#one-line-to-hosted) reads your
+  server-side budget headroom into the local ceiling, one line.
+- **Feed Coverage Score** — [opt-in ledger sync](#sync-your-ledger-for-coverage-score-opt-in)
+  pushes off-path (BYOK / self-hosted) spend so it counts. Off by default.
+
+Everything above is **local, no account, [no telemetry](#no-telemetry)** — unless
+you explicitly opt into a hosted read or a ledger sync.
 
 ## Works best with the Floe skill
 
@@ -33,6 +65,10 @@ npx skills add floe-labs/agent-skills
 ```
 
 [Floe agent skill →](https://github.com/Floe-Labs/agent-skills) · [Docs →](https://floe-labs.gitbook.io/docs/getting-started/claude-code-skill)
+
+> **AI agents:** this repo self-onboards — [`AGENTS.md`](AGENTS.md) (install → wire → verify),
+> [`SKILL.md`](SKILL.md), and [`llms.txt`](llms.txt) let a coding agent add and wire the
+> guard unattended.
 
 ```bash
 pip install floe-guard        # Python
@@ -70,6 +106,59 @@ python examples/runaway_loop.py
 This rigs a loop against a **stub LLM** — no real API key, no account, no network.
 It prices each fake `gpt-4o` call offline and the guard halts the loop after a few
 iterations. This is the reproducible "stop the loop" demo.
+
+## What did that call cost?
+
+The other demo — one voice call, every leg priced from the bundled map, no
+manual rates, no API key, no network:
+
+```bash
+pip install "floe-guard[livekit]"     # the demo imports livekit-agents
+python examples/voice_call_cost_livekit.py
+```
+
+```text
+Per-leg call cost (all priced from the bundled cost map, no manual rates):
+  livekit-stt          $0.001027   # 8s  × ($0.0077/min ÷ 60)   Deepgram Nova-3
+  gpt-4o               $0.003700   # 600 in / 220 out tokens    LLM
+  livekit-tts          $0.009000   # 180 chars / 1k × $0.05     ElevenLabs Flash
+  livekit-telephony    $0.012750   # 1.5 min × $0.0085/min      Twilio US inbound
+  TOTAL                $0.026477
+```
+
+That's the answer a token-level tool can't give: it meters the LLM leg and
+misses the rest of the bill. Rates are a snapshot of public US list prices and
+drift — details, caveats, and the Pipecat version in
+[Voice adapters](#voice-adapters-stt--llm--tts).
+
+## One line to hosted
+
+Already on hosted Floe? Keep every line of your code — swap the constructor.
+`from_floe` reads your **server-side budget headroom** and uses it as the local
+ceiling, so the free→hosted upgrade is one line:
+
+```python
+from floe_guard import BudgetGuard
+
+guard = BudgetGuard.from_floe(api_key="floe_…")   # ceiling = your hosted headroom
+guard.check()                                     # everything else is unchanged
+response = call_your_llm(...)
+guard.record("gpt-4o", response.usage.prompt_tokens, response.usage.completion_tokens)
+```
+
+Budget, not balance: the read is a *headroom* signal and enforcement stays
+**local** — [hosted Floe](#when-you-outgrow-local-guardrails) remains the source
+of truth for the un-bypassable, cross-vendor cap. No key set → no network (the
+[zero-telemetry](#no-telemetry) invariant holds); a failed read fails closed
+(pass `fallback_limit_usd=` to degrade to a local ceiling instead).
+
+Your tapering logic carries over, too: local `advisory()` and hosted's
+`X-Floe-Budget-Advisory` header expose the same **near-limit signal**
+(`near_limit` + `used_bps` utilization), so the "near the cap? taper now"
+decision you branch on is the same. The wire shapes differ — the hosted header
+nests the tightest cap under `tightest` with raw-integer amounts, so field access
+is a light remap — but it answers that signal across *every* vendor and cap, not
+just the one you instrumented locally.
 
 ## Why floe-guard?
 
@@ -196,7 +285,10 @@ guard.record(model, response.usage.prompt_tokens, response.usage.completion_toke
 `remaining_usd`, and the budget totals. It also reports `expected_cost` (the
 guard's own next-call estimate) and `est_calls_remaining` (how many more calls
 the remaining budget buys, `None` until the first call is recorded) — call
-headroom, not just dollars. It's a **soft** signal — the model may
+headroom, not just dollars. For voice, it also reports `burn_rate_usd_per_min`
+(spend ÷ minutes since the guard was created — the $/min voice teams watch;
+make one guard per call/turn for a per-call rate, `None` before any time
+elapses). It's a **soft** signal — the model may
 ignore it; `check()` is what enforces the ceiling. See
 [`examples/budget_aware.py`](examples/budget_aware.py) for a runnable taper demo
 (no API key).
@@ -244,12 +336,12 @@ what "cheaper" means in `on_degrade`. TypeScript exposes the same pattern as
 `withBudgetRetry()`. See [`examples/budget_retry.py`](examples/budget_retry.py)
 for a no-network demo.
 
-This is the **same advisory shape** hosted Floe returns on every proxied call
-(the `X-Floe-Budget-Advisory` header), so the logic you write here ports
-unchanged — hosted just answers across *every* vendor and cap with server-truth
-balances and arbitrary rolling-window timing, which a local UTC-day budget can't
-know.
-The TS package exposes the identical `guard.advisory()`.
+The taper logic you just wrote carries over to hosted — the same near-limit
+signal (`near_limit` + `used_bps`), answered across *every* vendor and cap; the
+hosted `X-Floe-Budget-Advisory` header nests it under `tightest` with raw-integer
+amounts, so field access is a light remap. See
+[One line to hosted](#one-line-to-hosted). The TS package exposes the identical
+`guard.advisory()`.
 
 ## Per-call spend log
 
@@ -662,9 +754,51 @@ function wrapper, these adapters enforce **per turn** — reserve before the LLM
 call (so a turn is blocked *before* its TTS/audio spend piles on top of a call
 that would already cross the ceiling), settle on the real usage the pipeline
 reports, and release a turn that ends without ever reporting usage (an
-interrupted turn) so the reservation never leaks against the ceiling. The token
-cost map is LLM-only, so STT/TTS spend is metered only when you supply per-unit
-prices. Both voice adapters are **Python-only** today.
+interrupted turn) so the reservation never leaks against the ceiling. This
+section covers the **Python** Pipecat and LiveKit adapters; TypeScript ships
+native LiveKit / Vapi / Retell adapters too — see
+[TypeScript voice adapters](#typescript-voice-adapters).
+
+**The whole call is priced from the bundled map — no hand-typed rates.** Name each
+leg's vendor (`stt_model`, `tts_model`, `telephony`) and floe-guard prices the
+full call — STT (per second) + LLM (per token) + TTS (per 1k chars) + telephony
+(per minute) — from the vendored voice cost map, so it answers *"what did this
+call cost"* at the $0 tier out of the box. A per-unit override
+(`stt_usd_per_second` / `tts_usd_per_1k_chars` / `telephony_usd_per_minute`) still
+works and wins over the map; a leg with neither a vendor nor an override is left
+un-metered (the token-only contract), and a vendor the map cannot price **fails
+closed** (`UnpriceableVoiceError`) rather than metering it at a silent $0.
+
+> **Telephony is US-only in v1**, and every voice rate is a **drift-prone
+> snapshot** of each vendor's public list price — vendors change these more often
+> than the map is refreshed, so treat them as an estimate and re-verify against
+> the live pricing page before trusting a figure. The rates live under the
+> `"__voice__"` key of [`cost_map.json`](src/floe_guard/cost_map.json); refresh
+> them with [`scripts/update-cost-map.mjs`](scripts/update-cost-map.mjs). Seeded
+> vendors: Deepgram, AssemblyAI (STT); ElevenLabs, Cartesia Sonic, Rime (TTS);
+> Twilio, Cartesia Line (telephony). Telnyx is deferred pending a verified list
+> rate. Enforcement stays
+> **pre-turn admission** (reserve-before-turn) — telephony is **per-minute
+> accrual**, not live line-cutting.
+>
+> Some vendors don't bill in the map's canonical unit: TTS priced natively
+> per audio-minute (Cartesia Sonic, Rime) is converted at an assumed ~1000
+> chars/min, and per-session overhead (e.g. AssemblyAI) isn't modeled — so a
+> metered leg is an **estimate**, not the exact invoice, and can under- or
+> over-state it. `floe-guard` is a **local pacing ceiling**; the authoritative
+> cap is server-side.
+
+Per-leg breakdown from one call (no manual prices — `python
+examples/voice_call_cost_livekit.py`, no API key, no network):
+
+```text
+Per-leg call cost (all priced from the bundled cost map, no manual rates):
+  livekit-stt          $0.001027   # 8s  × ($0.0077/min ÷ 60)   Deepgram Nova-3
+  gpt-4o               $0.003700   # 600 in / 220 out tokens    LLM
+  livekit-tts          $0.009000   # 180 chars / 1k × $0.05     ElevenLabs Flash
+  livekit-telephony    $0.012750   # 1.5 min × $0.0085/min      Twilio US inbound
+  TOTAL                $0.026477
+```
 
 ### Pipecat (voice)
 
@@ -708,6 +842,14 @@ pipeline — the hard-stop every other adapter gives you. Pass an
 `on_budget_exceeded` async callback to speak a graceful "wrapping up" line first
 instead of cutting the call dead.
 
+Name the vendors to meter the rest of the call from the map:
+`tts_model="elevenlabs-flash-v2.5"` auto-meters the `TTSUsageMetricsData` Pipecat
+emits; `stt_model` / `telephony` are metered explicitly (Pipecat emits no STT/
+telephony usage frame) via `processor.meter_stt(seconds)` /
+`processor.meter_telephony(minutes)`. See
+[`examples/voice_call_cost_pipecat.py`](examples/voice_call_cost_pipecat.py) for
+the full per-leg breakdown (no API key, no network).
+
 ### LiveKit (voice)
 
 ```bash
@@ -738,10 +880,63 @@ await session.start(agent=agent, room=ctx.room)
 
 > **Fragment** — `session`, `agent`, and `ctx.room` come from your LiveKit agent entrypoint (`JobContext`); this shows only where the guard attaches.
 
-Pass `stt_usd_per_second` / `tts_usd_per_1k_chars` to also meter STT/TTS spend
-(often a voice agent's larger bill) via `record_tool`, and an `on_budget_exceeded`
-async callback to speak a wrap-up line before a turn ends. See
-[`examples/voice_turn_budget.py`](examples/voice_turn_budget.py).
+Name the vendors — `stt_model="deepgram-nova-3"`, `tts_model="elevenlabs-flash-v2.5"`,
+`telephony="twilio-us-inbound-local"` — to meter STT/TTS/telephony (often a voice
+agent's larger bill) from the map via `record_tool`, no hand-typed rates. STT/TTS
+settle automatically off LiveKit's metrics events; drive telephony per-minute with
+`budget.meter_telephony(minutes)`. Per-unit overrides (`stt_usd_per_second` /
+`tts_usd_per_1k_chars` / `telephony_usd_per_minute`) still work and win over the
+map, and an `on_budget_exceeded` async callback speaks a wrap-up line before a turn
+ends. See [`examples/voice_call_cost_livekit.py`](examples/voice_call_cost_livekit.py)
+for the full per-leg breakdown (no API key) and
+[`examples/voice_turn_budget.py`](examples/voice_turn_budget.py) for the hard-stop.
+
+## Voice admission gates (pre-call)
+
+The adapters above meter a call that's already running. `floe_guard.gates` is the
+step *before* that: at the call boundary, **admit or reject** an inbound call from
+the budget left — and it returns the exact JSON shape each orchestrator's inbound
+webhook expects, so the same reject contract you serve locally is the one hosted
+Floe serves. The paid upgrade is a URL swap, not a rewrite.
+
+```python
+from floe_guard import BudgetGuard, gates
+
+guard = BudgetGuard.from_floe(api_key="floe_…")   # or a local BudgetGuard(limit_usd=…)
+
+# Retell inbound webhook — only the boolean `true` rejects:
+gates.retell(guard)
+#  budget left → {"call_inbound": {}}          (admit; pass admit={"dynamic_variables": …})
+#  exhausted   → {"call_inbound": {"reject": True}}
+
+# Vapi assistant-request webhook — respond within ~7.5s:
+gates.vapi(guard, assistant_id="asst_…")
+#  budget left → {"assistantId": "asst_…"}     (or assistant={…} for an inline assistant)
+#  exhausted   → {"error": "Sorry, this agent is out of budget right now."}
+
+# Pipecat / custom / Bland — the provider-agnostic decision:
+if not gates.pre_call(guard):
+    ...  # reject at your call boundary
+```
+
+Pass `estimated_call_usd=` to reject when the remaining budget can't cover the
+next call (e.g. `$/min × expected minutes`), not just when it's fully spent.
+
+**Non-binding preflight.** A gate *reads* the remaining budget; it does not
+reserve it, so under concurrent inbound calls it can admit more than the budget
+strictly covers. It's coarse admission control — the binding, atomic money-gate
+stays the in-call guard (`check` / `reserve` while the call runs), same as hosted
+Floe's check-only pre-dial gate.
+
+**Pre-call admission only.** A gate decides whether a call *starts*; it does not
+intervene mid-call. Once admitted, a call runs to completion — nothing here cuts
+one off partway. (`guard_stream` can stop a single LLM *generation*, which is not
+call-level intervention.) Budget, not balance. US-only telephony, v1.
+
+> **Verification notes.** Retell's inbound webhook fires for inbound **phone/SMS**
+> calls (not dial-to-sip); its web-call behaviour isn't documented. Bland's *Send
+> Call* metadata field name is unconfirmed, so there's no `gates.bland()` yet — use
+> `gates.pre_call(guard)` and wire the reject into Bland's Pathway Webhook node.
 
 ## Adapter matrix
 
@@ -755,24 +950,46 @@ async callback to speak a wrap-up line before a turn ends. See
 | CrewAI | ✅ | — |
 | LiteLLM | ✅ | — |
 | Vercel AI SDK | — | ✅ |
+| **LiveKit** (voice) | ✅ | ✅ |
+| **Vapi** (voice) | — | ✅ |
+| **Retell** (voice) | — | ✅ |
 | **Pipecat** (voice) | ✅ | — |
-| **LiveKit** (voice) | ✅ | — |
 
-The TypeScript package is a single Vercel AI SDK middleware that guards any model
-the AI SDK wraps (OpenAI, Anthropic, Gemini, …) — it is not a per-framework
-adapter set like the Python package.
+The TypeScript package started as a single Vercel AI SDK middleware; it now also
+ships **voice-leg pricing** (`priceVoiceLeg`), **pre-call admission gates**
+(`gates.retell` / `gates.vapi` / `gates.preCall`), and **native voice adapters**
+for LiveKit, Vapi, and Retell (below).
 
-### TypeScript voice parity
+### TypeScript voice adapters
 
-**This release ships no TypeScript voice adapter.** The JS package
-([`js/`](js/)) ships one surface — the Vercel AI SDK middleware — and it is
-**text-only**: it guards a wrapped `LanguageModel`, not a running STT → LLM → TTS
-session. A voice/telephony builder on a Node stack should either drive the LLM
-turn through the Vercel AI middleware and meter STT/TTS spend by hand via
-`recordTool`, or run the LLM leg through the **hosted [Floe proxy](#upgrade-to-hosted-floe)**
-(un-bypassable, cross-vendor) — or use the Python Pipecat / LiveKit adapters
-above, which enforce the whole turn. No native TypeScript Pipecat/LiveKit voice
-adapter ships in this release.
+TypeScript ships native STT → LLM → TTS session adapters for the three Node voice
+stacks. Each reserves before the model turn, settles on real usage, releases on
+interrupt, and meters STT/TTS/telephony legs from the `__voice__` cost map
+(fail-closed via `UnpriceableVoiceError`) — the same enforcement contract as the
+Python Pipecat / LiveKit adapters. **Pre-turn / pre-call admission plus per-turn
+settlement only; no mid-call cutoff.**
+
+```ts
+// LiveKit Agents (Node) — @livekit/agents is an optional peer
+import { LiveKitBudgetGuard } from "floe-guard/adapters/livekit";
+new LiveKitBudgetGuard(guard, { model, sttModel, ttsModel, telephony }).attach(session, agent);
+
+// Vapi custom-LLM proxy — wrap the /chat/completions turn
+import { VapiBudgetGuard } from "floe-guard/adapters/vapi";
+const budget = new VapiBudgetGuard(guard, { sttModel, ttsModel, telephony });
+const completion = await budget.guardCompletion(() => openai.chat.completions.create(req), { model });
+
+// Retell custom-LLM WebSocket — reserve on response_required, settle on content_complete
+import { RetellBudgetGuard } from "floe-guard/adapters/retell";
+const decision = budget.beginTurn(event);        // { admitted } — reserves before the LLM call
+budget.settleTurn(event.response_id, usage);     // settle real usage after content_complete
+```
+
+Each ships a runnable, no-key demo (`js/examples/*_voice_cost.mjs`) that prints a
+pre-call admission decision and a per-leg call-cost receipt; see the module
+docstrings for the full API. Pipecat's server pipeline is Python-only, so its
+budget processor lives in the Python package (`FloeBudgetGuardProcessor`) — there
+is no Node Pipecat server surface to adapt.
 
 For wiring floe-guard into an existing voice pipeline, see the Floe docs:
 **[Add Floe to your existing pipeline](https://floe-labs.gitbook.io/docs/getting-started/integrate-existing-pipeline)**.
@@ -800,13 +1017,53 @@ metrics, no "zero defaults" claims — it's a free local stop, not a vault.
 ## No telemetry
 
 floe-guard does **not** phone home. It sends no usage events, no install pings,
-no identifiers — nothing leaves your process at runtime except hosted-budget
-reads you explicitly opt into by setting `FLOE_API_KEY` (the
-[hosted Floe](#upgrade-to-hosted-floe) path) — never otherwise.
+no identifiers — nothing leaves your process at runtime except **two things you
+explicitly opt into**: hosted-budget reads (set `FLOE_API_KEY` / use
+[`from_floe`](#one-line-to-hosted)) and [ledger sync](#sync-your-ledger-for-coverage-score-opt-in)
+(`enable_sync()` / `floe-guard push`). Never otherwise, and never in the
+background.
 
 This is a choice, not an oversight. A guardrail's whole value is trust: a
 library that silently exfiltrates usage from people's agents is the opposite of
 a tool you hand a budget to.
+
+## Sync your ledger for Coverage Score (opt-in)
+
+Floe's gateway can't see spend it never routed — BYOK, self-hosted, or off-path
+LLM/tool calls. **Ledger sync** is the opt-in that closes that gap: it pushes your
+local spend ledger into Floe's Reconcile Mode so your **Coverage Score** (the
+share of your agent's spend Floe can actually enforce) becomes computable for
+off-path spend. Budget, not balance — it reports what you *already spent* for
+coverage and attribution; it moves no money and changes no wallet balance.
+
+**Off by default, always.** Two explicit steps — opt in, then send — and no
+background send ever:
+
+```python
+guard.enable_sync(api_key="floe_…")   # opt in (read_write agent key). Sends nothing yet.
+...                                    # run your agent; spend accrues on the guard
+n = guard.sync()                       # THE send — POSTs export_log() now; returns events accepted
+guard.disable_sync()                   # revoke; the guard sends nothing after this
+```
+
+Or one-shot from a saved ledger:
+
+```bash
+floe-guard push ledger.jsonl --key floe_…   # or: your_export_log_producer | floe-guard push
+```
+
+**The request body is exactly the [`export_log()`](#per-call-spend-log) JSONL** —
+one line per priced spend event: `timestamp`, `kind` (`llm`/`tool`),
+`model_or_tool`, `prompt_tokens`, `completion_tokens`, `cost_usd`, and the
+optional `label` / `reserved` you set. **No prompts, no message content, no
+identifiers** beyond a `label` you choose — and it's *enforced*, not just
+promised: `push_ledger` validates every line and refuses any record with a field
+outside that schema, so nothing extra can leave even from a hand-edited ledger.
+Your key rides the `Authorization` header, and redirects are refused so neither
+key nor ledger can be re-sent to an unapproved host. Re-syncing is safe — the sync
+endpoint is idempotent by design, so already-ingested events aren't
+double-counted. A guard that never called `enable_sync()` never sends (a `sync()`
+on it raises, with zero network) — the [no-telemetry](#no-telemetry) default holds.
 
 ## When you outgrow local guardrails
 
@@ -819,6 +1076,15 @@ enforcement server-side.
 | Runs | Locally, in your process | Server-side |
 | Scope | One process | Every vendor and agent |
 | Control | Hard stop at your cap | Kill switch + one unified ledger |
+
+Already on hosted Floe? The package's only network call is the opt-in hosted
+budget read: set `FLOE_API_KEY` (agent key `floe_…`) and `hosted_remaining_usd()`
+returns the server-side budget headroom via `GET /v1/agents/credit-remaining`.
+`FLOE_API_BASE_URL` overrides the API host (default
+`https://credit-api.floelabs.xyz`). Nothing runs unless the key is set.
+The [one-line upgrade](#one-line-to-hosted) is `BudgetGuard.from_floe(api_key=…)`,
+which uses that headroom as the local ceiling — budget, not balance, and
+enforcement stays local.
 
 → [dev-dashboard.floelabs.xyz](https://dev-dashboard.floelabs.xyz/)
 

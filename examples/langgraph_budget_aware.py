@@ -86,7 +86,7 @@ def main() -> None:
     for step, model in enumerate(final["log"], start=1):
         if model == CHEAP[0] and not tapered:
             tapered = True
-            print("  [advisory] near_limit tripped → tapering to", model, "\n")
+            print("  [advisory] near_limit tripped -> tapering to", model, "\n")
         print(f"  step {step:>2}: {model}")
 
     print(

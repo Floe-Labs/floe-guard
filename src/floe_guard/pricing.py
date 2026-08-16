@@ -42,7 +42,14 @@ def _load_cost_map() -> dict[str, Any]:
         return json.load(fh)
 
 
-_COST_MAP: dict[str, Any] = _load_cost_map()
+# The voice rates (STT/TTS/telephony) live under one reserved key so the flat
+# LLM map stays LLM-only: they have a different schema (rate/unit/mode, not
+# per-token prices), so keeping them out of _COST_MAP means the token resolver
+# and its whole-map invariants never see them. See voice_pricing.py.
+_VOICE_MAP_KEY = "__voice__"
+_RAW_COST_MAP: dict[str, Any] = _load_cost_map()
+_VOICE_MAP: dict[str, Any] = _RAW_COST_MAP.get(_VOICE_MAP_KEY, {})
+_COST_MAP: dict[str, Any] = {k: v for k, v in _RAW_COST_MAP.items() if k != _VOICE_MAP_KEY}
 
 
 # The one "<provider>/" prefix that is safe to strip: the remainder of a

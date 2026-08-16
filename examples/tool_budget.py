@@ -36,10 +36,10 @@ def stub_exa_search(query: str) -> list[str]:
 
 def main() -> None:
     guard = BudgetGuard(limit_usd=0.10)
-    print(f"Budget: ${guard.limit_usd:.2f} — shared by tokens AND tools\n")
+    print(f"Budget: ${guard.limit_usd:.2f} — shared by tokens AND tools\n", flush=True)
 
-    # ── 1. pre-call hard-stop: reserve the KNOWN price before the call ─────────
-    print("Prospecting until the budget says stop...")
+    # -- 1. pre-call hard-stop: reserve the KNOWN price before the call ─────────
+    print("Prospecting until the budget says stop...", flush=True)
     companies = 0
     try:
         while True:
@@ -52,12 +52,12 @@ def main() -> None:
                 guard.record_tool("exa.search", EXA_COST)
             companies += 1
     except BudgetExceeded:
-        print(f"  stopped after {companies} companies — the crossing call never ran.\n")
+        print(f"  stopped after {companies} companies — the crossing call never ran.\n", flush=True)
 
-    # ── 2. attribution: where did the money go? ────────────────────────────────
-    print(f"spent ${guard.spent_usd:.4f} of ${guard.limit_usd:.2f}, by tool:")
+    # -- 2. attribution: where did the money go? ────────────────────────────────
+    print(f"spent ${guard.spent_usd:.4f} of ${guard.limit_usd:.2f}, by tool:", flush=True)
     for tool, total in sorted(guard.tool_costs.items()):
-        print(f"  {tool:<22} ${total:.4f}")
+        print(f"  {tool:<22} ${total:.4f}", flush=True)
 
 
 if __name__ == "__main__":

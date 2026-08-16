@@ -85,7 +85,10 @@ def _call(guard: BudgetGuard, usage: _Usage) -> float:
 def main() -> None:
     guard = BudgetGuard(limit_usd=1.00)
 
-    print(f"Simulating a conversation that re-sends a {CONTEXT_TOKENS}-token context...\n")
+    print(
+        f"Simulating a conversation that re-sends a {CONTEXT_TOKENS}-token context...\n",
+        flush=True,
+    )
 
     # Turn 1: nothing cached yet — write the context to the 5m-TTL cache.
     cold_usage = _Usage(
@@ -95,7 +98,7 @@ def main() -> None:
         cache_creation=_CacheCreation(ephemeral_5m_input_tokens=CONTEXT_TOKENS),
     )
     cold_cost = _call(guard, cold_usage)
-    print(f"  turn 1 (cache write): ${cold_cost:.5f}")
+    print(f"  turn 1 (cache write): ${cold_cost:.5f}", flush=True)
 
     # Turns 2-3: same context, now served from cache.
     warm_usage = _Usage(
@@ -104,9 +107,9 @@ def main() -> None:
         cache_read_input_tokens=CONTEXT_TOKENS,
     )
     warm_cost = _call(guard, warm_usage)
-    print(f"  turn 2 (cache read):  ${warm_cost:.5f}")
+    print(f"  turn 2 (cache read):  ${warm_cost:.5f}", flush=True)
     warm_cost_2 = _call(guard, warm_usage)
-    print(f"  turn 3 (cache read):  ${warm_cost_2:.5f}")
+    print(f"  turn 3 (cache read):  ${warm_cost_2:.5f}", flush=True)
 
     # Probe: what would turn 2 have cost if it re-sent the context uncached
     # (no cache_read_input_tokens — just a plain, full-price input)? Measured
@@ -120,9 +123,12 @@ def main() -> None:
 
     savings = uncached_cost - warm_cost
     multiple = uncached_cost / warm_cost if warm_cost else float("inf")
-    print(f"\nSame turn, uncached: ${uncached_cost:.5f}")
-    print(f"Cached read was ${savings:.5f} cheaper ({multiple:.1f}x less) than resending fresh.")
-    print(f"\nTotal spent over 3 turns: ${guard.spent_usd:.5f}")
+    print(f"\nSame turn, uncached: ${uncached_cost:.5f}", flush=True)
+    print(
+        f"Cached read was ${savings:.5f} cheaper ({multiple:.1f}x less) than resending fresh.",
+        flush=True,
+    )
+    print(f"\nTotal spent over 3 turns: ${guard.spent_usd:.5f}", flush=True)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ vendor/cap with server-truth balances — your taper logic ports unchanged.)
 
 Run:  python examples/budget_aware.py
 """
+
 from __future__ import annotations
 
 from floe_guard import BudgetExceeded, BudgetGuard
@@ -28,7 +29,10 @@ def stub_llm(model: tuple[str, int, int]) -> dict[str, object]:
 def main() -> None:
     # Taper at 70% used so there's room to downshift before the ceiling.
     guard = BudgetGuard(limit_usd=0.10, near_limit_bps=7000)
-    print(f"Budget ${guard.limit_usd:.2f} · taper at {guard.near_limit_bps / 100:.0f}% used\n")
+    print(
+        f"Budget ${guard.limit_usd:.2f} · taper at {guard.near_limit_bps / 100:.0f}% used\n",
+        flush=True,
+    )
 
     step = 0
     tapered = False
@@ -41,7 +45,8 @@ def main() -> None:
             tapered = True
             print(
                 f"  [advisory] {adv.used_bps / 100:.0f}% used, "
-                f"${adv.remaining_usd:.4f} left → tapering to {model[0]}\n"
+                f"${adv.remaining_usd:.4f} left -> tapering to {model[0]}\n",
+                flush=True,
             )
 
         try:
@@ -49,7 +54,8 @@ def main() -> None:
         except BudgetExceeded:
             print(
                 f"\nStopped at step {step}. "
-                f"Final spend ${guard.spent_usd:.4f} (held under ${guard.limit_usd:.2f})."
+                f"Final spend ${guard.spent_usd:.4f} (held under ${guard.limit_usd:.2f}).",
+                flush=True,
             )
             break
 
@@ -59,7 +65,10 @@ def main() -> None:
             int(response["prompt_tokens"]),  # type: ignore[arg-type]
             int(response["completion_tokens"]),  # type: ignore[arg-type]
         )
-        print(f"  step {step:>2}: {model[0]:<12} +${cost:.4f}  (total ${guard.spent_usd:.4f})")
+        print(
+            f"  step {step:>2}: {model[0]:<12} +${cost:.4f}  (total ${guard.spent_usd:.4f})",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

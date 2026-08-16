@@ -58,10 +58,14 @@ def main() -> None:
     """Run the context size adaptation example."""
     # Taper at 70% used so there's room to trim before the ceiling.
     guard = BudgetGuard(limit_usd=0.10, near_limit_bps=7000)
-    print(f"Budget ${guard.limit_usd:.2f} · model fixed at {MODEL} · context size adapts")
     print(
-        f"  full transcript + max_tokens {MAX_TOKENS_FULL} → last {KEEP_RECENT_TURNS} turns "
-        f"+ max_tokens {MAX_TOKENS_TAPER} at {guard.near_limit_bps / 100:.0f}% used\n"
+        f"Budget ${guard.limit_usd:.2f} · model fixed at {MODEL} · context size adapts",
+        flush=True,
+    )
+    print(
+        f"  full transcript + max_tokens {MAX_TOKENS_FULL} -> last {KEEP_RECENT_TURNS} turns "
+        f"+ max_tokens {MAX_TOKENS_TAPER} at {guard.near_limit_bps / 100:.0f}% used\n",
+        flush=True,
     )
 
     history: list[str] = []
@@ -76,8 +80,9 @@ def main() -> None:
             trimmed = True
             print(
                 f"  [advisory] {adv.used_bps / 100:.0f}% used, "
-                f"${adv.remaining_usd:.4f} left → trimming to the last "
-                f"{turns_sent} turns, max_tokens {max_tokens}\n"
+                f"${adv.remaining_usd:.4f} left -> trimming to the last "
+                f"{turns_sent} turns, max_tokens {max_tokens}\n",
+                flush=True,
             )
 
         # Request-sized: the prompt grows with the transcript, so the last call's
@@ -88,7 +93,8 @@ def main() -> None:
         except BudgetExceeded:
             print(
                 f"\nStopped at turn {turn}. "
-                f"Final spend ${guard.spent_usd:.4f} (held under ${guard.limit_usd:.2f})."
+                f"Final spend ${guard.spent_usd:.4f} (held under ${guard.limit_usd:.2f}).",
+                flush=True,
             )
             break
 
@@ -100,7 +106,8 @@ def main() -> None:
         )
         print(
             f"  turn {turn:>2}: {turns_sent:>2} of {len(history):>2} turns sent · "
-            f"max_tokens {max_tokens:>3}  +${cost:.4f}  (total ${guard.spent_usd:.4f})"
+            f"max_tokens {max_tokens:>3}  +${cost:.4f}  (total ${guard.spent_usd:.4f})",
+            flush=True,
         )
 
 

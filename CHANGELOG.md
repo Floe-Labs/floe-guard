@@ -8,7 +8,256 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.13.0 / js 0.9.0
+## Unreleased — py 0.17.0
+
+### Internal (py)
+
+- **README anchor link-check in CI** (`tests/test_readme_links.py`) — asserts every
+  in-README `](#anchor)` resolves, using GitHub's exact slug algorithm (each space
+  becomes its own hyphen, so `stt -> llm -> tts` headings keep their double hyphens).
+  Prevents the naive-checker false positive that flagged the live
+  `#voice-adapters-stt--llm--tts` / `#latencybudget--deadlines-the-same-way` anchors
+  as dead. Current status: **0 dead anchors**.
+- **Release maturity: kept at `Development Status :: 4 - Beta`** for 0.17.0. The
+  documented enforcement caveats (estimate-based, cold-start concurrency, shared-file
+  persistence, approximate stream cut-offs) make `5 - Production/Stable` an overclaim;
+  rationale recorded inline in `pyproject.toml`.
+
+### Added (py)
+
+- **Opt-in ledger sync → Reconcile Mode / Coverage Score.** A new **explicit,
+  off-by-default** way to push your local spend ledger to Floe so **Coverage
+  Score** can count spend the gateway never routed (BYOK / self-hosted /
+  off-path): `guard.enable_sync(api_key=…)` then `guard.sync()` (programmatic), or
+  `floe-guard push ledger.jsonl` (CLI). **Zero-telemetry stays the default** —
+  nothing leaves the process without the explicit opt-in *and* an explicit send;
+  there is no implicit enablement and no background send (asserted in tests:
+  `urlopen` is never called for a guard that hasn't opted in). The **request body**
+  is exactly the `export_log()` JSONL — priced spend events (timestamp, kind,
+  model/tool, tokens, `cost_usd`, optional `label`/`reserved`) — and `push_ledger`
+  **validates every line, rejecting any field outside that schema**, so no prompts
+  or message content leave even from a hand-supplied ledger. The only
+  caller-controlled string transmitted is the optional `label` you set yourself
+  (keep identifiers out of it). Your key
+  travels in the `Authorization` header; redirects are refused so key + ledger
+  can't be re-sent to an unapproved host. `disable_sync()` revokes it.
+  Budget, not balance: it reports what you already spent for coverage/attribution;
+  it moves no money. New: `push_ledger()`, `LedgerSyncError`, the `floe-guard` CLI
+  (`[project.scripts]`). (JS parity + the server ingest endpoint land separately.)
+
+## Unreleased — py 0.16.2
+
+### Fixed (py)
+
+- **LiveKit adapter: migrate off the deprecated session-level `metrics_collected`
+  event.** `livekit-agents` 1.5 deprecated `AgentSession.on("metrics_collected", …)`
+  (it now logs a warning and points at `session_usage_updated` / `ChatMessage.metrics`).
+  `LiveKitBudgetGuard` now settles/meter each turn off the **per-component**
+  `metrics_collected` event (the LLM / STT / TTS plugins each emit it and it is
+  **not** deprecated) instead of the session facade. The LLM plugin fires per
+  LLM turn, so the reserve-before-turn → settle-real-usage contract is preserved
+  exactly; `session_usage_updated` was rejected because it delivers a *cumulative*
+  `UsageSummary` (itself deprecated), which would force diffing successive
+  summaries and lose clean per-turn settlement. Components are resolved from the
+  agent first, then the session, mirroring LiveKit's own runtime pick. No public
+  API change; the `livekit` extra floor stays `>=1.0` (the per-component event
+  predates the deprecation). (The TS `@livekit/agents` does not deprecate the
+  event, so the Vercel-AI/js package is unaffected.)
+- **LiveKit adapter hardening — parity with the merged JS fixes, plus component
+  swaps.** The constructor validates configured voice vendors (a typo'd
+  `stt_model` / `tts_model` / `telephony` now raises `UnpriceableVoiceError` at
+  construction, not mid-call); `attach()` is single-use (a second call raises
+  rather than double-subscribing and double-counting spend); the internal turn
+  queue is bounded (`_MAX_SLOTS`) so a long call with realtime / text-only turns
+  can't accumulate stale slots. And metric subscriptions are **re-synced on
+  component swaps** — `livekit-agents` emits no swap event, so they're reconciled
+  on every `agent_state_changed` off `session.current_agent`. Honest limitation
+  (documented): `AgentSession.update_agent()` installs a new `Agent` whose
+  `llm_node` isn't wrapped, so its turns are still metered (reconcile) but the
+  pre-turn hard-stop is bypassed until you re-`attach()`; `update_options` (same
+  agent, swapped models) keeps the reserve hook.
+- **Windows-safe example output.** Replace non-cp1252 characters (`U+2192 →`,
+  `U+2248 ≈`) with ASCII equivalents (`->`, `~=`) in the printed strings of
+  `examples/budget_aware.py`, `examples/context_size.py`,
+  `examples/retrieval_depth.py`, `examples/streaming_guard.py`, and
+  `examples/langgraph_budget_aware.py`. The
+  Unicode-only characters caused `UnicodeEncodeError` on Windows consoles using
+  the default cp1252 encoding. Characters that appear only in docstrings or
+  comments (not printed at runtime) are left unchanged.
+- **Deterministic stdout/stderr ordering for redirected demo output.** Added
+  `flush=True` to every `print()` status line in
+  `examples/runaway_loop.py`, `examples/budget_aware.py`,
+  `examples/context_size.py`, `examples/retrieval_depth.py`,
+  `examples/tool_budget.py`, `examples/step_budget.py`,
+  `examples/streaming_guard.py`, `examples/openai_adapter.py`,
+  `examples/anthropic_adapter.py`, `examples/budget_retry.py`, and
+  `examples/plan_complexity.py`. When stdout is redirected or piped the OS
+  buffers it while stderr (where the library's block banner goes) is
+  unbuffered, producing output in the wrong order. Flushing each status print
+  ensures the logical sequence is preserved. The library's own stderr behavior
+  is unchanged.
+- **Subprocess smoke tests for the no-API-key examples.** New
+  `tests/test_examples_smoke.py` executes each README-promoted example as a
+  real subprocess (no import tricks), strips `FLOE_API_KEY` and
+  `OPENAI_API_KEY` from the environment, asserts `returncode == 0`, and
+  checks for a meaningful output marker. Covers: `runaway_loop.py`,
+  `budget_aware.py`, `context_size.py`, `retrieval_depth.py`,
+  `plan_complexity.py`, `tool_budget.py`, `step_budget.py`,
+  `streaming_guard.py`, `budget_retry.py`, `openai_adapter.py`, and
+  `anthropic_adapter.py`. The ordering test for `runaway_loop.py` merges
+  stdout and stderr and asserts that "Starting a runaway loop" precedes the
+  "BUDGET EXCEEDED" banner.
+
+## Unreleased — js 0.13.0
+
+### Added (js)
+
+- **Opt-in ledger sync — `BudgetGuard.enableSync()` / `disableSync()` / `sync()`
+  + `pushLedger()`** (parity with the Python client). Pushes the guard's
+  `exportLog()` JSONL to Floe's Reconcile Mode (`POST /v1/agents/ledger/sync`) so
+  BYOK / self-hosted / off-path spend the gateway never routed still lands on the
+  ledger and your **Coverage Score** becomes computable. **Budget, not balance:**
+  it reports what you already spent for coverage/attribution; it moves no money
+  and changes no wallet balance. Re-syncing is safe — the sync endpoint is
+  idempotent by design (already-ingested events aren't double-counted).
+  - **Zero-telemetry is preserved as the default.** Sync is OFF until you call
+    `enableSync(apiKey)`, and even then nothing leaves the process until you call
+    `sync()` — there is no implicit enablement and no background send. `sync()` on
+    a guard that never opted in throws (no network); `disableSync()` revokes it.
+    `sync()` snapshots the opt-in key atomically before any `await`, so a racing
+    `disableSync()` can't cause a post-revocation send or an env-key fallback.
+  - **The request body is exactly `exportLog()`, validated.** Before any network,
+    every ledger line is checked against the `exportLog()` schema and **any
+    non-schema / unknown field is rejected** (`LedgerSyncError`) — a hand-supplied
+    file can't smuggle prompts, content, or identifiers past the privacy contract.
+    The key rides the `Authorization: Bearer` header (`Content-Type:
+    application/x-ndjson`).
+  - **Fail-closed.** `pushLedger(jsonl, apiKey?, { baseUrl?, timeoutMs? })` (over
+    `fetch`) refuses to send without a key (arg or `FLOE_API_KEY`) or over a
+    non-https / malformed base URL — the key and ledger are never transmitted in
+    those cases — **refuses redirects** (`redirect: "error"`, so a 3xx can't
+    re-send the key/ledger to another host), and throws `LedgerSyncError` on a
+    non-2xx / network / malformed response or an invalid (non-integer / negative)
+    `synced` count. An empty ledger is a no-op (`0`, no network). (The `floe-guard
+    push` CLI stays Python-only for now.)
+
+## Unreleased — js 0.12.0
+
+### Added (js)
+
+- **Voice adapters — LiveKit, Vapi, Retell** (the Node voice glue): each wraps its
+  platform's model turn with reserve-before / settle-on-real-usage / release-on-
+  interrupt, meters STT/TTS/telephony legs from the `__voice__` cost map via
+  `priceVoiceLeg` (fail-closed), and answers the platform's inbound admission
+  webhook via `gates`. Pre-turn/pre-call admission + per-turn settlement only — no
+  mid-call cutoff.
+  - `floe-guard/adapters/livekit` → `LiveKitBudgetGuard.attach(session, agent)`:
+    reserves in the agent's `llmNode`, settles on the session's `metrics_collected`
+    (verified **not** deprecated in `@livekit/agents` 1.6.x, unlike Python 1.5.0),
+    releases on stream cancel / close. `@livekit/agents` is an optional peer.
+  - `floe-guard/adapters/vapi` → `VapiBudgetGuard`: `guardCompletion` (JSON) /
+    `guardStream` (SSE) reserve before the upstream call and settle on the real
+    OpenAI `usage`; `assistantRequest` wraps `gates.vapi`. A stream with no `usage`
+    (upstream missing `stream_options.include_usage`) throws `VapiUsageMissingError`
+    rather than metering a silent $0.
+  - `floe-guard/adapters/retell` → `RetellBudgetGuard`: `beginTurn` (returns an
+    admit/block decision) / `settleTurn` keyed by `response_id`, a newer id releases
+    the prior hold (barge-in); `admitCall` wraps `gates.retell`.
+  - Each ships a runnable **stubbed, no-key** demo (`js/examples/*_voice_cost.mjs`)
+    that prints a pre-call admission decision and a per-leg call-cost receipt.
+    Adapters are structurally typed — no hard runtime SDK dependency.
+
+## py 0.16.1 / js 0.11.0 — 2026-08-14
+
+### Fixed (py)
+
+- **Unblock PyPI publishing** — cap `hatchling<1.32` in `[build-system]`.
+  hatchling 1.32.0 bumped the emitted core-metadata to `Metadata-Version: 2.5`,
+  which the release action's twine (`pypa/gh-action-pypi-publish@v1.14.0`) rejects
+  (`InvalidDistribution: '2.5' is not a valid metadata version`) — that is why
+  PyPI froze at 0.13.0 (Aug 6) while the repo moved to 0.16.x. Pinning to the last
+  2.4-emitting hatchling restores a wheel both twine and PyPI accept (verified:
+  `Metadata-Version: 2.4`, `twine check` passes). Publishing 0.16.1 catches up
+  everything since 0.13.0.
+- **`gates` / voice-pricing input hardening** (parity with the JS fixes):
+  `gates.retell` strips `reject` from `admit` overrides so an errant
+  `admit={"reject": True}` on an available-budget call can't flip the response into
+  Retell's reject shape; `voice_leg_cost` raises on a non-finite `quantity`
+  (`max(0.0, nan)` is `nan`, which would poison the guard's running total).
+
+### Added (py)
+
+- **Voice-native primitives — per-call budgets, $/min burn rate, pre-call gates**
+  (P1):
+  - `guard.step(max_usd=…)` is now documented as the **per-call budget** primitive
+    (per-call cap, `advisory().step_remaining_usd` headroom, `est_calls_remaining`)
+    — voice budgets are per-call, not per-day.
+  - `advisory().burn_rate_usd_per_min` — the $/min spend rate voice teams watch,
+    derived from spend ÷ minutes since the guard was created (one guard per
+    call/turn ⇒ a per-call rate).
+  - `floe_guard.gates` — **pre-call admission** gates returning each provider's
+    exact inbound-webhook shape, so a local user rejects a call on budget
+    exhaustion with the same contract the hosted gateway serves: `gates.retell()`
+    → `{"call_inbound": {"reject": true}}` (only the boolean rejects; phone/SMS
+    inbound, 10s/3-retry); `gates.vapi()` → `{"error": …}` reject vs
+    `{"assistant"|"assistantId": …}` admit (~7.5s deadline); `gates.pre_call()` /
+    `gates.budget_exhausted()` for Pipecat/custom. **Pre-call admission only** — no
+    mid-call intervention. Bland's *Send Call* metadata field name is an open
+    verification item and is **not** invented (use `gates.pre_call`). US-only v1.
+    Budget, not balance.
+
+- **One line to hosted — `BudgetGuard.from_floe(api_key=…)`**: constructs a guard
+  whose local ceiling is read from your **server-side budget headroom** (the min
+  of auto-borrow headroom and session spend remaining, via
+  `hosted_remaining_usd()`), so the free→hosted upgrade is a one-line constructor
+  swap with no other code changes. Budget, not balance: the read is a headroom
+  signal and enforcement stays local — hosted Floe remains the source of truth for
+  the un-bypassable, cross-vendor cap. Zero-telemetry invariant preserved (no
+  network unless a key is set) and fail-closed (a failed read raises
+  `HostedEnforcementError`, or degrades to a `fallback_limit_usd` local ceiling
+  with a loud warning). The README core pitch now documents the shared near-limit
+  signal (`near_limit` + `used_bps`) between local `advisory()` and hosted's
+  `X-Floe-Budget-Advisory` header, so tapering logic carries over — the header
+  nests it under `tightest` with raw amounts, a light field remap, not an
+  identical shape.
+
+- **Voice cost map — meter the whole call by default** (P0): STT/TTS/telephony
+  rates ship under the reserved `__voice__` key of `cost_map.json` (units: STT
+  $/sec, TTS $/1k-chars, telephony $/min). The Pipecat + LiveKit adapters now
+  price the full call — STT + LLM + TTS + telephony — from the map with no
+  hand-typed rates (`stt_model` / `tts_model` / `telephony`); per-unit overrides
+  still win. A vendor the map can't price (or a wrong unit/mode) fails closed via
+  the new `UnpriceableVoiceError` (parity with `UnpriceableModelError`), never a
+  silent $0. Seeded US-only v1 — Deepgram, AssemblyAI, ElevenLabs, Cartesia
+  (Sonic TTS + Line telephony), Rime, Twilio (Telnyx deferred); rates are a
+  drift-prone snapshot. The **js** package carries the same `__voice__` cost-map
+  data in lockstep (no JS voice adapter this release).
+
+### Added (js)
+
+- **Voice foundation ported to TypeScript — cost-map pricing, pre-call gates,
+  $/min burn rate** (parity with py, no voice adapter yet):
+  - **Offline voice cost-map pricing** (`voice-pricing.ts`): `priceVoiceLeg` /
+    `resolveVoiceRate` / `lookupVoiceRate` / `voiceLegCost` price a leg from the
+    `__voice__` section of `cost_map.json` (STT $/sec, TTS $/1k-chars, telephony
+    $/min). A per-unit override wins over the map; a vendor the map can't price (or
+    a wrong unit/mode) fails closed via the new `UnpriceableVoiceError` (parity with
+    `UnpriceableModelError`), never a silent $0. An unconfigured leg (no vendor, no
+    override) returns `null` so the token-only contract is preserved.
+  - **`gates` — pre-call admission** (`gates.ts`, exported as the `gates`
+    namespace): `gates.retell()` → `{ call_inbound: { reject: true } }` (only the
+    boolean rejects; phone/SMS inbound, 10s/3-retry); `gates.vapi()` → `{ error }`
+    reject vs `{ assistantId | assistant }` admit (`assistantId` takes precedence;
+    ~7.5s deadline); `gates.preCall()` / `gates.budgetExhausted()` for
+    Pipecat/custom. A non-finite/negative estimate throws rather than silently
+    admitting. **Pre-call admission only** — no mid-call intervention. Bland's
+    *Send Call* metadata field name is an open verification item and is **not**
+    invented (use `gates.preCall`). US-only v1. Budget, not balance.
+  - **`advisory().burnRateUsdPerMin`** — the $/min spend rate voice teams watch,
+    spend ÷ minutes since the guard was created (`null` until wall-clock time has
+    elapsed; one guard per call/turn ⇒ a per-call rate).
+
+## py 0.13.0 / js 0.9.0 — 2026-08-06
 
 ### Added (py)
 

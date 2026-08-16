@@ -67,7 +67,10 @@ def main() -> None:
     guard = BudgetGuard(limit_usd=0.05)
     client = _Client()
 
-    print(f"Starting with a ${guard.limit_usd:.2f} budget against a stub OpenAI client...\n")
+    print(
+        f"Starting with a ${guard.limit_usd:.2f} budget against a stub OpenAI client...\n",
+        flush=True,
+    )
     call = 0
     while True:
         call += 1
@@ -76,10 +79,16 @@ def main() -> None:
             response = guarded_completion(guard, client, model=MODEL, messages=messages)
         except BudgetExceeded:
             calls_made = client.chat.completions.call_count
-            print(f"\nCall #{call} blocked before reaching the client.")
-            print(f"client.chat.completions.create was invoked {calls_made} times (not {call}).")
+            print(f"\nCall #{call} blocked before reaching the client.", flush=True)
+            print(
+                f"client.chat.completions.create was invoked {calls_made} times (not {call}).",
+                flush=True,
+            )
             break
-        print(f"  call #{call}: served by {response.model}  (running total ${guard.spent_usd:.4f})")
+        print(
+            f"  call #{call}: served by {response.model}  (running total ${guard.spent_usd:.4f})",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
