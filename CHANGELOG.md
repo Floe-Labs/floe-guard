@@ -8,6 +8,33 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — js 0.14.0
+
+### Added (js)
+
+- **Opt-in ledger sync → Reconcile Mode / Coverage Score (JS parity).** Ports the
+  Python opt-in sync to the npm package: a new **explicit, off-by-default** way to
+  push your local spend ledger to Floe so **Coverage Score** can count spend the
+  gateway never routed (BYOK / self-hosted / off-path). New exports `pushLedger()`
+  and `LedgerSyncError`, plus a `floe-guard` **bin** with one subcommand:
+  `floe-guard push [ledger.jsonl]` (reads a file, or stdin when the arg is omitted
+  or `-`, so `producer | floe-guard push` works), with `--key` (defaults to
+  `$FLOE_API_KEY`) and `--base-url` (defaults to `$FLOE_API_BASE_URL`, else the
+  prod host). On success it prints `Synced N spend event(s) to Floe Reconcile
+  Mode.` and exits 0; a `LedgerSyncError` prints to stderr and exits 1.
+  **Zero-telemetry stays the default** — nothing leaves the process without the
+  explicit opt-in *and* an explicit send; there is no implicit enablement and no
+  background send (asserted in tests: `fetch` is never called for a no-key push).
+  The **request body** is exactly the `exportLog()` JSONL — priced spend events
+  (timestamp, kind, model/tool, tokens, `cost_usd`, optional `label`/`reserved`) —
+  and `pushLedger` **validates every line, rejecting any field outside that
+  schema**, so no prompts or message content leave even from a hand-supplied
+  ledger. Your key travels in the `Authorization` header; redirects are refused
+  (`redirect: "error"`) so key + ledger can't be re-sent to an unapproved host.
+  Budget, not balance: it reports what you already spent for coverage/attribution;
+  it moves no money. Matches the Python `push_ledger()` / `LedgerSyncError` /
+  `floe-guard push` shipped in py 0.17.0.
+
 ## Unreleased — py 0.17.0
 
 ### Added (py)

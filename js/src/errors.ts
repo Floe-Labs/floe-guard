@@ -75,6 +75,24 @@ export class TokenBudgetExceeded extends BudgetExceeded {
 }
 
 /**
+ * Thrown when an opt-in ledger sync to Reconcile Mode fails.
+ *
+ * Covers a missing API key, a non-2xx response (401 bad/missing key, 403 agent
+ * closed/suspended, or a read-only key), a network/timeout failure, or a
+ * malformed response. Sync is off by default and only runs when the caller
+ * explicitly opts in (`pushLedger` / the `floe-guard push` CLI) — this error
+ * never fires for a guard that hasn't opted in, because such a guard never sends.
+ *
+ * Mirrors `LedgerSyncError` in `src/floe_guard/errors.py`.
+ */
+export class LedgerSyncError extends FloeGuardError {
+  constructor(message: string) {
+    super(message);
+    this.name = "LedgerSyncError";
+  }
+}
+
+/**
  * Thrown when a model cannot be priced and the guard is fail-closed.
  *
  * We refuse rather than silently accrue $0 — "we cannot cap what we cannot price".
