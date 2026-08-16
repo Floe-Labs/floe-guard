@@ -9,11 +9,12 @@
 
 **The spend meter and budget gate for AI voice agents — and any LLM agent.**
 floe-guard meters the whole call — STT + LLM + TTS + telephony — from a bundled
-cost map, no manual rates, and hard-stops the next turn or call *before* it
-crosses your spend ceiling: **per-turn enforcement for [Pipecat](#pipecat-voice)
-and [LiveKit](#livekit-voice)**, and a hard stop for runaway LLM loops — a loop
-dies at $0.10 instead of $4,000; an over-budget call is rejected at the door.
-Local, in your process. No account, no signup, no network, **no telemetry**.
+cost map (name each leg's vendor; no manual rates), and hard-stops the next turn
+or call *before* it crosses your spend ceiling: **per-turn enforcement for
+[Pipecat](#pipecat-voice) and [LiveKit](#livekit-voice)**, and a hard stop for
+runaway LLM loops — a loop dies at $0.10 instead of $4,000; an over-budget call
+is rejected at the door. Local, in your process. No account, no signup, no
+network, **no telemetry**.
 
 **Voice:** [Pipecat](#pipecat-voice) · [LiveKit](#livekit-voice) (Python) ·
 LiveKit · Vapi · Retell ([TypeScript](#typescript-voice-adapters)) — reserve
@@ -112,6 +113,7 @@ The other demo — one voice call, every leg priced from the bundled map, no
 manual rates, no API key, no network:
 
 ```bash
+pip install "floe-guard[livekit]"     # the demo imports livekit-agents
 python examples/voice_call_cost_livekit.py
 ```
 

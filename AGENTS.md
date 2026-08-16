@@ -20,6 +20,7 @@ TypeScript (`npm`). MIT. Built by [Floe](https://floelabs.xyz) — cost controls
    - Python: `pip install floe-guard`
    - TypeScript / Node: `npm i floe-guard`
 2. **Wire the hard-stop around each model call** (`check` before, `record` after):
+
    ```python
    from floe_guard import BudgetGuard
 
@@ -28,6 +29,7 @@ TypeScript (`npm`). MIT. Built by [Floe](https://floelabs.xyz) — cost controls
    resp = call_your_llm(...)             # your existing call
    guard.record("gpt-4o", resp.usage.prompt_tokens, resp.usage.completion_tokens)
    ```
+
    TypeScript is the same shape (`guard.check()` / `guard.record(...)`); see `js/`.
    - **Framework adapters** (no manual check/record): OpenAI, Anthropic, Gemini,
      CrewAI, LangChain, LangGraph, LiteLLM, Vercel AI SDK — README §"Framework adapters".
@@ -60,7 +62,7 @@ TypeScript (`npm`). MIT. Built by [Floe](https://floelabs.xyz) — cost controls
 For the complete workflow — spend policies, voice coverage, the hosted upgrade,
 Coverage Score — install the **Floe agent skill** (teaches Claude Code / Cursor):
 
-```
+```bash
 npx skills add floe-labs/agent-skills
 ```
 
