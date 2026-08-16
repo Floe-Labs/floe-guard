@@ -34,6 +34,22 @@ const DEFAULT_BASE_URL = "https://credit-api.floelabs.xyz";
 const LEDGER_SYNC_PATH = "/v1/agents/ledger/sync";
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+// The ONLY keys allowed to leave the process — the exportLog() schema. Enforced
+// (not just documented) in validateLedger(): a line carrying anything else is
+// rejected, so a hand-supplied file can't smuggle prompts / content / identifiers
+// past the privacy contract.
+const ALLOWED_KEYS = new Set([
+  "timestamp",
+  "kind",
+  "model_or_tool",
+  "prompt_tokens",
+  "completion_tokens",
+  "cost_usd",
+  "label",
+  "reserved",
+]);
+const REQUIRED_KEYS = ["timestamp", "kind", "model_or_tool", "cost_usd"];
+
 /**
  * Read an environment variable without a hard `process` reference — the package
  * compiles with `types: []` (no `@types/node`), so `process` is untyped. Reads
@@ -42,6 +58,90 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 function envVar(name: string): string {
   const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
   return proc?.env?.[name] ?? "";
+}
+
+/**
+ * Parse and validate every ledger line against the `exportLog()` schema.
+ *
+ * Throws {@link LedgerSyncError} on the first malformed / unknown-field / invalid
+ * record, **before** anything is sent — so only priced spend events ever leave the
+ * process, even when the ledger came from a hand-edited file. This is the privacy
+ * contract *enforced*, not merely asserted: an **extra/unknown key** (a smuggled
+ * `prompt`, `user_id`, …) is rejected outright. Mirrors `_validate_ledger` in the
+ * Python client.
+ *
+ * (JS `typeof x === "number"` already excludes booleans and `Number.isInteger`
+ * rejects them too, so — unlike Python, where `bool` is an `int` subclass — no
+ * explicit boolean guards are needed.)
+ */
+function validateLedger(jsonl: string): void {
+  let i = 0;
+  for (const raw of jsonl.split("\n")) {
+    i += 1;
+    const line = raw.trim();
+    if (!line) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch (err) {
+      throw new LedgerSyncError(`Ledger line ${i} is not valid JSON: ${describeCause(err)}`);
+    }
+    if (typeof event !== "object" || event === null || Array.isArray(event)) {
+      throw new LedgerSyncError(`Ledger line ${i} is not a JSON object.`);
+    }
+    const ev = event as Record<string, unknown>;
+    const extra = Object.keys(ev).filter((k) => !ALLOWED_KEYS.has(k));
+    if (extra.length) {
+      throw new LedgerSyncError(
+        `Ledger line ${i} has fields outside the exportLog() schema: ` +
+          `${JSON.stringify(extra.sort())}. Only priced spend events may be synced — ` +
+          "no prompts, content, or identifiers.",
+      );
+    }
+    const missing = REQUIRED_KEYS.filter((k) => !(k in ev));
+    if (missing.length) {
+      throw new LedgerSyncError(
+        `Ledger line ${i} is missing required field(s): ${JSON.stringify(missing)}.`,
+      );
+    }
+    if (ev.kind !== "llm" && ev.kind !== "tool") {
+      throw new LedgerSyncError(
+        `Ledger line ${i}: kind must be 'llm' or 'tool', got ${JSON.stringify(ev.kind)}.`,
+      );
+    }
+    if (typeof ev.model_or_tool !== "string") {
+      throw new LedgerSyncError(`Ledger line ${i}: model_or_tool must be a string.`);
+    }
+    const cost = ev.cost_usd;
+    if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) {
+      throw new LedgerSyncError(
+        `Ledger line ${i}: cost_usd must be a finite, non-negative number, got ${JSON.stringify(cost)}.`,
+      );
+    }
+    const ts = ev.timestamp;
+    if (typeof ts !== "number" || !Number.isFinite(ts)) {
+      throw new LedgerSyncError(
+        `Ledger line ${i}: timestamp must be a finite number, got ${JSON.stringify(ts)}.`,
+      );
+    }
+    for (const field of ["prompt_tokens", "completion_tokens"] as const) {
+      const value = ev[field];
+      // Absent (undefined) or explicit null are fine — tool events carry null; a
+      // present value must be an integer.
+      if (value !== undefined && value !== null && !Number.isInteger(value)) {
+        throw new LedgerSyncError(`Ledger line ${i}: ${field} must be an integer or null.`);
+      }
+    }
+    if ("label" in ev && typeof ev.label !== "string") {
+      throw new LedgerSyncError(`Ledger line ${i}: label must be a string.`);
+    }
+    if ("reserved" in ev) {
+      const reserved = ev.reserved;
+      if (typeof reserved !== "number" || !Number.isFinite(reserved)) {
+        throw new LedgerSyncError(`Ledger line ${i}: reserved must be a finite number.`);
+      }
+    }
+  }
 }
 
 /**
@@ -67,6 +167,10 @@ export async function pushLedger(
 ): Promise<number> {
   // An empty ledger never touches the network — nothing to send.
   if (!jsonl.trim()) return 0;
+
+  // Enforce the privacy contract BEFORE any network: only exportLog() events —
+  // no prompts, content, or identifiers — may leave, even from a hand-supplied file.
+  validateLedger(jsonl);
 
   const key = ((apiKey ?? "") || envVar(FLOE_API_KEY_ENV)).trim();
   if (!key) {
@@ -104,6 +208,11 @@ export async function pushLedger(
   try {
     response = await fetch(url, {
       method: "POST",
+      // Refuse redirects: a 3xx would otherwise let the key + ledger be re-sent to
+      // another host. (The Fetch spec strips `Authorization` on a cross-origin
+      // redirect, but `redirect: "error"` is the belt-and-suspenders — nothing is
+      // re-sent anywhere, same-origin or not.)
+      redirect: "error",
       headers: {
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/x-ndjson",
@@ -132,10 +241,14 @@ export async function pushLedger(
     throw new LedgerSyncError(`Unexpected response shape from Floe at ${url}.`);
   }
   // "synced" is the count the server accepted (new rows); "duplicates" (already
-  // ingested, idempotent) are not counted here. Absent / non-numeric → 0.
+  // ingested, idempotent) are not counted here. Absent → 0; present must be a real
+  // non-negative integer — reject bool/float/negative/garbage rather than coerce.
   const synced = (payload as Record<string, unknown>).synced;
-  const n = typeof synced === "number" ? synced : Number(synced);
-  return Number.isFinite(n) ? Math.trunc(n) : 0;
+  if (synced === undefined || synced === null) return 0;
+  if (typeof synced !== "number" || !Number.isInteger(synced) || synced < 0) {
+    throw new LedgerSyncError(`Invalid 'synced' count from Floe at ${url}: ${JSON.stringify(synced)}.`);
+  }
+  return synced;
 }
 
 function describeCause(err: unknown): string {

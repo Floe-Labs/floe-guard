@@ -684,15 +684,21 @@ export class BudgetGuard {
    * @throws {LedgerSyncError} the opt-in send failed (missing key, non-2xx, network).
    */
   async sync(): Promise<number> {
-    if (!this.syncEnabled) {
+    // Snapshot opt-in state + key/base synchronously, before any await: a
+    // disableSync() interleaved on a later microtask can't clear the key mid-call
+    // (which would silently fall back to $FLOE_API_KEY) or let an upload start
+    // after revocation. A disable happens-before (we throw) or happens-after (we
+    // send the key we captured while still enabled).
+    const enabled = this.syncEnabled;
+    const key = this.syncKey;
+    const base = this.syncBase;
+    if (!enabled) {
       throw new Error(
         "ledger sync is not enabled — call guard.enableSync(apiKey) first. " +
           "Sync is opt-in and off by default (zero-telemetry).",
       );
     }
-    return pushLedger(this.exportLog(), this.syncKey ?? undefined, {
-      baseUrl: this.syncBase ?? undefined,
-    });
+    return pushLedger(this.exportLog(), key ?? undefined, { baseUrl: base ?? undefined });
   }
 
   /**
