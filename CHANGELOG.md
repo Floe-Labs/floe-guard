@@ -10,6 +10,19 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased — py 0.17.0
 
+### Internal (py)
+
+- **README anchor link-check in CI** (`tests/test_readme_links.py`) — asserts every
+  in-README `](#anchor)` resolves, using GitHub's exact slug algorithm (each space
+  becomes its own hyphen, so `stt -> llm -> tts` headings keep their double hyphens).
+  Prevents the naive-checker false positive that flagged the live
+  `#voice-adapters-stt--llm--tts` / `#latencybudget--deadlines-the-same-way` anchors
+  as dead. Current status: **0 dead anchors**.
+- **Release maturity: kept at `Development Status :: 4 - Beta`** for 0.17.0. The
+  documented enforcement caveats (estimate-based, cold-start concurrency, shared-file
+  persistence, approximate stream cut-offs) make `5 - Production/Stable` an overclaim;
+  rationale recorded inline in `pyproject.toml`.
+
 ### Added (py)
 
 - **Opt-in ledger sync → Reconcile Mode / Coverage Score.** A new **explicit,

@@ -18,6 +18,12 @@ license = { file = "LICENSE" }
 authors = [{ name = "Floe Labs" }]
 keywords = ["llm", "agents", "budget", "guardrail", "crewai", "litellm", "langchain", "langgraph", "cost", "openai", "anthropic", "gemini", "voice", "stt", "tts", "livekit", "deepgram", "elevenlabs", "twilio"]
 classifiers = [
+    # Kept at Beta for 0.17.0 (decided 2026-08): the README's "Honest about what
+    # this is" caveats — estimate-based enforcement, cold-start concurrency not
+    # bounding the first parallel wave, cross-process persistence needing a shared
+    # SQLite file with reliable locking (not serverless-safe), and approximate
+    # stream cut-offs — are load-bearing limits. "5 - Production/Stable" would
+    # overclaim maturity. Revisit once those are closed or clearly acceptable.
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
