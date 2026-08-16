@@ -61,6 +61,10 @@ npx skills add floe-labs/agent-skills
 
 [Floe agent skill →](https://github.com/Floe-Labs/agent-skills) · [Docs →](https://floe-labs.gitbook.io/docs/getting-started/claude-code-skill)
 
+> **AI agents:** this repo self-onboards — [`AGENTS.md`](AGENTS.md) (install → wire → verify),
+> [`SKILL.md`](SKILL.md), and [`llms.txt`](llms.txt) let a coding agent add and wire the
+> guard unattended.
+
 ```bash
 pip install floe-guard        # Python
 npm i floe-guard              # TypeScript (Vercel AI SDK) — see js/
