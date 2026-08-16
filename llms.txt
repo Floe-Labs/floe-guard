@@ -1,14 +1,15 @@
 # floe-guard
 
-> A local budget guardrail for AI agents. It hard-stops an agent *before* its next
-> LLM/tool call — or voice turn — crosses a USD spend ceiling, so a runaway loop
-> dies at $0.10 instead of $4,000. Runs in your process: no account, no signup, no
-> network, no telemetry. Python (pip) and TypeScript (npm). MIT.
+> The spend meter and budget gate for AI voice agents. It meters STT + TTS + LLM +
+> telephony per call (Pipecat, LiveKit — Python & TypeScript) and hard-stops the next
+> turn *before* it crosses a USD ceiling, so a runaway loop dies at $0.10 instead of
+> $4,000. Runs in your process: no account, no signup, no network, no telemetry. It
+> also guards any LLM/tool call the same way. Built by Floe — cost controls for Voice AI.
 
-Install `pip install floe-guard` (Python) or `npm i floe-guard` (TypeScript). Wire
-`guard.check()` before each LLM call and `guard.record(...)` after — or drop in a
-framework/voice adapter. Budget, not balance: it caps spend, holds no money, needs
-no account.
+Install `pip install floe-guard` (Python) or `npm i floe-guard` (TypeScript). Drop in a
+voice adapter (Pipecat / LiveKit) for per-turn STT+TTS+LLM+telephony enforcement, or wire
+`guard.check()` before each LLM call and `guard.record(...)` after. Budget, not balance:
+it caps spend, holds no money, needs no account.
 
 ## Start here
 

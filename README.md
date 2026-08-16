@@ -7,12 +7,14 @@
 [![CI](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**A local budget guardrail for AI agents — including voice.** It hard-stops your
-agent *before its next turn or LLM call* when it would cross a spend ceiling:
-**per-turn enforcement for [Pipecat](#pipecat-voice) and [LiveKit](#livekit-voice)**
-voice pipelines, and a hard stop for runaway LLM loops — a loop dies at $0.10
-instead of $4,000. No account, no signup, no network, **no telemetry**. Runs in
-your process.
+**The spend meter and budget gate for AI voice agents.** It meters
+**STT + TTS + LLM + telephony per call**, out of the box —
+[Pipecat](#pipecat-voice) and [LiveKit](#livekit-voice), **Python & TypeScript** —
+and **hard-stops the next turn before it crosses your ceiling** (a runaway loop
+dies at $0.10, not $4,000). Local, in your process: no account, no signup, no
+network, **no telemetry**. Built by [Floe](https://floelabs.xyz) — cost controls
+for Voice AI. It also guards **any** LLM agent (OpenAI, Anthropic, CrewAI,
+LangChain, …) via plain [`check()` / `record()`](#how-it-works) or an adapter.
 
 **Voice:** [Pipecat](#pipecat-voice) · [LiveKit](#livekit-voice) — reserve before
 each turn, settle on real usage, so a turn that would cross the ceiling never
