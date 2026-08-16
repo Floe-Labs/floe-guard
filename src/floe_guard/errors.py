@@ -127,6 +127,17 @@ class HostedEnforcementError(FloeGuardError):
     """
 
 
+class LedgerSyncError(FloeGuardError):
+    """Raised when an **opt-in** ledger sync to Reconcile Mode fails.
+
+    Covers a missing API key, a non-2xx response (401 bad/missing key, 403 agent
+    closed/suspended), a network/timeout failure, or a malformed response. Sync is
+    off by default and only runs when the caller explicitly opts in
+    (:meth:`~floe_guard.BudgetGuard.enable_sync` / ``floe-guard push``) — this error
+    never fires for a guard that hasn't opted in, because such a guard never sends.
+    """
+
+
 class UnpriceableModelWarning(UserWarning):
     """Warned (loudly) whenever an unpriceable model is seen.
 
