@@ -84,6 +84,29 @@ describe("per-step caps", () => {
     });
   });
 
+  it("step USD block reports step ceiling, not aggregate values", () => {
+    // aggregate = $100; step = $1.00
+    const guard = new BudgetGuard(100, { ...silent });
+    guard.step({ maxUsd: 1.0 }, (g) => {
+      // Spend ~$0.75 inside the step (gpt-4o: 100k input + 50k output tokens)
+      g.record(MODEL, 100_000, 50_000);
+      let caught: BudgetExceeded | undefined;
+      try {
+        g.reserve(0.30); // step ceiling crossed: 0.75 + 0.30 > 1.00
+      } catch (err) {
+        caught = err as BudgetExceeded;
+      }
+      expect(caught).toBeInstanceOf(BudgetExceeded);
+      expect(caught).not.toBeInstanceOf(TokenBudgetExceeded);
+      // Must report the step ceiling ($1.00), not the $100 aggregate.
+      expect(caught!.limitUsd).toBeCloseTo(1.0);
+      // spent must be the step-committed amount, not the aggregate spent.
+      expect(caught!.spentUsd).toBeLessThanOrEqual(1.0 + 1e-6);
+      // The message should contain the step ceiling.
+      expect(caught!.message).toContain("1.000000");
+    });
+  });
+
   it("frees the step cap on exit", () => {
     const guard = new BudgetGuard(100, silent);
     guard.step({ maxTokens: 100 }, (g) => {

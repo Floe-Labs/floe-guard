@@ -571,9 +571,7 @@ class BudgetGuard:
                 # holds the estimate in one transaction, so overlapping processes
                 # can't both clear a stale total. It returns the fresh snapshot.
                 window_id = self._current_window_id_locked()
-                accepted, spent, reserved = self._store.reserve(
-                    window_id, self.limit_usd, estimate
-                )
+                accepted, spent, reserved = self._store.reserve(window_id, self.limit_usd, estimate)
                 self.spent_usd, self._reserved = spent, reserved
                 if accepted:
                     return _PersistentReservation(estimate, window_id)
@@ -863,9 +861,7 @@ class BudgetGuard:
             if self._store is not None:
                 self._apply_persistent_terminal_locked(
                     reserved,
-                    lambda window_id: self._store.release(
-                        window_id, self.limit_usd, reserved_usd
-                    ),
+                    lambda window_id: self._store.release(window_id, self.limit_usd, reserved_usd),
                 )
             else:
                 self._consume_reservation_locked(reserved)
@@ -1394,10 +1390,11 @@ class BudgetGuard:
                     s_committed > step.max_usd - _EPS
                     or s_committed + estimate_usd > step.max_usd + _EPS
                 ):
-                    # USD message stays aggregate-shaped (matches the original
-                    # _raise_block, which reported spent_usd/limit_usd for a step
-                    # USD block too).
-                    return ("usd", "step", self.spent_usd, self.limit_usd)
+                    # Report the step's own committed spend and ceiling so the
+                    # BudgetExceeded message names the actual violated boundary,
+                    # not the aggregate guard values (which are much larger and
+                    # misleading when only the step ceiling was crossed).
+                    return ("usd", "step", s_committed, step.max_usd)
             if step.max_tokens is not None:
                 s_committed_t = step.spent_tokens + step.reserved_tokens
                 if (

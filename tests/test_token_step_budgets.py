@@ -85,6 +85,28 @@ def test_step_usd_cap_hard_blocks() -> None:
     assert not isinstance(exc.value, TokenBudgetExceeded)
 
 
+def test_step_usd_diagnostics_report_step_ceiling() -> None:
+    """When a step USD ceiling is crossed the BudgetExceeded must report
+    the step's own committed spend and the step ceiling, NOT the aggregate
+    guard figures (which are much larger and misleading).
+    """
+    guard = BudgetGuard(limit_usd=10.0, on_block=lambda *_: None)  # aggregate = $10
+    with guard.step(max_usd=1.0) as g:
+        # Spend $0.80 inside the step before trying to reserve another $0.30.
+        g.record(MODEL, 100_000, 50_000)  # gpt-4o: ~$0.75 prompt + $0.50 completion
+        with pytest.raises(BudgetExceeded) as exc:
+            g.reserve(0.30)  # step ceiling = $1.00, already past it
+    err = exc.value
+    assert not isinstance(err, TokenBudgetExceeded)
+    # The limit must be the step ceiling, not the $10 aggregate.
+    assert err.limit_usd == pytest.approx(1.0)
+    # The spent value must reflect the step's committed (spent + reserved) spend.
+    # We reserved $0.00 before, so spent_usd == step.spent_usd after record().
+    assert err.spent_usd <= 1.0 + 1e-6  # committed <= step ceiling when blocking
+    # The error message must contain the step ceiling, not the $10 aggregate.
+    assert "1.000000" in str(err)
+
+
 def test_step_cap_frees_on_exit() -> None:
     guard = BudgetGuard(limit_usd=100.0, on_block=lambda *_: None)
     with guard.step(max_tokens=100) as g:
