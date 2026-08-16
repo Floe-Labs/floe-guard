@@ -13,6 +13,13 @@ from floe_guard import (
     async_with_budget_retry,
     with_budget_retry,
 )
+from floe_guard.errors import (
+    DeadlineExceeded,
+    FloeGuardError,
+    HostedEnforcementError,
+    UnpriceableModelError,
+    UnpriceableVoiceError,
+)
 
 
 class RetryableError(RuntimeError):
@@ -163,3 +170,78 @@ async def test_async_helper_degrades_near_limit() -> None:
 
     assert result == "cheap-ok"
     assert calls == {"primary": 1, "cheap": 1}
+
+
+# ── FloeGuardError family is non-retryable ────────────────────────────────────
+
+
+def test_unpriceable_model_error_is_not_retried() -> None:
+    """UnpriceableModelError must NOT be retried — it is deterministic."""
+    guard = BudgetGuard(limit_usd=1.00)
+    calls = {"count": 0}
+
+    def call() -> str:
+        calls["count"] += 1
+        raise UnpriceableModelError("some-mystery-model")
+
+    with pytest.raises(UnpriceableModelError):
+        with_budget_retry(guard, call, estimated_cost=0.01, max_attempts=3)
+
+    assert calls["count"] == 1
+
+
+def test_plain_value_error_is_retried_by_default() -> None:
+    """Ordinary non-FloeGuard exceptions should still retry."""
+    guard = BudgetGuard(limit_usd=1.00)
+    calls = {"count": 0}
+
+    def call() -> str:
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise ValueError("transient")
+        return "ok"
+
+    result = with_budget_retry(guard, call, estimated_cost=0.01, max_attempts=3)
+    assert result == "ok"
+    assert calls["count"] == 3
+
+
+def test_budget_exceeded_is_not_retried() -> None:
+    """BudgetExceeded (a FloeGuardError subclass) must remain non-retryable."""
+    guard = BudgetGuard(limit_usd=1.00, on_block=lambda *_: None)
+    guard.record_tool("seed", 0.99)
+    calls = {"count": 0}
+
+    def call() -> str:
+        calls["count"] += 1
+        raise RetryableError("fail")
+
+    with pytest.raises(BudgetExceeded):
+        with_budget_retry(guard, call, estimated_cost=0.02, max_attempts=3)
+
+    # The first attempt raised RetryableError, guard.check() then raised
+    # BudgetExceeded — call itself ran exactly once.
+    assert calls["count"] == 1
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        UnpriceableVoiceError("elevenlabs", "tts"),
+        HostedEnforcementError("network timeout"),
+        DeadlineExceeded(500.0, 300.0),
+    ],
+)
+def test_floe_guard_error_subclasses_are_not_retried(exc: FloeGuardError) -> None:
+    """Every FloeGuardError subclass must be treated as terminal."""
+    guard = BudgetGuard(limit_usd=1.00)
+    calls = {"count": 0}
+
+    def call() -> str:
+        calls["count"] += 1
+        raise exc
+
+    with pytest.raises(type(exc)):
+        with_budget_retry(guard, call, estimated_cost=0.01, max_attempts=3)
+
+    assert calls["count"] == 1
