@@ -56,14 +56,16 @@ def test_runaway_loop_output_ordering() -> None:
     assert "Loop stopped at call" in combined, "expected stop message in output"
 
     start_pos = combined.index("Starting a runaway loop")
-    # The budget-exceeded banner is written to stderr by the library.
+    # The budget-exceeded banner is written to stderr by the library and is
+    # deterministic for this demo (the loop always crosses the ceiling), so
+    # require it — its absence is a regression, not a pass.
+    assert "BUDGET EXCEEDED" in combined, "expected the BUDGET EXCEEDED banner in output"
+    banner_pos = combined.index("BUDGET EXCEEDED")
     # After merging, it must come AFTER the startup line.
-    if "BUDGET EXCEEDED" in combined:
-        banner_pos = combined.index("BUDGET EXCEEDED")
-        assert start_pos < banner_pos, (
-            "startup message must appear before the BUDGET EXCEEDED banner; "
-            f"got start_pos={start_pos}, banner_pos={banner_pos}"
-        )
+    assert start_pos < banner_pos, (
+        "startup message must appear before the BUDGET EXCEEDED banner; "
+        f"got start_pos={start_pos}, banner_pos={banner_pos}"
+    )
 
 
 def test_budget_aware() -> None:

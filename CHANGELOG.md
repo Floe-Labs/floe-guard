@@ -73,6 +73,7 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 - **Deterministic stdout/stderr ordering for redirected demo output.** Added
   `flush=True` to every `print()` status line in
   `examples/runaway_loop.py`, `examples/budget_aware.py`,
+  `examples/context_size.py`, `examples/retrieval_depth.py`,
   `examples/tool_budget.py`, `examples/step_budget.py`,
   `examples/streaming_guard.py`, `examples/openai_adapter.py`,
   `examples/anthropic_adapter.py`, `examples/budget_retry.py`, and
