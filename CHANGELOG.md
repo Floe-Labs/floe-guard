@@ -64,6 +64,39 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   pre-turn hard-stop is bypassed until you re-`attach()`; `update_options` (same
   agent, swapped models) keeps the reserve hook.
 
+## Unreleased — js 0.13.0
+
+### Added (js)
+
+- **Opt-in ledger sync — `BudgetGuard.enableSync()` / `disableSync()` / `sync()`
+  + `pushLedger()`** (parity with the Python client). Pushes the guard's
+  `exportLog()` JSONL to Floe's Reconcile Mode (`POST /v1/agents/ledger/sync`) so
+  BYOK / self-hosted / off-path spend the gateway never routed still lands on the
+  ledger and your **Coverage Score** becomes computable. **Budget, not balance:**
+  it reports what you already spent for coverage/attribution; it moves no money
+  and changes no wallet balance. Re-syncing is safe — the sync endpoint is
+  idempotent by design (already-ingested events aren't double-counted).
+  - **Zero-telemetry is preserved as the default.** Sync is OFF until you call
+    `enableSync(apiKey)`, and even then nothing leaves the process until you call
+    `sync()` — there is no implicit enablement and no background send. `sync()` on
+    a guard that never opted in throws (no network); `disableSync()` revokes it.
+    `sync()` snapshots the opt-in key atomically before any `await`, so a racing
+    `disableSync()` can't cause a post-revocation send or an env-key fallback.
+  - **The request body is exactly `exportLog()`, validated.** Before any network,
+    every ledger line is checked against the `exportLog()` schema and **any
+    non-schema / unknown field is rejected** (`LedgerSyncError`) — a hand-supplied
+    file can't smuggle prompts, content, or identifiers past the privacy contract.
+    The key rides the `Authorization: Bearer` header (`Content-Type:
+    application/x-ndjson`).
+  - **Fail-closed.** `pushLedger(jsonl, apiKey?, { baseUrl?, timeoutMs? })` (over
+    `fetch`) refuses to send without a key (arg or `FLOE_API_KEY`) or over a
+    non-https / malformed base URL — the key and ledger are never transmitted in
+    those cases — **refuses redirects** (`redirect: "error"`, so a 3xx can't
+    re-send the key/ledger to another host), and throws `LedgerSyncError` on a
+    non-2xx / network / malformed response or an invalid (non-integer / negative)
+    `synced` count. An empty ledger is a no-op (`0`, no network). (The `floe-guard
+    push` CLI stays Python-only for now.)
+
 ## Unreleased — js 0.12.0
 
 ### Added (js)

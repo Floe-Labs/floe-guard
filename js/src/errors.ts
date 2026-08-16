@@ -128,6 +128,25 @@ export class UnpriceableVoiceError extends FloeGuardError {
 }
 
 /**
+ * Thrown when an **opt-in** ledger sync to Reconcile Mode fails.
+ *
+ * Covers a missing API key, a non-https/malformed base URL, a non-2xx response
+ * (401 bad/missing key, 403 agent closed/suspended), a network/timeout failure, or
+ * a malformed response. Sync is off by default and only runs when the caller
+ * explicitly opts in ({@link BudgetGuard.enableSync} + {@link BudgetGuard.sync}) —
+ * this error never fires for a guard that hasn't opted in, because such a guard
+ * never sends.
+ *
+ * Mirrors `LedgerSyncError` in `src/floe_guard/errors.py`.
+ */
+export class LedgerSyncError extends FloeGuardError {
+  constructor(message: string) {
+    super(message);
+    this.name = "LedgerSyncError";
+  }
+}
+
+/**
  * Thrown before a call whose projected duration would blow the SLA.
  *
  * The latency twin of {@link BudgetExceeded}: `LatencyBudget.check()` throws this
