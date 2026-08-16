@@ -92,10 +92,10 @@ def test_step_usd_diagnostics_report_step_ceiling() -> None:
     """
     guard = BudgetGuard(limit_usd=10.0, on_block=lambda *_: None)  # aggregate = $10
     with guard.step(max_usd=1.0) as g:
-        # Spend $0.80 inside the step before trying to reserve another $0.30.
-        g.record(MODEL, 100_000, 50_000)  # gpt-4o: ~$0.75 prompt + $0.50 completion
+        # Spend ~$0.75 inside the step before trying to reserve another $0.30.
+        g.record(MODEL, 100_000, 50_000)  # gpt-4o: $0.25 prompt + $0.50 completion
         with pytest.raises(BudgetExceeded) as exc:
-            g.reserve(0.30)  # step ceiling = $1.00, already past it
+            g.reserve(0.30)  # step ceiling = $1.00, 0.75 + 0.30 would cross it
     err = exc.value
     assert not isinstance(err, TokenBudgetExceeded)
     # The limit must be the step ceiling, not the $10 aggregate.
