@@ -66,7 +66,8 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 - **Windows-safe example output.** Replace non-cp1252 characters (`U+2192 →`,
   `U+2248 ≈`) with ASCII equivalents (`->`, `~=`) in the printed strings of
   `examples/budget_aware.py`, `examples/context_size.py`,
-  `examples/retrieval_depth.py`, and `examples/streaming_guard.py`. The
+  `examples/retrieval_depth.py`, `examples/streaming_guard.py`, and
+  `examples/langgraph_budget_aware.py`. The
   Unicode-only characters caused `UnicodeEncodeError` on Windows consoles using
   the default cp1252 encoding. Characters that appear only in docstrings or
   comments (not printed at runtime) are left unchanged.
