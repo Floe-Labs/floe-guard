@@ -26,6 +26,31 @@ it for LLM calls; for paid tools, [`reserve_tool()` / `settle_tool()`](#tool-spe
 block *before* the call runs (`record_tool()` alone meters a call after the
 fact — it can't stop one already made).
 
+## What's inside
+
+floe-guard grows from a one-line local ceiling to fleet-wide coverage — take only
+the depth you need:
+
+- **Stop a runaway loop** — the [hard stop](#how-it-works) before the next call
+  (`check()` / `record()`), or a [framework adapter](#framework-adapters-optional-extras)
+  for OpenAI / Anthropic / Gemini / CrewAI / LangChain / LangGraph / LiteLLM /
+  Vercel AI SDK.
+- **Guard a voice call** — per-turn [voice adapters](#voice-adapters-stt--llm--tts)
+  (Pipecat, LiveKit, Vapi, Retell) that price STT + LLM + TTS + telephony, and
+  [pre-call admission gates](#voice-admission-gates-pre-call) that reject an
+  over-budget call at the door.
+- **Adapt before the cap** — [`advisory()`](#context-aware-budgeting) (near-limit
+  flag + `$/min` burn rate) to taper, plus
+  [token / step](#token-ceilings-and-per-step-budgets) and
+  [latency](#latencybudget--deadlines-the-same-way) budgets.
+- **Upgrade to hosted** — [`from_floe()`](#one-line-to-hosted) reads your
+  server-side budget headroom into the local ceiling, one line.
+- **Feed Coverage Score** — [opt-in ledger sync](#sync-your-ledger-for-coverage-score-opt-in)
+  pushes off-path (BYOK / self-hosted) spend so it counts. Off by default.
+
+Everything above is **local, no account, [no telemetry](#no-telemetry)** — unless
+you explicitly opt into a hosted read or a ledger sync.
+
 ## Works best with the Floe skill
 
 `floe-guard` is a local ceiling — it stops paid work before your budget blows, standalone, no account needed. To govern your agent's **whole** vendor bill (LLM, voice, telephony, data) on one key with server-side spend controls, add the **Floe agent skill** — it teaches Claude Code / Cursor the same govern-your-spend workflow `floe-guard` enforces locally:
