@@ -42,8 +42,8 @@ def main() -> None:
         on_degrade=degrade,
     )
 
-    print(result)
-    print(calls)
+    print(result, flush=True)
+    print(calls, flush=True)
 
 
 if __name__ == "__main__":

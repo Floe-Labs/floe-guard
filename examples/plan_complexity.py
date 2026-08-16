@@ -69,11 +69,15 @@ def main() -> None:
     # Reasoning thins at 40% used (TAPER_BPS), optional tasks drop at 70% (near_limit).
     guard = BudgetGuard(limit_usd=0.10, near_limit_bps=7000)
     required = sum(1 for _, is_required, _ in PLAN if is_required)
-    print(f"Budget ${guard.limit_usd:.2f} · model fixed at {MODEL} · plan complexity adapts")
+    print(
+        f"Budget ${guard.limit_usd:.2f} · model fixed at {MODEL} · plan complexity adapts",
+        flush=True,
+    )
     print(
         f"  {len(PLAN)} sub-tasks ({required} required) · thinner reasoning at "
         f"{TAPER_BPS / 100:.0f}% used · optional dropped at "
-        f"{guard.near_limit_bps / 100:.0f}%\n"
+        f"{guard.near_limit_bps / 100:.0f}%\n",
+        flush=True,
     )
 
     round_no = 0
@@ -87,12 +91,13 @@ def main() -> None:
         print(
             f"  round {round_no}: {planned} of {len(PLAN)} sub-tasks · "
             f"{'full' if full_reasoning else 'reduced'} reasoning  "
-            f"[{adv.used_bps / 100:.0f}% used, ${adv.remaining_usd:.4f} left]"
+            f"[{adv.used_bps / 100:.0f}% used, ${adv.remaining_usd:.4f} left]",
+            flush=True,
         )
 
         for name, is_required, steps in PLAN:
             if not is_required and not run_optional:
-                print(f"    {name:<19} [skipped — optional]")
+                print(f"    {name:<19} [skipped — optional]", flush=True)
                 continue
 
             reasoning_steps = reasoning_steps_for(steps, full_reasoning)
@@ -102,7 +107,7 @@ def main() -> None:
             try:
                 guard.check(est)  # the hard guarantee — simplified or not, this holds the line
             except BudgetExceeded:
-                print(f"    {name:<19} [blocked — would cross the ceiling]")
+                print(f"    {name:<19} [blocked — would cross the ceiling]", flush=True)
                 stopped = True
                 break
 
@@ -116,11 +121,15 @@ def main() -> None:
                 completed_required += 1
             plural = "s" if reasoning_steps > 1 else ""
             steps_label = f"{reasoning_steps} reasoning step{plural}"
-            print(f"    {name:<19} {steps_label:<18} +${cost:.4f}  (total ${guard.spent_usd:.4f})")
+            print(
+                f"    {name:<19} {steps_label:<18} +${cost:.4f}  (total ${guard.spent_usd:.4f})",
+                flush=True,
+            )
 
     print(
         f"\nStopped in round {round_no} after {completed_required} required sub-tasks. "
-        f"Final spend ${guard.spent_usd:.4f} (held under ${guard.limit_usd:.2f})."
+        f"Final spend ${guard.spent_usd:.4f} (held under ${guard.limit_usd:.2f}).",
+        flush=True,
     )
 
 

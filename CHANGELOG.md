@@ -63,6 +63,35 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   `llm_node` isn't wrapped, so its turns are still metered (reconcile) but the
   pre-turn hard-stop is bypassed until you re-`attach()`; `update_options` (same
   agent, swapped models) keeps the reserve hook.
+- **Windows-safe example output.** Replace non-cp1252 characters (`U+2192 →`,
+  `U+2248 ≈`) with ASCII equivalents (`->`, `~=`) in the printed strings of
+  `examples/budget_aware.py`, `examples/context_size.py`,
+  `examples/retrieval_depth.py`, and `examples/streaming_guard.py`. The
+  Unicode-only characters caused `UnicodeEncodeError` on Windows consoles using
+  the default cp1252 encoding. Characters that appear only in docstrings or
+  comments (not printed at runtime) are left unchanged.
+- **Deterministic stdout/stderr ordering for redirected demo output.** Added
+  `flush=True` to every `print()` status line in
+  `examples/runaway_loop.py`, `examples/budget_aware.py`,
+  `examples/tool_budget.py`, `examples/step_budget.py`,
+  `examples/streaming_guard.py`, `examples/openai_adapter.py`,
+  `examples/anthropic_adapter.py`, `examples/budget_retry.py`, and
+  `examples/plan_complexity.py`. When stdout is redirected or piped the OS
+  buffers it while stderr (where the library's block banner goes) is
+  unbuffered, producing output in the wrong order. Flushing each status print
+  ensures the logical sequence is preserved. The library's own stderr behavior
+  is unchanged.
+- **Subprocess smoke tests for the no-API-key examples.** New
+  `tests/test_examples_smoke.py` executes each README-promoted example as a
+  real subprocess (no import tricks), strips `FLOE_API_KEY` and
+  `OPENAI_API_KEY` from the environment, asserts `returncode == 0`, and
+  checks for a meaningful output marker. Covers: `runaway_loop.py`,
+  `budget_aware.py`, `context_size.py`, `retrieval_depth.py`,
+  `plan_complexity.py`, `tool_budget.py`, `step_budget.py`,
+  `streaming_guard.py`, `budget_retry.py`, `openai_adapter.py`, and
+  `anthropic_adapter.py`. The ordering test for `runaway_loop.py` merges
+  stdout and stderr and asserts that "Starting a runaway loop" precedes the
+  "BUDGET EXCEEDED" banner.
 
 ## Unreleased — js 0.13.0
 

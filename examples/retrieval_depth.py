@@ -59,10 +59,14 @@ def main() -> None:
     """Run the retrieval depth adaptation example."""
     # First downshift at 40% used (TAPER_BPS), final floor at 70% (near_limit).
     guard = BudgetGuard(limit_usd=0.10, near_limit_bps=7000)
-    print(f"Budget ${guard.limit_usd:.2f} · model fixed at {MODEL} · retrieval depth adapts")
     print(
-        f"  {TOP_K_FULL} chunks → {TOP_K_TAPER} at {TAPER_BPS / 100:.0f}% used "
-        f"→ {TOP_K_FLOOR} at {guard.near_limit_bps / 100:.0f}%\n"
+        f"Budget ${guard.limit_usd:.2f} · model fixed at {MODEL} · retrieval depth adapts",
+        flush=True,
+    )
+    print(
+        f"  {TOP_K_FULL} chunks -> {TOP_K_TAPER} at {TAPER_BPS / 100:.0f}% used "
+        f"-> {TOP_K_FLOOR} at {guard.near_limit_bps / 100:.0f}%\n",
+        flush=True,
     )
 
     step = 0
@@ -74,7 +78,8 @@ def main() -> None:
         if top_k != depth:
             print(
                 f"  [advisory] {adv.used_bps / 100:.0f}% used, "
-                f"${adv.remaining_usd:.4f} left → retrieving {top_k} chunks, not {depth}\n"
+                f"${adv.remaining_usd:.4f} left -> retrieving {top_k} chunks, not {depth}\n",
+                flush=True,
             )
             depth = top_k
 
@@ -86,7 +91,8 @@ def main() -> None:
         except BudgetExceeded:
             print(
                 f"\nStopped at step {step}. "
-                f"Final spend ${guard.spent_usd:.4f} (held under ${guard.limit_usd:.2f})."
+                f"Final spend ${guard.spent_usd:.4f} (held under ${guard.limit_usd:.2f}).",
+                flush=True,
             )
             break
 
@@ -98,7 +104,8 @@ def main() -> None:
         )
         print(
             f"  step {step:>2}: {MODEL:<8} {top_k:>2} chunks  "
-            f"+${cost:.4f}  (total ${guard.spent_usd:.4f})"
+            f"+${cost:.4f}  (total ${guard.spent_usd:.4f})",
+            flush=True,
         )
 
 
