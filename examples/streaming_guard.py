@@ -37,30 +37,36 @@ def stub_llm_stream() -> Iterator[str]:
 
 
 def main() -> None:
-    guard = BudgetGuard(limit_usd=0.01)  # ≙ 1_000 gpt-4o output tokens
+    guard = BudgetGuard(limit_usd=0.01)  # ~= 1_000 gpt-4o output tokens
 
-    # ── 1. the oversized FIRST call is blocked pre-flight ──────────────────────
-    print(f"Budget: ${guard.limit_usd:.2f}\n")
-    print("1) First call asks for 100k output tokens (≈ $1.00):")
+    # -- 1. the oversized FIRST call is blocked pre-flight ──────────────────────
+    print(f"Budget: ${guard.limit_usd:.2f}\n", flush=True)
+    print("1) First call asks for 100k output tokens (~= $1.00):", flush=True)
     estimate = guard.estimate_call(MODEL, prompt_tokens=1_000, max_completion_tokens=100_000)
     try:
         guard.reserve(estimate)  # request-sized, so call #1 has no free pass
     except BudgetExceeded:
-        print("   blocked BEFORE the request was sent — $0.00 spent.\n")
+        print("   blocked BEFORE the request was sent — $0.00 spent.\n", flush=True)
 
-    # ── 2. a stream that starts cheap but runs long is cut off mid-flight ──────
-    print("2) Streaming a response that never wants to stop:")
+    # -- 2. a stream that starts cheap but runs long is cut off mid-flight ──────
+    print("2) Streaming a response that never wants to stop:", flush=True)
     chunks = 0
     try:
         for _ in guard_stream(guard, MODEL, stub_llm_stream()):
             chunks += 1
     except BudgetExceeded:
-        print(f"   stream cut off mid-generation after {chunks} chunks.")
-        print(f"   spent ${guard.spent_usd:.4f} of the ${guard.limit_usd:.2f} ceiling — "
-              "the partial spend is settled, not lost:")
+        print(f"   stream cut off mid-generation after {chunks} chunks.", flush=True)
+        print(
+            f"   spent ${guard.spent_usd:.4f} of the ${guard.limit_usd:.2f} ceiling — "
+            "the partial spend is settled, not lost:",
+            flush=True,
+        )
         for event in guard.spend_log:
-            print(f"     ledger: {event.kind} {event.model_or_tool} "
-                  f"{event.completion_tokens} tokens → ${event.cost_usd:.4f}")
+            print(
+                f"     ledger: {event.kind} {event.model_or_tool} "
+                f"{event.completion_tokens} tokens -> ${event.cost_usd:.4f}",
+                flush=True,
+            )
 
 
 if __name__ == "__main__":
