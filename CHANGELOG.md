@@ -22,8 +22,10 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   `urlopen` is never called for a guard that hasn't opted in). The **request body**
   is exactly the `export_log()` JSONL — priced spend events (timestamp, kind,
   model/tool, tokens, `cost_usd`, optional `label`/`reserved`) — and `push_ledger`
-  **validates every line, rejecting any field outside that schema**, so no prompts,
-  content, or identifiers can leave even from a hand-supplied ledger. Your key
+  **validates every line, rejecting any field outside that schema**, so no prompts
+  or message content leave even from a hand-supplied ledger. The only
+  caller-controlled string transmitted is the optional `label` you set yourself
+  (keep identifiers out of it). Your key
   travels in the `Authorization` header; redirects are refused so key + ledger
   can't be re-sent to an unapproved host. `disable_sync()` revokes it.
   Budget, not balance: it reports what you already spent for coverage/attribution;

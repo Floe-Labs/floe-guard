@@ -253,3 +253,34 @@ def test_sync_uses_snapshotted_key_not_env(monkeypatch: pytest.MonkeyPatch) -> N
     with mock.patch("floe_guard.sync._OPENER.open", return_value=_ok({"synced": 1})) as opener:
         guard.sync()
     assert opener.call_args.args[0].get_header("Authorization") == "Bearer floe_explicit"
+
+
+def test_no_upload_starts_after_disable_returns() -> None:
+    # The disable_sync() ordering guarantee: once it returns, no NEW upload starts.
+    # An in-flight sync (started before disable) may finish; a sync after does not.
+    import threading
+
+    guard = _guard_with_spend()
+    guard.enable_sync(api_key="floe_abc")
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def blocking_open(request, timeout=None):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        started.set()
+        release.wait(timeout=5)
+        return _ok({"synced": 1})
+
+    with mock.patch("floe_guard.sync._OPENER.open", side_effect=blocking_open):
+        first = threading.Thread(target=guard.sync)
+        first.start()
+        assert started.wait(timeout=5)  # the first sync is now inside open()
+        guard.disable_sync()  # returns — no new upload may start after this
+        with pytest.raises(RuntimeError, match="not enabled"):
+            guard.sync()  # a NEW sync post-disable raises, with no second open()
+        assert calls == 1
+        release.set()
+        first.join(timeout=5)
+    assert calls == 1  # still just the one in-flight call
