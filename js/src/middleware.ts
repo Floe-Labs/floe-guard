@@ -20,7 +20,9 @@
  * Reserving before the await is what makes parallel calls (`Promise.all` over
  * several generations) honour the ceiling: each holds its slice instead of all
  * reading the same stale total (issue #18). The reservation is released if the
- * call throws, or if a stream ends without reporting usage.
+ * call throws, is cancelled by the consumer, or if a stream completes without a
+ * usage-bearing finish part — in the last case the stream is also rejected with
+ * an error rather than treated as a free ($0) call (fail-closed).
  *
  * The model id used for pricing comes from `model.modelId`.
  */
@@ -170,10 +172,20 @@ export function budgetGuardMiddleware(guard: BudgetGuard): BudgetGuardMiddleware
             controller.enqueue(chunk);
           },
           flush() {
-            // Clean close with no finish/usage part — free the held budget.
+            // The stream closed cleanly but never emitted a usage-bearing
+            // finish part. Per the package's fail-closed philosophy (see
+            // usageTokens()), we cannot treat an unmetered LLM call as free:
+            // release the hold first (so the ceiling is not permanently
+            // depleted), then throw so the consumer learns the call was not
+            // settled. This mirrors how wrapGenerate() rejects missing usage.
             if (!handled) {
               handled = true;
               guard.release(reserved);
+              throw new Error(
+                `Model '${model.modelId}' stream completed without a token-usage ` +
+                  `finish part — the budget guard cannot meter spend it cannot see, ` +
+                  `so this call is rejected rather than treated as free.`,
+              );
             }
           },
           cancel() {
