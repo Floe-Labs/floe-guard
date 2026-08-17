@@ -239,6 +239,12 @@ guard = BudgetGuard(
 
 ### What the bundled map prices
 
+The bundled prices are a **dated snapshot** of public list rates — vendors change
+them, so treat freshness as a signal, not a guarantee. The snapshot date is
+exposed: `floe_guard.cost_map_generated_at()` (Python) / `costMapGeneratedAt()`
+(TypeScript) returns the `YYYY-MM-DD` it was last generated/verified, so you can
+display it or gate on it.
+
 The vendored map deliberately covers **OpenAI, Anthropic, Google Gemini (AI
 Studio), and a curated set of Groq models** (the rules live in
 [`scripts/update-cost-map.mjs`](scripts/update-cost-map.mjs)) — not all of

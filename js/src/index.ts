@@ -38,6 +38,7 @@ export {
   type PricedModel,
   resolvePrice,
   priceTokens,
+  costMapGeneratedAt,
 } from "./pricing.js";
 export {
   withBudgetRetry,

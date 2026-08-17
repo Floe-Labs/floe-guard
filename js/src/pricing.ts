@@ -33,6 +33,19 @@ interface CostMapEntry {
 const COST_MAP = costMapJson as Record<string, CostMapEntry>;
 
 /**
+ * Date the bundled pricing snapshot was last generated/verified (ISO
+ * `YYYY-MM-DD`), or `undefined` if the bundled map predates the metadata.
+ * Pricing is a drift-prone snapshot of public list rates; this surfaces *how
+ * fresh* it is — a trust signal you can display or gate on. Parity with the
+ * Python `cost_map_generated_at()`.
+ */
+export function costMapGeneratedAt(): string | undefined {
+  const meta = (costMapJson as Record<string, unknown>).__meta__;
+  const value = (meta as Record<string, unknown> | undefined)?.generated_at;
+  return typeof value === "string" ? value : undefined;
+}
+
+/**
  * The one `<provider>/` prefix that is safe to strip: the remainder of a
  * `groq/…` id is the ChatGroq id the map vendors (e.g. `groq/qwen/qwen3-32b` →
  * `qwen/qwen3-32b`). `openai/` and `anthropic/` are deliberately excluded:

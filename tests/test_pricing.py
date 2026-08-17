@@ -251,3 +251,23 @@ def test_price_tokens_caching_constants() -> None:
     assert _CACHE_CREATION_1H_MULTIPLIER == 2.00
     assert _CACHE_READ_MULTIPLIER == 0.10
 
+
+
+def test_cost_map_generated_at_is_iso_date():
+    """The bundled snapshot exposes a YYYY-MM-DD freshness date."""
+    import re
+
+    from floe_guard import cost_map_generated_at
+
+    date = cost_map_generated_at()
+    assert date is not None
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", date), date
+
+
+def test_reserved_meta_keys_are_not_priceable_models():
+    """__meta__ / __voice__ are reserved keys, never resolved as models."""
+    from floe_guard.pricing import _COST_MAP
+
+    assert "__meta__" not in _COST_MAP
+    assert "__voice__" not in _COST_MAP
+    assert "gpt-4o" in _COST_MAP  # real models are still present

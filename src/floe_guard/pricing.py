@@ -47,9 +47,30 @@ def _load_cost_map() -> dict[str, Any]:
 # per-token prices), so keeping them out of _COST_MAP means the token resolver
 # and its whole-map invariants never see them. See voice_pricing.py.
 _VOICE_MAP_KEY = "__voice__"
+# Reserved metadata key: provenance/freshness of the bundled snapshot, e.g.
+# {"generated_at": "2026-08-17"}. Like __voice__ it is NOT a model, so it stays
+# out of _COST_MAP; surfaced via cost_map_generated_at().
+_META_KEY = "__meta__"
 _RAW_COST_MAP: dict[str, Any] = _load_cost_map()
 _VOICE_MAP: dict[str, Any] = _RAW_COST_MAP.get(_VOICE_MAP_KEY, {})
-_COST_MAP: dict[str, Any] = {k: v for k, v in _RAW_COST_MAP.items() if k != _VOICE_MAP_KEY}
+_META: dict[str, Any] = _RAW_COST_MAP.get(_META_KEY, {})
+# Exclude every reserved dunder key (__voice__, __meta__, …) so the token
+# resolver only ever sees real model ids.
+_COST_MAP: dict[str, Any] = {
+    k: v for k, v in _RAW_COST_MAP.items() if not (k.startswith("__") and k.endswith("__"))
+}
+
+
+def cost_map_generated_at() -> str | None:
+    """Date the bundled pricing snapshot was last generated/verified.
+
+    Returns the ISO ``YYYY-MM-DD`` string from the cost map's ``__meta__`` block,
+    or ``None`` if the bundled map predates the metadata. Pricing is a
+    drift-prone snapshot of public list rates; this surfaces *how fresh* it is (a
+    trust signal you can display or gate on).
+    """
+    value = _META.get("generated_at")
+    return value if isinstance(value, str) else None
 
 
 # The one "<provider>/" prefix that is safe to strip: the remainder of a

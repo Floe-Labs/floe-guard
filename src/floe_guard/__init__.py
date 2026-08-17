@@ -39,7 +39,13 @@ from .guard import (
 )
 from .hosted import hosted_enforcement_available, hosted_remaining_usd
 from .latency import LatencyAdvisory, LatencyBudget
-from .pricing import ManualPrice, PricedModel, price_tokens, resolve_price
+from .pricing import (
+    ManualPrice,
+    PricedModel,
+    cost_map_generated_at,
+    price_tokens,
+    resolve_price,
+)
 from .retry import RetryPlan, async_with_budget_retry, with_budget_retry
 from .store import SqliteStore, StateStore
 from .stream import StreamGuard, guard_stream
@@ -85,6 +91,7 @@ __all__ = [
     "UnpriceableVoiceError",
     "ManualPrice",
     "PricedModel",
+    "cost_map_generated_at",
     "price_tokens",
     "resolve_price",
     "VoiceRate",

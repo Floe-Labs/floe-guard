@@ -1,4 +1,8 @@
 {
+  "__meta__": {
+    "generated_at": "2026-08-17",
+    "source": "LiteLLM public model prices (bundled snapshot); voice rates verified from vendor list pages"
+  },
   "chatgpt-4o-latest": {
     "input_cost_per_token": 0.000005,
     "output_cost_per_token": 0.000015,

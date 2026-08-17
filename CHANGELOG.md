@@ -8,7 +8,7 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.17.1
+## Unreleased — py 0.18.0
 
 ### Fixed (py)
 
@@ -44,6 +44,13 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   rationale recorded inline in `pyproject.toml`.
 
 ### Added (py)
+
+- **Bundled-pricing freshness.** `cost_map_generated_at()` returns the
+  `YYYY-MM-DD` the bundled cost map was last generated/verified (from a reserved
+  `__meta__` key), so you can display or gate on how fresh the drift-prone public
+  list rates are. `scripts/update-cost-map.mjs` stamps it on every refresh; the
+  token resolver excludes `__meta__` the same way it excludes `__voice__`. TS
+  parity: `costMapGeneratedAt()`.
 
 - **Opt-in ledger sync → Reconcile Mode / Coverage Score.** A new **explicit,
   off-by-default** way to push your local spend ledger to Floe so **Coverage
@@ -128,7 +135,14 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   stdout and stderr and asserts that "Starting a runaway loop" precedes the
   "BUDGET EXCEEDED" banner.
 
-## Unreleased — js 0.13.1
+## Unreleased — js 0.14.0
+
+### Added (js)
+
+- **`costMapGeneratedAt()`** — parity with the Python `cost_map_generated_at()`:
+  returns the `YYYY-MM-DD` the bundled cost map was last generated/verified (from
+  the reserved `__meta__` key), or `undefined` on a pre-metadata map. Surfaces how
+  fresh the drift-prone bundled list rates are.
 
 ### Fixed (js)
 
