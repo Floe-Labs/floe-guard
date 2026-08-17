@@ -8,7 +8,27 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.17.0
+## Unreleased — py 0.17.1
+
+### Fixed (py)
+
+- **Retry predicate: block the entire `FloeGuardError` family, not just
+  `BudgetExceeded`.** The previous default predicate (`not isinstance(exc,
+  BudgetExceeded)`) would retry deterministic guard errors such as
+  `UnpriceableModelError`, potentially multiplying LLM spend on errors that
+  retrying cannot fix. The new default (`not isinstance(exc, FloeGuardError)`)
+  treats every `FloeGuardError` — `BudgetExceeded`, `UnpriceableModelError`,
+  `UnpriceableVoiceError`, `HostedEnforcementError`, `DeadlineExceeded`, etc. —
+  as terminal. Since `BudgetExceeded` is already a `FloeGuardError` subclass,
+  its existing no-retry behavior is preserved with no wiring changes.
+- **Step-USD diagnostics: `BudgetExceeded` now carries the step ceiling and
+  step committed spend, not the aggregate guard values.** When a per-step USD
+  budget (`guard.step(max_usd=…)`) was crossed, the resulting `BudgetExceeded`
+  reported the aggregate guard figures (`spent $X of $Y`), even though the
+  violated ceiling was the (much smaller) step cap. The blocking cross-check now
+  snapshots and returns the step's own `s_committed` and `step.max_usd`, so
+  `exc.spent_usd` / `exc.limit_usd` and the message reflect the step boundary.
+  Token-step and aggregate-budget behavior are unchanged.
 
 ### Internal (py)
 
@@ -108,7 +128,25 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   stdout and stderr and asserts that "Starting a runaway loop" precedes the
   "BUDGET EXCEEDED" banner.
 
-## Unreleased — js 0.13.0
+## Unreleased — js 0.13.1
+
+### Fixed (js)
+
+- **Retry predicate: block the entire `FloeGuardError` family, not just
+  `BudgetExceeded`.** The previous default predicate (`!(error instanceof
+  BudgetExceeded)`) would retry deterministic guard errors such as
+  `UnpriceableModelError`, potentially multiplying LLM spend on errors that
+  retrying cannot fix. The new default (`!(error instanceof FloeGuardError)`)
+  treats every `FloeGuardError` as terminal. Since `BudgetExceeded` is already
+  a `FloeGuardError` subclass, its existing no-retry behavior is preserved.
+- **Step-USD diagnostics: `BudgetExceeded` now carries the step ceiling and
+  step committed spend, not the aggregate guard values.** When a per-step USD
+  budget (`guard.step({ maxUsd: … })`) was crossed, `BudgetExceeded` reported
+  the aggregate guard figures. The blocking cross now captures the step's own
+  `sCommitted` and `step.maxUsd` and returns them in a 4-element tuple (matching
+  Python's `(dimension, scope, spent, limit)` shape), so `error.spentUsd` /
+  `error.limitUsd` and the message reflect the step boundary. Token-step and
+  aggregate-budget behavior are unchanged.
 
 ### Added (js)
 

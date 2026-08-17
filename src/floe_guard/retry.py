@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from .errors import BudgetExceeded
+from .errors import FloeGuardError
 from .guard import BudgetAdvisory, BudgetGuard
 
 T = TypeVar("T")
@@ -42,16 +42,21 @@ AsyncDegradeCallback = Callable[
 
 
 def _default_retry_if(exc: Exception) -> bool:
-    return not isinstance(exc, BudgetExceeded)
+    """Return ``True`` only for transient, non-FloeGuard errors.
+
+    Every :class:`~floe_guard.errors.FloeGuardError` — including
+    :class:`~floe_guard.errors.BudgetExceeded`,
+    :class:`~floe_guard.errors.UnpriceableModelError`, and all other
+    deterministic guard errors — is considered terminal: retrying cannot fix
+    it and would only multiply spend. Only errors from outside the guard
+    (e.g. transient network failures) are retryable by default.
+    """
+    return not isinstance(exc, FloeGuardError)
 
 
 def _validate_max_attempts(max_attempts: int) -> None:
     # Same int-not-bool contract as BudgetGuard.near_limit_bps.
-    if (
-        isinstance(max_attempts, bool)
-        or not isinstance(max_attempts, int)
-        or max_attempts < 1
-    ):
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
         raise ValueError(f"max_attempts must be an int >= 1, got {max_attempts!r}")
 
 
@@ -78,6 +83,13 @@ def with_budget_retry(
     ``max_attempts`` includes the first attempt. The last retryable exception is
     re-raised when attempts are exhausted. Control-flow exceptions
     (``KeyboardInterrupt``, ``SystemExit``, ``CancelledError``) are not caught.
+
+    By default only transient, non-:class:`~floe_guard.errors.FloeGuardError`
+    exceptions are retried. Every :class:`~floe_guard.errors.FloeGuardError`
+    (including :class:`~floe_guard.errors.BudgetExceeded` and
+    :class:`~floe_guard.errors.UnpriceableModelError`) is terminal — retrying
+    a deterministic guard error cannot fix it and would only multiply spend.
+    Supply ``retry_if`` to override.
     """
 
     _validate_max_attempts(max_attempts)
