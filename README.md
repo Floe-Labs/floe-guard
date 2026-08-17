@@ -131,6 +131,21 @@ misses the rest of the bill. Rates are a snapshot of public US list prices and
 drift — details, caveats, and the Pipecat version in
 [Voice adapters](#voice-adapters-stt--llm--tts).
 
+## Guard your first real workflow
+
+You've watched it stop a *stub* loop — the real payoff is protecting a *real* one,
+where the local ceiling earns its keep. Pick your stack; each is a drop-in adapter,
+a few lines, no rearchitecting:
+
+- **OpenAI / Anthropic / Gemini** — [`guarded_completion`](#openai) wraps the client call.
+- **LangChain / LangGraph** — a [callback handler](#langchain) / [`guarded_node`](#langgraph) per fan-out branch.
+- **CrewAI / LiteLLM** — [`budget_guarded_llm`](#crewai) / [`guarded_completion`](#litellm).
+- **Voice (Pipecat · LiveKit · Vapi · Retell)** — [per-turn voice adapters](#voice-adapters-stt--llm--tts).
+
+See the [adapter matrix](#adapter-matrix) for what ships in Python vs TypeScript.
+Only once one real workflow is protected does hosted Floe really make sense — and
+that's exactly what comes next.
+
 ## One line to hosted
 
 Already on hosted Floe? Keep every line of your code — swap the constructor.
