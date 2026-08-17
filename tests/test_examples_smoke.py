@@ -136,3 +136,19 @@ def test_anthropic_adapter() -> None:
     assert result.returncode == 0, result.stderr
     combined = result.stdout + result.stderr
     assert "cache" in combined.lower()
+
+
+def test_cli_demo() -> None:
+    """`floe-guard demo` (python -m floe_guard demo) runs from the installed package."""
+    env = {k: v for k, v in os.environ.items() if k not in {"FLOE_API_KEY", "OPENAI_API_KEY"}}
+    result = subprocess.run(
+        [sys.executable, "-m", "floe_guard", "demo"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=TIMEOUT,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    combined = result.stdout + result.stderr
+    assert "Loop stopped at call" in combined

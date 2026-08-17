@@ -14,6 +14,7 @@ import argparse
 import sys
 from collections.abc import Sequence
 
+from .demo import run_demo
 from .errors import LedgerSyncError
 from .sync import push_ledger
 
@@ -48,7 +49,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="API base URL. Defaults to $FLOE_API_BASE_URL, else the production host.",
     )
 
+    demo = sub.add_parser(
+        "demo",
+        help="Run the no-key 'stop a loop' demo (no account, no network).",
+        description=(
+            "Run the runaway-loop demo: a naive agent loop that floe-guard hard-stops "
+            "before it crosses a $0.10 ceiling. Stub LLM — no API key, no account, no "
+            "network. The same demo as examples/runaway_loop.py, runnable straight from "
+            "the installed package."
+        ),
+    )
+    demo.add_argument(
+        "--limit-usd",
+        type=float,
+        default=0.10,
+        help="Spend ceiling for the demo, in USD (default: 0.10).",
+    )
+
     args = parser.parse_args(argv)
+
+    if args.command == "demo":
+        run_demo(limit_usd=args.limit_usd)
+        return 0
 
     if args.command == "push":
         try:

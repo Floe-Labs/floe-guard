@@ -8,7 +8,7 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.17.1
+## Unreleased — py 0.18.0
 
 ### Fixed (py)
 
@@ -44,6 +44,13 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   rationale recorded inline in `pyproject.toml`.
 
 ### Added (py)
+
+- **`floe-guard demo` — the no-key demo, runnable from the installed package.**
+  `pip install floe-guard && floe-guard demo` runs the runaway-loop demo (stub
+  LLM, no account, no network) straight from the wheel — no repository checkout
+  needed. The demo logic moved into the package (`floe_guard.demo.run_demo`);
+  `examples/runaway_loop.py` is now a thin wrapper around it, so there's one
+  source of truth. `--limit-usd` overrides the $0.10 ceiling.
 
 - **Opt-in ledger sync → Reconcile Mode / Coverage Score.** A new **explicit,
   off-by-default** way to push your local spend ledger to Floe so **Coverage
