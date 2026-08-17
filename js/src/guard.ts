@@ -805,24 +805,26 @@ export class BudgetGuard {
 
   /**
    * The ONE choke point, across two dimensions and two scopes. Returns the first
-   * ceiling that blocks as `[dimension, scope]` — dimension `"usd" | "tokens"`,
-   * scope `"aggregate" | "step"` — or `null` if the call fits everywhere.
-   * Aggregate is checked before step (the guard-wide ceiling is the hard limit).
+   * ceiling that blocks as `[dimension, scope, spent, limit]` — dimension
+   * `"usd" | "tokens"`, scope `"aggregate" | "step"` — or `null` if the call
+   * fits everywhere. Aggregate is checked before step (the guard-wide ceiling
+   * is the hard limit). `spent` / `limit` are captured here so `raiseBlock`
+   * (called outside the lock) reads no shared state and stays race-free.
    */
   private blockingCross(
     estimateUsd: number,
     estimateTokens: number,
-  ): ["usd" | "tokens", "aggregate" | "step"] | null {
+  ): ["usd" | "tokens", "aggregate" | "step", number, number] | null {
     // Aggregate USD — same comparison the original check/reserve used.
     const committed = this.spentUsd + this.reserved;
     if (committed > this.limitUsd - EPS || committed + estimateUsd > this.limitUsd + EPS) {
-      return ["usd", "aggregate"];
+      return ["usd", "aggregate", this.spentUsd, this.limitUsd];
     }
     // Aggregate tokens (integers — no epsilon).
     if (this.tokenLimit !== null) {
       const committedT = this.spentTokens + this.reservedTokens;
       if (committedT >= this.tokenLimit || committedT + estimateTokens > this.tokenLimit) {
-        return ["tokens", "aggregate"];
+        return ["tokens", "aggregate", committedT, this.tokenLimit];
       }
     }
     // Innermost active step's caps (crossing an outer step requires first
@@ -832,37 +834,31 @@ export class BudgetGuard {
       if (step.maxUsd !== null) {
         const sCommitted = step.spentUsd + step.reservedUsd;
         if (sCommitted > step.maxUsd - EPS || sCommitted + estimateUsd > step.maxUsd + EPS) {
-          return ["usd", "step"];
+          // Report the step's own committed spend and ceiling so BudgetExceeded
+          // names the actual violated boundary, not the aggregate values.
+          return ["usd", "step", sCommitted, step.maxUsd];
         }
       }
       if (step.maxTokens !== null) {
         const sCommittedT = step.spentTokens + step.reservedTokens;
         if (sCommittedT >= step.maxTokens || sCommittedT + estimateTokens > step.maxTokens) {
-          return ["tokens", "step"];
+          return ["tokens", "step", sCommittedT, step.maxTokens];
         }
       }
     }
     return null;
   }
 
-  /** Notify + throw the right error for a [dimension, scope] block. */
-  private raiseBlock(blocked: ["usd" | "tokens", "aggregate" | "step"]): never {
-    const [dimension, scope] = blocked;
+  /** Notify + throw the right error for a [dimension, scope, spent, limit] block. */
+  private raiseBlock(blocked: ["usd" | "tokens", "aggregate" | "step", number, number]): never {
+    const [dimension, scope, spent, limit] = blocked;
     if (dimension === "usd") {
-      this.onBlock(this.spentUsd, this.limitUsd);
-      throw new BudgetExceeded(this.spentUsd, this.limitUsd);
+      this.onBlock(spent, limit);
+      throw new BudgetExceeded(spent, limit);
     }
-    let spentT: number;
-    let limitT: number;
-    if (scope === "step") {
-      const step = this.steps[this.steps.length - 1];
-      spentT = step.spentTokens + step.reservedTokens;
-      limitT = step.maxTokens ?? 0;
-    } else {
-      spentT = this.spentTokens + this.reservedTokens;
-      limitT = this.tokenLimit ?? 0;
-    }
-    throw new TokenBudgetExceeded(spentT, limitT, scope);
+    // Token block — counts came from blockingCross; on_block is dollar-shaped
+    // so a token block skips it.
+    throw new TokenBudgetExceeded(Math.trunc(spent), Math.trunc(limit), scope);
   }
 
   /**
