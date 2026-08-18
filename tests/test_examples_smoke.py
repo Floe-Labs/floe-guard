@@ -143,8 +143,7 @@ def test_cli_demo() -> None:
     env = {k: v for k, v in os.environ.items() if k not in {"FLOE_API_KEY", "OPENAI_API_KEY"}}
     result = subprocess.run(
         [sys.executable, "-m", "floe_guard", "demo"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         timeout=TIMEOUT,
         env=env,

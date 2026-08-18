@@ -22,5 +22,11 @@ from __future__ import annotations
 
 from floe_guard.demo import run_demo
 
-if __name__ == "__main__":
+
+def main() -> None:
+    """Run the packaged demo. Kept as a stable entry point for callers/tests."""
     run_demo()
+
+
+if __name__ == "__main__":
+    main()
