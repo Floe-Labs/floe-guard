@@ -202,6 +202,76 @@ describe("budgetGuardMiddleware — wrapStream (ai@5 usage shape)", () => {
   });
 });
 
+describe("budgetGuardMiddleware — wrapStream (no finish part / fail-closed)", () => {
+  it("rejects when the stream ends with no usage-bearing finish part", async () => {
+    // Verify: a stream that produces only text-delta chunks (no finish part) must
+    // reject — the guard cannot meter spend it cannot see, so treating the call as
+    // $0 / free would violate the package's fail-closed philosophy.
+    const guard = new BudgetGuard(1.0);
+    const mw = budgetGuardMiddleware(guard);
+    const initialRemaining = guard.remainingUsd;
+
+    const doStream = vi.fn(async () => ({
+      stream: readableOf([
+        { type: "text-delta", textDelta: "hello" },
+        { type: "text-delta", textDelta: " world" },
+        // No finish part — the stream closes cleanly without token usage.
+      ]),
+      rawCall: { rawPrompt: null, rawSettings: {} },
+    }));
+
+    const result = await mw.wrapStream!({
+      doGenerate: vi.fn() as never,
+      doStream: doStream as never,
+      params: fakeParams,
+      model: fakeModel("gpt-4o"),
+    });
+
+    // Consuming the stream must reject with the expected error.
+    await expect(drain((result as { stream: ReadableStream }).stream)).rejects.toThrow(
+      /stream completed without a token-usage finish part/,
+    );
+
+    // The call must NOT be metered as $0 / free.
+    expect(guard.spentUsd).toBe(0);
+
+    // The reservation must have been released — budget returns to pre-call level.
+    expect(guard.remainingUsd).toBeCloseTo(initialRemaining, 12);
+  });
+
+  it("the normal finish-with-usage path still settles successfully", async () => {
+    // Regression guard: ensure the fail-closed change does not break the happy path.
+    const guard = new BudgetGuard(1.0);
+    const mw = budgetGuardMiddleware(guard);
+
+    const doStream = vi.fn(async () => ({
+      stream: readableOf([
+        { type: "text-delta", textDelta: "hello" },
+        {
+          type: "finish",
+          finishReason: "stop",
+          usage: { promptTokens: 500, completionTokens: 500 },
+        },
+      ]),
+      rawCall: { rawPrompt: null, rawSettings: {} },
+    }));
+
+    const result = await mw.wrapStream!({
+      doGenerate: vi.fn() as never,
+      doStream: doStream as never,
+      params: fakeParams,
+      model: fakeModel("gpt-4o"),
+    });
+
+    // Must not throw.
+    await drain((result as { stream: ReadableStream }).stream);
+
+    const priced = pricing.resolvePrice("gpt-4o")!;
+    expect(guard.spentUsd).toBeCloseTo(pricing.priceTokens(priced, 500, 500), 12);
+    expect(guard.spentUsd).toBeGreaterThan(0);
+  });
+});
+
 describe("BudgetExceeded message parity with the Python guard", () => {
   it("formats the message exactly like floe_guard.errors.BudgetExceeded", () => {
     const err = new BudgetExceeded(5.00125, 5.0);
