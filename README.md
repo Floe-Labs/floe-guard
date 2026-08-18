@@ -7,54 +7,24 @@
 [![CI](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**The spend meter and budget gate for AI voice agents — and any LLM agent.**
-floe-guard meters the whole call — STT + LLM + TTS + telephony — from a bundled
-cost map (name each leg's vendor; no manual rates), and hard-stops the next turn
-or call *before* it crosses your spend ceiling: **per-turn enforcement for
-[Pipecat](#pipecat-voice) and [LiveKit](#livekit-voice)**, and a hard stop for
-runaway LLM loops — a loop dies at $0.10 instead of $4,000; an over-budget call
-is rejected at the door. Local, in your process. No account, no signup, no
-network, **no telemetry**.
+**The spend meter and budget gate for AI agents.** Hard-stops the next LLM call,
+voice turn, or tool invocation *before* it crosses your USD ceiling — a runaway loop
+dies at $0.10 instead of $4,000. In-process, no account, no signup, **no telemetry**.
 
-**Voice:** [Pipecat](#pipecat-voice) · [LiveKit](#livekit-voice) (Python) ·
-LiveKit · Vapi · Retell ([TypeScript](#typescript-voice-adapters)) — reserve
-before each turn, settle on real usage, so a turn that would cross the ceiling
-never starts — plus [pre-call admission gates](#voice-admission-gates-pre-call)
-that speak each orchestrator's inbound webhook shape. **Any agent:** [CrewAI](#crewai) · [LiteLLM](#litellm) ·
-[LangChain](#langchain) · [LangGraph](#langgraph) · [OpenAI](#openai) ·
-[Anthropic](#anthropic) · [Gemini](#google-gemini) · [Vercel AI SDK](#vercel-ai-sdk)
-— or any stack, via plain `check()` / `record()`. See the
-[adapter matrix](#adapter-matrix) for what ships in Python vs TypeScript.
-The hard-stop is contract-based: gate each call through the guard — adapters do
-it for LLM calls; for paid tools, [`reserve_tool()` / `settle_tool()`](#tool-spend-under-the-same-ceiling)
-block *before* the call runs (`record_tool()` alone meters a call after the
-fact — it can't stop one already made).
+**Python** (`pip install floe-guard`): plain `check()` / `record()` or adapters for
+[OpenAI](#openai) · [Anthropic](#anthropic) · [Gemini](#google-gemini) · [CrewAI](#crewai) ·
+[LiteLLM](#litellm) · [LangChain](#langchain) · [LangGraph](#langgraph); voice adapters for
+[Pipecat](#pipecat-voice) and [LiveKit](#livekit-voice);
+[pre-call admission gates](#voice-admission-gates-pre-call).
 
-## What's inside
+**TypeScript** (`npm i floe-guard`): [Vercel AI SDK](#vercel-ai-sdk) middleware, native
+[LiveKit · Vapi · Retell](#typescript-voice-adapters) voice adapters.
+See the [adapter matrix](#adapter-matrix) for what ships in Python vs TypeScript.
 
-floe-guard grows from a one-line local ceiling to fleet-wide coverage — take only
-the depth you need:
-
-- **Stop a runaway loop** — the [hard stop](#how-it-works) before the next call
-  (`check()` / `record()`), or a [framework adapter](#framework-adapters-optional-extras)
-  for OpenAI / Anthropic / Gemini / CrewAI / LangChain / LangGraph / LiteLLM /
-  Vercel AI SDK.
-- **Guard a voice call** — per-turn [voice adapters](#voice-adapters-stt--llm--tts)
-  (Pipecat + LiveKit in Python; LiveKit, Vapi, Retell in TypeScript) that price
-  STT + LLM + TTS + telephony, and
-  [pre-call admission gates](#voice-admission-gates-pre-call) that reject an
-  over-budget call at the door.
-- **Adapt before the cap** — [`advisory()`](#context-aware-budgeting) (near-limit
-  flag + `$/min` burn rate) to taper, plus
-  [token / step](#token-ceilings-and-per-step-budgets) and
-  [latency](#latencybudget--deadlines-the-same-way) budgets.
-- **Upgrade to hosted** — [`from_floe()`](#one-line-to-hosted) reads your
-  server-side budget headroom into the local ceiling, one line.
-- **Feed Coverage Score** — [opt-in ledger sync](#sync-your-ledger-for-coverage-score-opt-in)
-  pushes off-path (BYOK / self-hosted) spend so it counts. Off by default.
-
-Everything above is **local, no account, [no telemetry](#no-telemetry)** — unless
-you explicitly opt into a hosted read or a ledger sync.
+The hard-stop is contract-based: adapters gate LLM calls automatically; for paid
+tools, [`reserve_tool()` / `settle_tool()`](#tool-spend-under-the-same-ceiling)
+block *before* the call runs (`record_tool()` alone meters after the fact — it
+can't stop a call already made).
 
 ## Works best with the Floe skill
 
@@ -136,50 +106,6 @@ That's the answer a token-level tool can't give: it meters the LLM leg and
 misses the rest of the bill. Rates are a snapshot of public US list prices and
 drift — details, caveats, and the Pipecat version in
 [Voice adapters](#voice-adapters-stt--llm--tts).
-
-## Guard your first real workflow
-
-You've watched it stop a *stub* loop — the real payoff is protecting a *real* one,
-where the local ceiling earns its keep. Pick your stack; each is a drop-in adapter,
-a few lines, no rearchitecting:
-
-- **OpenAI / Anthropic / Gemini** — [`guarded_completion`](#openai) wraps the client call.
-- **LangChain / LangGraph** — a [callback handler](#langchain) / [`guarded_node`](#langgraph) per fan-out branch.
-- **CrewAI / LiteLLM** — [`budget_guarded_llm`](#crewai) / [`guarded_completion`](#litellm).
-- **Voice (Pipecat · LiveKit · Vapi · Retell)** — [per-turn voice adapters](#voice-adapters-stt--llm--tts).
-
-See the [adapter matrix](#adapter-matrix) for what ships in Python vs TypeScript.
-Only once one real workflow is protected does hosted Floe really make sense — and
-that's exactly what comes next.
-
-## One line to hosted
-
-Already on hosted Floe? Keep every line of your code — swap the constructor.
-`from_floe` reads your **server-side budget headroom** and uses it as the local
-ceiling, so the free→hosted upgrade is one line:
-
-```python
-from floe_guard import BudgetGuard
-
-guard = BudgetGuard.from_floe(api_key="floe_…")   # ceiling = your hosted headroom
-guard.check()                                     # everything else is unchanged
-response = call_your_llm(...)
-guard.record("gpt-4o", response.usage.prompt_tokens, response.usage.completion_tokens)
-```
-
-Budget, not balance: the read is a *headroom* signal and enforcement stays
-**local** — [hosted Floe](#when-you-outgrow-local-guardrails) remains the source
-of truth for the un-bypassable, cross-vendor cap. No key set → no network (the
-[zero-telemetry](#no-telemetry) invariant holds); a failed read fails closed
-(pass `fallback_limit_usd=` to degrade to a local ceiling instead).
-
-Your tapering logic carries over, too: local `advisory()` and hosted's
-`X-Floe-Budget-Advisory` header expose the same **near-limit signal**
-(`near_limit` + `used_bps` utilization), so the "near the cap? taper now"
-decision you branch on is the same. The wire shapes differ — the hosted header
-nests the tightest cap under `tightest` with raw-integer amounts, so field access
-is a light remap — but it answers that signal across *every* vendor and cap, not
-just the one you instrumented locally.
 
 ## Why floe-guard?
 
@@ -290,262 +216,18 @@ Everything else — Mistral, Cohere, Ollama, Bedrock, realtime/audio models,
 self-hosted — needs `price_overrides` (or `fail_closed=False` to accept it
 un-metered).
 
-## Context-aware budgeting
+## Guard your first real workflow
 
-The hard-stop is the guarantee; `advisory()` is the *upside*. Read it before a
-step to let your agent **adapt** as it nears the cap — taper to a cheaper model,
-shrink the task, or wrap up — instead of getting cut off mid-run.
+You've watched it stop a *stub* loop — the real payoff is protecting a *real* one,
+where the local ceiling earns its keep. Pick your stack; each is a drop-in adapter,
+a few lines, no rearchitecting:
 
-```python
-guard = BudgetGuard(limit_usd=0.10, near_limit_bps=7000)   # flag at 70% used
+- **OpenAI / Anthropic / Gemini** — [`guarded_completion`](#openai) wraps the client call.
+- **LangChain / LangGraph** — a [callback handler](#langchain) / [`guarded_node`](#langgraph) per fan-out branch.
+- **CrewAI / LiteLLM** — [`budget_guarded_llm`](#crewai) / [`guarded_completion`](#litellm).
+- **Voice (Pipecat · LiveKit · Vapi · Retell)** — [per-turn voice adapters](#voice-adapters-stt--llm--tts).
 
-adv = guard.advisory()
-# BudgetAdvisory(near_limit=False, used_bps=125, remaining_usd=0.0987, ...)
-model = "gpt-4o-mini" if adv.near_limit else "gpt-4o"        # downshift near the cap
-
-guard.check()                  # still the hard line — taper or not, this holds
-response = call_your_llm(model)
-guard.record(model, response.usage.prompt_tokens, response.usage.completion_tokens)
-```
-
-`advisory()` returns `near_limit`, `used_bps` (utilization in basis points),
-`remaining_usd`, and the budget totals. It also reports `expected_cost` (the
-guard's own next-call estimate) and `est_calls_remaining` (how many more calls
-the remaining budget buys, `None` until the first call is recorded) — call
-headroom, not just dollars. For voice, it also reports `burn_rate_usd_per_min`
-(spend ÷ minutes since the guard was created — the $/min voice teams watch;
-make one guard per call/turn for a per-call rate, `None` before any time
-elapses). It's a **soft** signal — the model may
-ignore it; `check()` is what enforces the ceiling. See
-[`examples/budget_aware.py`](examples/budget_aware.py) for a runnable taper demo
-(no API key).
-
-Model choice is only one axis. The same signal drives **any** cost lever, and in
-most agents the bigger levers are elsewhere — retrieval depth
-([`examples/retrieval_depth.py`](examples/retrieval_depth.py): RAG `top_k` falls
-20 → 12 → 5), context size
-([`examples/context_size.py`](examples/context_size.py): stop resending the whole
-transcript, cap replies shorter), and plan complexity
-([`examples/plan_complexity.py`](examples/plan_complexity.py): thin the reasoning,
-then drop the optional sub-tasks to protect the required ones). Each holds the
-model fixed and shrinks a non-model parameter as the budget drains (no API key).
-
-### Budget-aware retry
-
-Blind retries can spend the same expensive path again right when the agent is
-running out of headroom. `with_budget_retry()` composes over the existing guard:
-retry normally while budget is healthy, ask your code for a cheaper retry plan
-when `advisory().near_limit` is true, and call `check(estimated_cost)` before
-each retry so an over-budget retry never runs.
-
-```python
-from floe_guard import BudgetGuard, RetryPlan, with_budget_retry
-
-guard = BudgetGuard(limit_usd=1.00)
-
-def premium_model():
-    return call_model("gpt-4o")
-
-def mini_model():
-    return call_model("gpt-4o-mini")
-
-result = with_budget_retry(
-    guard,
-    premium_model,
-    estimated_cost=0.20,
-    max_attempts=2,
-    on_degrade=lambda exc, adv: RetryPlan(call=mini_model, estimated_cost=0.01),
-)
-```
-
-The helper does not rank models or know provider pricing; the caller defines
-what "cheaper" means in `on_degrade`. TypeScript exposes the same pattern as
-`withBudgetRetry()`. See [`examples/budget_retry.py`](examples/budget_retry.py)
-for a no-network demo.
-
-The taper logic you just wrote carries over to hosted — the same near-limit
-signal (`near_limit` + `used_bps`), answered across *every* vendor and cap; the
-hosted `X-Floe-Budget-Advisory` header nests it under `tightest` with raw-integer
-amounts, so field access is a light remap. See
-[One line to hosted](#one-line-to-hosted). The TS package exposes the identical
-`guard.advisory()`.
-
-## Per-call spend log
-
-The guard keeps a typed, in-memory ledger of everything it priced: each
-`record()` / `settle()` appends one `SpendEvent`, and `record_tool()` lets paid
-non-LLM calls (search APIs, scrapers) spend the same budget and land in the same
-log. The events sum to `spent_usd` (unless a `max_log_events` ring buffer has
-evicted old ones) — no more rebuilding per-call breakdowns around the guard.
-
-```python
-guard = BudgetGuard(limit_usd=1.00)                      # max_log_events=N caps memory
-guard.record("gpt-4o", 1_200, 350, label="researcher")   # label is optional
-guard.record_tool("serpapi.search", 0.01, label="researcher")
-
-guard.spend_log      # [SpendEvent(timestamp=…, kind="llm", model_or_tool="gpt-4o",
-                     #             prompt_tokens=1200, completion_tokens=350,
-                     #             cost_usd=0.0065, label="researcher"), …]
-print(guard.export_log(), end="")   # JSONL, one event per line
-```
-
-`export_log()` emits a stable snake_case schema —
-`{timestamp, kind: llm|tool, model_or_tool, prompt_tokens, completion_tokens,
-cost_usd, label?, reserved?}` — identical to the TS package's `exportLog()`, so
-every agent produces the same shape regardless of stack and the streams can be
-concatenated and analysed together.
-
-## Tool spend under the same ceiling
-
-Tool-heavy agents often spend more on paid APIs (Apollo lookups, Exa searches,
-scrapers) than on tokens — and those dollars must count against the same cap,
-or the kill-switch guarantee is fiction for them. Tool spend is a first-class
-primitive with the full reserve/settle contract; it's actually **stronger**
-than the LLM path, because the price is known *before* the call:
-
-```python
-# pre-call hard-stop — the crossing call NEVER runs
-handle = guard.reserve_tool(0.02)              # raises BudgetExceeded before Apollo
-result = apollo.people_lookup(...)
-guard.settle_tool("apollo.people_lookup", 0.02, reserved=handle)
-
-guard.record_tool("exa.search", 0.004)         # post-hoc, for metered APIs
-
-guard.tool_costs     # {"apollo.people_lookup": 0.42, "exa.search": 0.11}
-guard.remaining_usd  # tokens + tools, one ceiling
-```
-
-`record_tool` also updates the next-call estimate, so a plain
-`check()`/`record_tool` loop stops *before* the crossing call — a runaway tool
-loop dies exactly like a runaway LLM loop. (Tool and LLM estimates are tracked
-separately; the default prediction is the costlier of the two, so a cheap tool
-call never shrinks the hold ahead of an expensive LLM call.) The caller supplies the USD (there
-is no tool cost-map); every tool call lands in `spend_log` as a
-`kind: "tool"` event. Same API in TS (`reserveTool`/`settleTool`/`recordTool`/
-`toolCosts`). See [`examples/tool_budget.py`](examples/tool_budget.py).
-
-## Token ceilings and per-step budgets
-
-Dollars aren't the only runaway. A token ceiling caps *total recorded token
-usage — every bucket the guard counts: prompt, completion, and cache* regardless
-of price, and a **per-step** cap keeps one step of a sequential loop from
-starving the rest even when the global budget has room.
-Both ride on the same reserve/settle machinery — they're a second dimension, not
-a second guard:
-
-```python
-from floe_guard import BudgetGuard, TokenBudgetExceeded
-
-# aggregate token ceiling alongside the USD ceiling
-guard = BudgetGuard(limit_usd=100.0, token_limit=20_000)
-
-guard.check(estimated_tokens=1_200)      # raises TokenBudgetExceeded if it'd cross
-guard.record("gpt-4o", 800, 400)         # tokens accrue for free from the counts
-
-# a per-step cap for one step of a sequential loop
-with guard.step(max_tokens=5_000) as g:  # g IS guard — adapters pass it through
-    g.record("gpt-4o", 3_000, 1_500)
-    g.check(estimated_tokens=1_000)       # 4_500 + 1_000 > 5_000 → scope="step"
-
-adv = guard.advisory()
-adv.token_used_bps        # aggregate token utilization (None if no token_limit)
-adv.remaining_tokens      # tokens left before the ceiling (None if no token_limit)
-adv.step_remaining_tokens # active step's headroom (None if no step, or its token cap is unset)
-```
-
-`TokenBudgetExceeded` subclasses `BudgetExceeded`, so budget-aware retry treats a
-token block as terminal automatically. With no `token_limit` and no `step()`, USD
-enforcement is unchanged and `reserve()` still returns a plain `float` — a
-`BudgetReservation` handle appears only when tokens are actually reserved or a
-step is active. (`advisory()` gains the token/step fields shown above; they're
-additive and `None` when their dimension is unused.) In TS the step is a callback
-and fields are camelCase:
-
-```ts
-const guard = new BudgetGuard(100, { tokenLimit: 20_000 });
-guard.check(undefined, { estimatedTokens: 1_200 });
-guard.step({ maxTokens: 5_000 }, (g) => {
-  g.record("gpt-4o", 3_000, 1_500);
-  g.check(undefined, { estimatedTokens: 1_000 }); // throws TokenBudgetExceeded
-});
-guard.advisory().stepRemainingTokens;
-```
-
-See [`examples/step_budget.py`](examples/step_budget.py) (no network).
-
-## LatencyBudget — deadlines, the same way
-
-Money isn't the only budget an agent burns. `LatencyBudget` is `BudgetGuard`'s
-sibling for **time**: it tracks cumulative elapsed time across a tool chain
-against an end-user SLA and stops the *next* call before it would blow it.
-
-```python
-from floe_guard import LatencyBudget, DeadlineExceeded
-
-deadline = LatencyBudget(sla_ms=5000)          # the user is promised 5s
-
-for step in plan:
-    deadline.check(expected_ms=step.est_ms)    # raises DeadlineExceeded when projected over
-    model = DEFAULT_MODEL
-    if deadline.advisory().near_deadline:      # 80% consumed by default —
-        model = FAST_FALLBACK                  # downshift BEFORE the wall
-    run(step, model, timeout_ms=deadline.remaining_ms)
-```
-
-Same shape in TypeScript: `new LatencyBudget(5000)`, `check(expectedMs)`,
-`remainingMs`, `advisory().nearDeadline`.
-
-Honest scope, mirroring the rest of this package:
-
-- **Monotonic clock** (`time.monotonic()` / `performance.now()`) — NTP steps
-  and DST can't corrupt the budget.
-- **Cooperative, not preemptive.** The guard supplies the deadline *signal*;
-  killing an already-running stalled call is your framework's job (asyncio
-  cancellation, `AbortSignal`). `check()` prevents the next call from starting.
-- **Advisory symmetry.** `near_deadline` / `used_bps` / `remaining_ms` are the
-  latency twin of the budget advisory's `near_limit` / `used_bps` /
-  `remaining_usd` — taper logic written against one ports to the other.
-- **In-process.** One instance per request/run; distributed/server-side latency
-  tracking is out of scope.
-
-## Request-sized estimates and mid-stream enforcement
-
-Two gaps in last-cost prediction, closed in 0.4.0 (Python):
-
-**The oversized first call.** `check()`/`reserve()` predict from the *last*
-call — blind on call #1, wrong for a call much bigger than the previous one.
-`estimate_call()` prices the **actual incoming request** so even a first call
-that alone would cross the cap blocks pre-flight:
-
-```python
-est = guard.estimate_call("gpt-4o", prompt_tokens=12_000, max_completion_tokens=4_096)
-handle = guard.reserve(est)   # raises BudgetExceeded NOW if this call can't fit
-```
-
-The LiteLLM adapter does this automatically (prompt tokens via
-`litellm.token_counter`, output cap from `max_tokens`), and the LangChain
-handler sizes its pre-call `check()` the same way. Unpriceable or unsized
-requests fall back to the old last-cost prediction — the wiring only ever
-tightens enforcement.
-
-**The stream that runs long.** `record()` meters a *completed* response — too
-late for a generation that starts cheap and keeps going. `guard_stream()` (or
-the underlying `StreamGuard`) re-prices the call on every chunk and cuts the
-stream off **mid-generation**, settling the tokens actually consumed instead of
-recording a big overshoot after the fact:
-
-```python
-from floe_guard import guard_stream
-
-for chunk in guard_stream(guard, "gpt-4o", stream, prompt_tokens=1_000):
-    print(chunk, end="")   # raises BudgetExceeded mid-stream at the ceiling
-```
-
-Chunk sizes are estimated at ~4 chars/token (pass `count_tokens=` for a real
-tokenizer); the final accrual reconciles to provider-reported usage via
-`StreamGuard.finish(...)`. See
-[`examples/streaming_guard.py`](examples/streaming_guard.py) for a runnable
-demo (no API key).
+See the [adapter matrix](#adapter-matrix) for what ships in Python vs TypeScript.
 
 ## Framework adapters (optional extras)
 
@@ -1021,6 +703,292 @@ is no Node Pipecat server surface to adapt.
 For wiring floe-guard into an existing voice pipeline, see the Floe docs:
 **[Add Floe to your existing pipeline](https://floe-labs.gitbook.io/docs/getting-started/integrate-existing-pipeline)**.
 
+## Context-aware budgeting
+
+The hard-stop is the guarantee; `advisory()` is the *upside*. Read it before a
+step to let your agent **adapt** as it nears the cap — taper to a cheaper model,
+shrink the task, or wrap up — instead of getting cut off mid-run.
+
+```python
+guard = BudgetGuard(limit_usd=0.10, near_limit_bps=7000)   # flag at 70% used
+
+adv = guard.advisory()
+# BudgetAdvisory(near_limit=False, used_bps=125, remaining_usd=0.0987, ...)
+model = "gpt-4o-mini" if adv.near_limit else "gpt-4o"        # downshift near the cap
+
+guard.check()                  # still the hard line — taper or not, this holds
+response = call_your_llm(model)
+guard.record(model, response.usage.prompt_tokens, response.usage.completion_tokens)
+```
+
+`advisory()` returns `near_limit`, `used_bps` (utilization in basis points),
+`remaining_usd`, and the budget totals. It also reports `expected_cost` (the
+guard's own next-call estimate) and `est_calls_remaining` (how many more calls
+the remaining budget buys, `None` until the first call is recorded) — call
+headroom, not just dollars. For voice, it also reports `burn_rate_usd_per_min`
+(spend ÷ minutes since the guard was created — the $/min voice teams watch;
+make one guard per call/turn for a per-call rate, `None` before any time
+elapses). It's a **soft** signal — the model may
+ignore it; `check()` is what enforces the ceiling. See
+[`examples/budget_aware.py`](examples/budget_aware.py) for a runnable taper demo
+(no API key).
+
+Model choice is only one axis. The same signal drives **any** cost lever, and in
+most agents the bigger levers are elsewhere — retrieval depth
+([`examples/retrieval_depth.py`](examples/retrieval_depth.py): RAG `top_k` falls
+20 → 12 → 5), context size
+([`examples/context_size.py`](examples/context_size.py): stop resending the whole
+transcript, cap replies shorter), and plan complexity
+([`examples/plan_complexity.py`](examples/plan_complexity.py): thin the reasoning,
+then drop the optional sub-tasks to protect the required ones). Each holds the
+model fixed and shrinks a non-model parameter as the budget drains (no API key).
+
+### Budget-aware retry
+
+Blind retries can spend the same expensive path again right when the agent is
+running out of headroom. `with_budget_retry()` composes over the existing guard:
+retry normally while budget is healthy, ask your code for a cheaper retry plan
+when `advisory().near_limit` is true, and call `check(estimated_cost)` before
+each retry so an over-budget retry never runs.
+
+```python
+from floe_guard import BudgetGuard, RetryPlan, with_budget_retry
+
+guard = BudgetGuard(limit_usd=1.00)
+
+def premium_model():
+    return call_model("gpt-4o")
+
+def mini_model():
+    return call_model("gpt-4o-mini")
+
+result = with_budget_retry(
+    guard,
+    premium_model,
+    estimated_cost=0.20,
+    max_attempts=2,
+    on_degrade=lambda exc, adv: RetryPlan(call=mini_model, estimated_cost=0.01),
+)
+```
+
+The helper does not rank models or know provider pricing; the caller defines
+what "cheaper" means in `on_degrade`. TypeScript exposes the same pattern as
+`withBudgetRetry()`. See [`examples/budget_retry.py`](examples/budget_retry.py)
+for a no-network demo.
+
+The taper logic you just wrote carries over to hosted — the same near-limit
+signal (`near_limit` + `used_bps`), answered across *every* vendor and cap; the
+hosted `X-Floe-Budget-Advisory` header nests it under `tightest` with raw-integer
+amounts, so field access is a light remap. See
+[One line to hosted](#one-line-to-hosted). The TS package exposes the identical
+`guard.advisory()`.
+
+## Per-call spend log
+
+The guard keeps a typed, in-memory ledger of everything it priced: each
+`record()` / `settle()` appends one `SpendEvent`, and `record_tool()` lets paid
+non-LLM calls (search APIs, scrapers) spend the same budget and land in the same
+log. The events sum to `spent_usd` (unless a `max_log_events` ring buffer has
+evicted old ones) — no more rebuilding per-call breakdowns around the guard.
+
+```python
+guard = BudgetGuard(limit_usd=1.00)                      # max_log_events=N caps memory
+guard.record("gpt-4o", 1_200, 350, label="researcher")   # label is optional
+guard.record_tool("serpapi.search", 0.01, label="researcher")
+
+guard.spend_log      # [SpendEvent(timestamp=…, kind="llm", model_or_tool="gpt-4o",
+                     #             prompt_tokens=1200, completion_tokens=350,
+                     #             cost_usd=0.0065, label="researcher"), …]
+print(guard.export_log(), end="")   # JSONL, one event per line
+```
+
+`export_log()` emits a stable snake_case schema —
+`{timestamp, kind: llm|tool, model_or_tool, prompt_tokens, completion_tokens,
+cost_usd, label?, reserved?}` — identical to the TS package's `exportLog()`, so
+every agent produces the same shape regardless of stack and the streams can be
+concatenated and analysed together.
+
+## Tool spend under the same ceiling
+
+Tool-heavy agents often spend more on paid APIs (Apollo lookups, Exa searches,
+scrapers) than on tokens — and those dollars must count against the same cap,
+or the kill-switch guarantee is fiction for them. Tool spend is a first-class
+primitive with the full reserve/settle contract; it's actually **stronger**
+than the LLM path, because the price is known *before* the call:
+
+```python
+# pre-call hard-stop — the crossing call NEVER runs
+handle = guard.reserve_tool(0.02)              # raises BudgetExceeded before Apollo
+result = apollo.people_lookup(...)
+guard.settle_tool("apollo.people_lookup", 0.02, reserved=handle)
+
+guard.record_tool("exa.search", 0.004)         # post-hoc, for metered APIs
+
+guard.tool_costs     # {"apollo.people_lookup": 0.42, "exa.search": 0.11}
+guard.remaining_usd  # tokens + tools, one ceiling
+```
+
+`record_tool` also updates the next-call estimate, so a plain
+`check()`/`record_tool` loop stops *before* the crossing call — a runaway tool
+loop dies exactly like a runaway LLM loop. (Tool and LLM estimates are tracked
+separately; the default prediction is the costlier of the two, so a cheap tool
+call never shrinks the hold ahead of an expensive LLM call.) The caller supplies the USD (there
+is no tool cost-map); every tool call lands in `spend_log` as a
+`kind: "tool"` event. Same API in TS (`reserveTool`/`settleTool`/`recordTool`/
+`toolCosts`). See [`examples/tool_budget.py`](examples/tool_budget.py).
+
+## Token ceilings and per-step budgets
+
+Dollars aren't the only runaway. A token ceiling caps *total recorded token
+usage — every bucket the guard counts: prompt, completion, and cache* regardless
+of price, and a **per-step** cap keeps one step of a sequential loop from
+starving the rest even when the global budget has room.
+Both ride on the same reserve/settle machinery — they're a second dimension, not
+a second guard:
+
+```python
+from floe_guard import BudgetGuard, TokenBudgetExceeded
+
+# aggregate token ceiling alongside the USD ceiling
+guard = BudgetGuard(limit_usd=100.0, token_limit=20_000)
+
+guard.check(estimated_tokens=1_200)      # raises TokenBudgetExceeded if it'd cross
+guard.record("gpt-4o", 800, 400)         # tokens accrue for free from the counts
+
+# a per-step cap for one step of a sequential loop
+with guard.step(max_tokens=5_000) as g:  # g IS guard — adapters pass it through
+    g.record("gpt-4o", 3_000, 1_500)
+    g.check(estimated_tokens=1_000)       # 4_500 + 1_000 > 5_000 → scope="step"
+
+adv = guard.advisory()
+adv.token_used_bps        # aggregate token utilization (None if no token_limit)
+adv.remaining_tokens      # tokens left before the ceiling (None if no token_limit)
+adv.step_remaining_tokens # active step's headroom (None if no step, or its token cap is unset)
+```
+
+`TokenBudgetExceeded` subclasses `BudgetExceeded`, so budget-aware retry treats a
+token block as terminal automatically. With no `token_limit` and no `step()`, USD
+enforcement is unchanged and `reserve()` still returns a plain `float` — a
+`BudgetReservation` handle appears only when tokens are actually reserved or a
+step is active. (`advisory()` gains the token/step fields shown above; they're
+additive and `None` when their dimension is unused.) In TS the step is a callback
+and fields are camelCase:
+
+```ts
+const guard = new BudgetGuard(100, { tokenLimit: 20_000 });
+guard.check(undefined, { estimatedTokens: 1_200 });
+guard.step({ maxTokens: 5_000 }, (g) => {
+  g.record("gpt-4o", 3_000, 1_500);
+  g.check(undefined, { estimatedTokens: 1_000 }); // throws TokenBudgetExceeded
+});
+guard.advisory().stepRemainingTokens;
+```
+
+See [`examples/step_budget.py`](examples/step_budget.py) (no network).
+
+## LatencyBudget — deadlines, the same way
+
+Money isn't the only budget an agent burns. `LatencyBudget` is `BudgetGuard`'s
+sibling for **time**: it tracks cumulative elapsed time across a tool chain
+against an end-user SLA and stops the *next* call before it would blow it.
+
+```python
+from floe_guard import LatencyBudget, DeadlineExceeded
+
+deadline = LatencyBudget(sla_ms=5000)          # the user is promised 5s
+
+for step in plan:
+    deadline.check(expected_ms=step.est_ms)    # raises DeadlineExceeded when projected over
+    model = DEFAULT_MODEL
+    if deadline.advisory().near_deadline:      # 80% consumed by default —
+        model = FAST_FALLBACK                  # downshift BEFORE the wall
+    run(step, model, timeout_ms=deadline.remaining_ms)
+```
+
+Same shape in TypeScript: `new LatencyBudget(5000)`, `check(expectedMs)`,
+`remainingMs`, `advisory().nearDeadline`.
+
+Honest scope, mirroring the rest of this package:
+
+- **Monotonic clock** (`time.monotonic()` / `performance.now()`) — NTP steps
+  and DST can't corrupt the budget.
+- **Cooperative, not preemptive.** The guard supplies the deadline *signal*;
+  killing an already-running stalled call is your framework's job (asyncio
+  cancellation, `AbortSignal`). `check()` prevents the next call from starting.
+- **Advisory symmetry.** `near_deadline` / `used_bps` / `remaining_ms` are the
+  latency twin of the budget advisory's `near_limit` / `used_bps` /
+  `remaining_usd` — taper logic written against one ports to the other.
+- **In-process.** One instance per request/run; distributed/server-side latency
+  tracking is out of scope.
+
+## Request-sized estimates and mid-stream enforcement
+
+Two gaps in last-cost prediction, closed in 0.4.0 (Python):
+
+**The oversized first call.** `check()`/`reserve()` predict from the *last*
+call — blind on call #1, wrong for a call much bigger than the previous one.
+`estimate_call()` prices the **actual incoming request** so even a first call
+that alone would cross the cap blocks pre-flight:
+
+```python
+est = guard.estimate_call("gpt-4o", prompt_tokens=12_000, max_completion_tokens=4_096)
+handle = guard.reserve(est)   # raises BudgetExceeded NOW if this call can't fit
+```
+
+The LiteLLM adapter does this automatically (prompt tokens via
+`litellm.token_counter`, output cap from `max_tokens`), and the LangChain
+handler sizes its pre-call `check()` the same way. Unpriceable or unsized
+requests fall back to the old last-cost prediction — the wiring only ever
+tightens enforcement.
+
+**The stream that runs long.** `record()` meters a *completed* response — too
+late for a generation that starts cheap and keeps going. `guard_stream()` (or
+the underlying `StreamGuard`) re-prices the call on every chunk and cuts the
+stream off **mid-generation**, settling the tokens actually consumed instead of
+recording a big overshoot after the fact:
+
+```python
+from floe_guard import guard_stream
+
+for chunk in guard_stream(guard, "gpt-4o", stream, prompt_tokens=1_000):
+    print(chunk, end="")   # raises BudgetExceeded mid-stream at the ceiling
+```
+
+Chunk sizes are estimated at ~4 chars/token (pass `count_tokens=` for a real
+tokenizer); the final accrual reconciles to provider-reported usage via
+`StreamGuard.finish(...)`. See
+[`examples/streaming_guard.py`](examples/streaming_guard.py) for a runnable
+demo (no API key).
+
+## One line to hosted
+
+Already on hosted Floe? Keep every line of your code — swap the constructor.
+`from_floe` reads your **server-side budget headroom** and uses it as the local
+ceiling, so the free→hosted upgrade is one line:
+
+```python
+from floe_guard import BudgetGuard
+
+guard = BudgetGuard.from_floe(api_key="floe_…")   # ceiling = your hosted headroom
+guard.check()                                     # everything else is unchanged
+response = call_your_llm(...)
+guard.record("gpt-4o", response.usage.prompt_tokens, response.usage.completion_tokens)
+```
+
+Budget, not balance: the read is a *headroom* signal and enforcement stays
+**local** — [hosted Floe](#when-you-outgrow-local-guardrails) remains the source
+of truth for the un-bypassable, cross-vendor cap. No key set → no network (the
+[zero-telemetry](#no-telemetry) invariant holds); a failed read fails closed
+(pass `fallback_limit_usd=` to degrade to a local ceiling instead).
+
+Your tapering logic carries over, too: local `advisory()` and hosted's
+`X-Floe-Budget-Advisory` header expose the same **near-limit signal**
+(`near_limit` + `used_bps` utilization), so the "near the cap? taper now"
+decision you branch on is the same. The wire shapes differ — the hosted header
+nests the tightest cap under `tightest` with raw-integer amounts, so field access
+is a light remap — but it answers that signal across *every* vendor and cap, not
+just the one you instrumented locally.
+
 ## Honest about what this is
 
 floe-guard is a **local, estimate-based** guardrail. It prices tokens from a
@@ -1115,16 +1083,6 @@ enforcement stays local.
 
 → [dev-dashboard.floelabs.xyz](https://dev-dashboard.floelabs.xyz/)
 
-## Built with floe-guard
-
-Using floe-guard in your project? Add the badge so others find it:
-
-[![guarded by floe-guard](https://img.shields.io/badge/guarded%20by-floe--guard-2f81f7.svg)](https://github.com/Floe-Labs/floe-guard)
-
-```markdown
-[![guarded by floe-guard](https://img.shields.io/badge/guarded%20by-floe--guard-2f81f7.svg)](https://github.com/Floe-Labs/floe-guard)
-```
-
 ## Examples
 
 All runnable examples live in [`examples/`](examples/). Use `python examples/<file>` from the repo root.
@@ -1147,6 +1105,16 @@ All runnable examples live in [`examples/`](examples/). Use `python examples/<fi
 | [`voice_turn_budget.py`](examples/voice_turn_budget.py) | Pipecat pipeline with `FloeBudgetGuardProcessor`: multi-turn voice conversation halted mid-run | `pip install floe-guard[pipecat]` | none |
 | [`voice_call_cost_pipecat.py`](examples/voice_call_cost_pipecat.py) | Full per-leg call cost (STT + LLM + TTS + telephony) via Pipecat, priced from the bundled map | `pip install floe-guard[pipecat]` | none |
 | [`voice_call_cost_livekit.py`](examples/voice_call_cost_livekit.py) | Full per-leg call cost (STT + LLM + TTS + telephony) via LiveKit, priced from the bundled map | `pip install floe-guard[livekit]` | none |
+
+## Built with floe-guard
+
+Using floe-guard in your project? Add the badge so others find it:
+
+[![guarded by floe-guard](https://img.shields.io/badge/guarded%20by-floe--guard-2f81f7.svg)](https://github.com/Floe-Labs/floe-guard)
+
+```markdown
+[![guarded by floe-guard](https://img.shields.io/badge/guarded%20by-floe--guard-2f81f7.svg)](https://github.com/Floe-Labs/floe-guard)
+```
 
 ## Development
 
