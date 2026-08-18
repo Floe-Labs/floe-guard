@@ -862,7 +862,7 @@ task = PipelineTask(
 )
 ```
 
-> **Fragment** — `transport`, `stt`, `llm`, `tts`, and `context_aggregator` are your existing Pipecat objects; this shows only where the guard sits in a pipeline you already have. For a complete, runnable demo (no API key, no network), see [`examples/voice_turn_budget.py`](examples/voice_turn_budget.py).
+> **Fragment** — `transport`, `stt`, `llm`, `tts`, and `context_aggregator` are your existing Pipecat objects; this shows only where the guard sits in a pipeline you already have. For a complete, runnable demo (no API key, no network — needs `pip install floe-guard[pipecat]`), see [`examples/voice_turn_budget.py`](examples/voice_turn_budget.py).
 
 By default a blocked turn pushes a fatal `ErrorFrame` that terminates the
 pipeline — the hard-stop every other adapter gives you. Pass an
@@ -875,7 +875,7 @@ emits; `stt_model` / `telephony` are metered explicitly (Pipecat emits no STT/
 telephony usage frame) via `processor.meter_stt(seconds)` /
 `processor.meter_telephony(minutes)`. See
 [`examples/voice_call_cost_pipecat.py`](examples/voice_call_cost_pipecat.py) for
-the full per-leg breakdown (no API key, no network).
+the full per-leg breakdown (no API key, no network — needs `pip install floe-guard[pipecat]`).
 
 ### LiveKit (voice)
 
@@ -1124,6 +1124,29 @@ Using floe-guard in your project? Add the badge so others find it:
 ```markdown
 [![guarded by floe-guard](https://img.shields.io/badge/guarded%20by-floe--guard-2f81f7.svg)](https://github.com/Floe-Labs/floe-guard)
 ```
+
+## Examples
+
+All runnable examples live in [`examples/`](examples/). Use `python examples/<file>` from the repo root.
+
+| Example | Description | Extra | API key / network |
+|---|---|---|---|
+| [`runaway_loop.py`](examples/runaway_loop.py) | The canonical hard-stop demo — a stub loop halted before it crosses $0.10 | none | none |
+| [`streaming_guard.py`](examples/streaming_guard.py) | Pre-flight block on an oversized first call + mid-stream cut-off via `guard_stream()` | none | none |
+| [`budget_aware.py`](examples/budget_aware.py) | Context-aware tapering: agent downshifts to a cheap model when `advisory().near_limit` trips | none | none |
+| [`budget_retry.py`](examples/budget_retry.py) | Budget-aware retry / graceful degradation with `with_budget_retry()` | none | none |
+| [`context_size.py`](examples/context_size.py) | Context size adapts to budget: history trimmed and `max_tokens` capped near the ceiling | none | none |
+| [`plan_complexity.py`](examples/plan_complexity.py) | Plan complexity adapts: optional sub-tasks dropped and reasoning depth reduced near the cap | none | none |
+| [`retrieval_depth.py`](examples/retrieval_depth.py) | RAG `top_k` shrinks in two steps (20→12→5) as budget drains | none | none |
+| [`step_budget.py`](examples/step_budget.py) | Per-step token caps for a sequential loop: one runaway step blocked without stopping the run | none | none |
+| [`tool_budget.py`](examples/tool_budget.py) | Tool spend (Apollo lookups, Exa searches) as a first-class citizen of the same USD ceiling | none | none |
+| [`openai_adapter.py`](examples/openai_adapter.py) | `guarded_completion` against a duck-typed stub — exercises the real pre-flight hard-stop | none | none |
+| [`anthropic_adapter.py`](examples/anthropic_adapter.py) | Anthropic adapter with native prompt-cache pricing (cache write vs. cache read vs. uncached) | none | none |
+| [`langgraph_budget_aware.py`](examples/langgraph_budget_aware.py) | LangGraph `guarded_node` fan-out with an advisory-driven router that tapers before the cap | `pip install floe-guard[langgraph]` | none |
+| [`langchain_groq_example.py`](examples/langchain_groq_example.py) | LangChain callback handler on ChatGroq (Llama-3): call 1 succeeds, call 2 is hard-stopped | `pip install floe-guard[langchain] langchain-groq` | `GROQ_API_KEY` + network |
+| [`voice_turn_budget.py`](examples/voice_turn_budget.py) | Pipecat pipeline with `FloeBudgetGuardProcessor`: multi-turn voice conversation halted mid-run | `pip install floe-guard[pipecat]` | none |
+| [`voice_call_cost_pipecat.py`](examples/voice_call_cost_pipecat.py) | Full per-leg call cost (STT + LLM + TTS + telephony) via Pipecat, priced from the bundled map | `pip install floe-guard[pipecat]` | none |
+| [`voice_call_cost_livekit.py`](examples/voice_call_cost_livekit.py) | Full per-leg call cost (STT + LLM + TTS + telephony) via LiveKit, priced from the bundled map | `pip install floe-guard[livekit]` | none |
 
 ## Development
 

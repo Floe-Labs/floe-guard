@@ -2,8 +2,9 @@
 # core-metadata to `Metadata-Version: 2.5`, which the pinned
 # pypa/gh-action-pypi-publish@v1.14.0 (twine 6.1.0 + packaging 25.0) rejects
 # with "InvalidDistribution: '2.5' is not a valid metadata version". 1.31.0 is
-# the last release that emits 2.4, which both twine and PyPI accept. This is
-# why PyPI froze at 0.13.0 (Aug 6) while the repo moved to 0.16.x.
+# the last release that emits 2.4, which both twine and PyPI accept. This pin
+# is a historical compatibility guard for that publisher action; raise it only
+# after verifying the CI publisher handles Metadata-Version 2.5 cleanly.
 [build-system]
 requires = ["hatchling<1.32"]
 build-backend = "hatchling.build"
