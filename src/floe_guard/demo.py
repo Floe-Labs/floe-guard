@@ -38,7 +38,12 @@ def run_demo(limit_usd: float = 0.10) -> None:
     while True:  # a real runaway loop never decides to stop on its own
         call += 1
         try:
-            guard.check()  # the kill-switch: raises before the crossing call
+            # Size the check to the KNOWN request so the guard hard-stops before
+            # the crossing call even on call #1 — a bare check() is blind until the
+            # first record() (it estimates from the last call's cost, which is $0
+            # up front). estimate_call() prices the stub payload we're about to send.
+            est = guard.estimate_call(MODEL, 1_000, max_completion_tokens=1_000)
+            guard.check(estimated_next_cost=est)  # the kill-switch: raises before the crossing call
         except BudgetExceeded:
             print(
                 f"\nLoop stopped at call #{call}. The agent never got to spend past the budget.",
