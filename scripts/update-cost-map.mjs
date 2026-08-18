@@ -329,7 +329,8 @@ for (const [k, v] of entries) {
   // Per-model prompt-cache rates, when upstream publishes them and they are
   // finite and positive (mirrors the input/output finiteness handling). Kept
   // optional so a model with no published cache rate simply omits them, and
-  // pricing falls back to the conservative per-provider multiplier.
+  // pricing falls back to a single conservative multiplier (currently Anthropic's
+  // ~0.1x read ratio, applied to all providers) — see _CACHE_READ_MULTIPLIER.
   if (
     Number.isFinite(v.cache_read_input_token_cost) &&
     v.cache_read_input_token_cost > 0

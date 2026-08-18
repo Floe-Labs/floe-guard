@@ -35,8 +35,9 @@ class PricedModel:
 
     ``cache_read_cost_per_token`` / ``cache_creation_cost_per_token`` are the
     model's published prompt-cache rates (from the cost map), or ``None`` when the
-    map has none — in which case :func:`price_tokens` falls back to a conservative
-    per-provider multiplier of the base input rate. Override-sourced prices leave
+    map has none — in which case :func:`price_tokens` falls back to a single
+    conservative multiplier of the base input rate (not provider-specific).
+    Override-sourced prices leave
     them ``None`` (an override carries only base input/output).
     """
 
