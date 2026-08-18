@@ -8,6 +8,30 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.20.0 / js 0.15.0
+
+### Added (py)
+
+- **Cache-aware token pricing, driven by per-model cost-map rates.** The bundled
+  cost map now carries each model's published `cache_read_input_token_cost` /
+  `cache_creation_input_token_cost` (added surgically — existing prices are
+  unchanged). `price_tokens` prices cache-read and cache-creation at the model's
+  own rate when present, so caching is correct **per provider** (Anthropic reads
+  at ~0.1x its input rate, OpenAI at ~0.5x) instead of the old hardcoded
+  Anthropic 0.1x for everyone; a model with no published cache rate falls back to
+  the conservative multiplier as before. `turn_cost(...)` accepts
+  `prompt_cached_tokens` (the subset of `prompt_tokens` served from cache): that
+  subset is priced at the cache-read rate rather than the full input rate, fixing
+  a systematic overcharge whenever prompt caching was on.
+
+### Changed (js)
+
+- **Bundled cost map now carries per-model cache rates.** The shared cost-map
+  snapshot gained `cache_read_input_token_cost` / `cache_creation_input_token_cost`
+  per model (byte-identical across the py/js copies). The TS `pricing.ts` does not
+  consume them yet — cache-aware TS pricing is a documented parity follow-up; this
+  data change is inert for existing js behavior.
+
 ## Unreleased — py 0.19.0 / js 0.14.0
 
 ### Added (py)

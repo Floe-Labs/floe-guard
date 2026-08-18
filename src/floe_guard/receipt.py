@@ -67,6 +67,7 @@ def turn_cost(
     *,
     remaining_usd: float | None = None,
     overrides: dict[str, ManualPrice] | None = None,
+    prompt_cached_tokens: int = 0,
 ) -> FloeCost | None:
     """Per-turn receipt from token usage, priced locally by the cost map.
 
@@ -78,9 +79,18 @@ def turn_cost(
     :func:`~floe_guard.hosted_remaining_usd` (a hosted read that needs a Floe
     key), fetched at whatever cadence you like so there's no network call every
     turn. ``turn_cost`` never calls the network.
+
+    ``prompt_cached_tokens`` is the subset of ``prompt_tokens`` served from the
+    provider's prompt cache (``prompt_tokens`` is the TOTAL input, inclusive of
+    cached). That subset is priced at the model's cache-read rate from the cost
+    map, falling back to a conservative multiplier for models without a published
+    cache rate — so caching is no longer billed at the full input rate. Clamped
+    to ``prompt_tokens``; ``0`` (the default) prices exactly as before.
     """
     priced = resolve_price(model, overrides)
     if priced is None:
         return None
-    usd = price_tokens(priced, prompt_tokens, completion_tokens)
+    cached = min(max(0, prompt_cached_tokens), max(0, prompt_tokens))
+    non_cached = max(0, prompt_tokens) - cached
+    usd = price_tokens(priced, non_cached, completion_tokens, cache_read_input_tokens=cached)
     return FloeCost(usd=usd, source=SOURCE_ESTIMATE, model=model, remaining_usd=remaining_usd)
