@@ -46,6 +46,7 @@ from .pricing import (
     price_tokens,
     resolve_price,
 )
+from .receipt import FloeCost, turn_cost
 from .retry import RetryPlan, async_with_budget_retry, with_budget_retry
 from .store import SqliteStore, StateStore
 from .stream import StreamGuard, guard_stream
@@ -94,6 +95,8 @@ __all__ = [
     "cost_map_generated_at",
     "price_tokens",
     "resolve_price",
+    "FloeCost",
+    "turn_cost",
     "VoiceRate",
     "lookup_voice_rate",
     "resolve_voice_rate",
