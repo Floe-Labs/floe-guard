@@ -42,6 +42,16 @@ def test_format_micro_cost_does_not_round_to_zero() -> None:
     assert line == "floe · gpt-4o-mini · $0.000008 est"
 
 
+def test_format_micro_cost_below_threshold_keeps_precision() -> None:
+    # Just under $0.0001 must keep 6 decimals, not round up to $0.0001.
+    assert FloeCost(usd=0.000099, source="estimate", model="m").format().endswith("$0.000099 est")
+
+
+def test_format_at_threshold_uses_four_decimals() -> None:
+    # At $0.0001 exactly, drop to the compact 4-decimal form.
+    assert FloeCost(usd=0.0001, source="estimate", model="m").format().endswith("$0.0001 est")
+
+
 def test_source_must_be_estimate_or_hosted() -> None:
     with pytest.raises(ValueError, match="honesty contract"):
         FloeCost(usd=0.01, source="other", model="m")

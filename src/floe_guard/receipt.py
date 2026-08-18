@@ -53,7 +53,7 @@ class FloeCost:
         6 decimals instead of rounding to a misleading ``$0.0000``.
         """
         tag = "est" if self.source == SOURCE_ESTIMATE else "floe"
-        amount = f"${self.usd:.4f}" if round(self.usd, 4) != 0 else f"${self.usd:.6f}"
+        amount = f"${self.usd:.6f}" if abs(self.usd) < 0.0001 else f"${self.usd:.4f}"
         line = f"floe · {self.model or '?'} · {amount} {tag}"
         if self.remaining_usd is not None:
             line += f" · left ${self.remaining_usd:,.2f}"
