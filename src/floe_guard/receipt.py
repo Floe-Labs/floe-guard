@@ -39,10 +39,22 @@ class FloeCost:
     model: str | None = None
     remaining_usd: float | None = None
 
+    def __post_init__(self) -> None:
+        if self.source not in (SOURCE_ESTIMATE, SOURCE_HOSTED):
+            raise ValueError(
+                f"FloeCost.source must be {SOURCE_ESTIMATE!r} or {SOURCE_HOSTED!r}, "
+                f"got {self.source!r} — the estimate/hosted distinction is the honesty contract."
+            )
+
     def format(self) -> str:
-        """A one-line receipt, e.g. ``floe · gpt-4o · $0.0075 est · left $12.34``."""
+        """A one-line receipt, e.g. ``floe · gpt-4o · $0.0075 est · left $12.34``.
+
+        Per-call costs are often fractions of a cent, so sub-$0.0001 amounts get
+        6 decimals instead of rounding to a misleading ``$0.0000``.
+        """
         tag = "est" if self.source == SOURCE_ESTIMATE else "floe"
-        line = f"floe · {self.model or '?'} · ${self.usd:.4f} {tag}"
+        amount = f"${self.usd:.4f}" if round(self.usd, 4) != 0 else f"${self.usd:.6f}"
+        line = f"floe · {self.model or '?'} · {amount} {tag}"
         if self.remaining_usd is not None:
             line += f" · left ${self.remaining_usd:,.2f}"
         return line
@@ -56,12 +68,16 @@ def turn_cost(
     remaining_usd: float | None = None,
     overrides: dict[str, ManualPrice] | None = None,
 ) -> FloeCost | None:
-    """Per-turn receipt from token usage, priced by the bundled cost map.
+    """Per-turn receipt from token usage, priced locally by the cost map.
 
-    Returns ``None`` if the model cannot be priced — fail closed, never a
-    fabricated ``$0``. ``source`` is always ``"estimate"`` here; pass
-    ``remaining_usd`` (from :func:`~floe_guard.hosted_remaining_usd`, at whatever
-    cadence you like) to show budget without a network call every turn.
+    ``overrides`` (when given) are consulted before the bundled cost map, same as
+    :func:`~floe_guard.resolve_price`. Returns ``None`` if the model cannot be
+    priced — fail closed, never a fabricated ``$0``. ``source`` is always
+    ``"estimate"`` (this prices locally); to show remaining budget, pass
+    ``remaining_usd`` yourself — e.g. the result of
+    :func:`~floe_guard.hosted_remaining_usd` (a hosted read that needs a Floe
+    key), fetched at whatever cadence you like so there's no network call every
+    turn. ``turn_cost`` never calls the network.
     """
     priced = resolve_price(model, overrides)
     if priced is None:

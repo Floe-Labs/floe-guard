@@ -36,8 +36,19 @@ def test_format_with_budget() -> None:
     assert line == "floe · gpt-4o · $0.0075 floe · left $12.34"
 
 
-def test_floecost_shape_is_identical_local_and_hosted() -> None:
-    # The contract's whole point: same fields whether estimated or hosted.
-    est = FloeCost(usd=0.01, source="estimate", model="m", remaining_usd=None)
-    hosted = FloeCost(usd=0.01, source="hosted", model="m", remaining_usd=5.0)
-    assert est.__dataclass_fields__.keys() == hosted.__dataclass_fields__.keys()
+def test_format_micro_cost_does_not_round_to_zero() -> None:
+    # A real gpt-4o-mini short turn (~$0.000008) must not render as a misleading $0.0000.
+    line = FloeCost(usd=8e-6, source="estimate", model="gpt-4o-mini").format()
+    assert line == "floe · gpt-4o-mini · $0.000008 est"
+
+
+def test_source_must_be_estimate_or_hosted() -> None:
+    with pytest.raises(ValueError, match="honesty contract"):
+        FloeCost(usd=0.01, source="other", model="m")
+
+
+def test_turn_cost_returns_the_public_floecost_schema() -> None:
+    cost = turn_cost("gpt-4o", 1000, 500)
+    assert isinstance(cost, FloeCost)
+    # The byte-for-byte contract both local and hosted must speak.
+    assert tuple(cost.__dataclass_fields__) == ("usd", "source", "model", "remaining_usd")

@@ -15,13 +15,15 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 - **`FloeCost` — the per-turn receipt contract, plus `turn_cost()`.** One shape
   for cost whether it's a local estimate (`source="estimate"`, priced from the
   bundled cost map — free, offline, no account) or hosted server-truth
-  (`source="hosted"`), with an optional `remaining_usd` filled from
-  `hosted_remaining_usd()` when a Floe key is present. `turn_cost(model,
-  prompt_tokens, completion_tokens)` returns a `FloeCost` (or `None`, fail-closed,
-  for an unpriceable model); `FloeCost.format()` renders a one-line receipt.
-  Adapters emit it once per turn so a developer sees what a call cost with no
-  extra config — and graduating to hosted is a key swap, not a re-integration
-  (identical shape). TS parity pending.
+  (`source="hosted"`); `source` is validated to one of those two. `turn_cost(model,
+  prompt_tokens, completion_tokens, remaining_usd=?)` returns a `FloeCost` priced
+  locally (or `None`, fail-closed, for an unpriceable model) — it never calls the
+  network, so the caller passes `remaining_usd` themselves (e.g. the result of
+  `hosted_remaining_usd()`, a hosted read) to show budget. `FloeCost.format()`
+  renders a one-line receipt (sub-$0.0001 costs get 6 decimals, not a misleading
+  `$0.0000`). Intended for adapters to emit once per turn; graduating to hosted is
+  a key swap, not a re-integration (identical shape). Adapter wiring and TS parity
+  land separately.
 
 ### Fixed (js)
 
