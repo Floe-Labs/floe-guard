@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { resolvePrice } from "../src/pricing";
+import { costMapGeneratedAt, resolvePrice } from "../src/pricing";
 
 describe("resolvePrice", () => {
   it("resolves a known model and its provider-prefixed form", () => {
@@ -118,5 +118,22 @@ describe("resolvePrice", () => {
       expect(priced!.inputCostPerToken).toBe(inputCost);
       expect(priced!.outputCostPerToken).toBe(outputCost);
     }
+  });
+});
+
+describe("costMapGeneratedAt / reserved keys", () => {
+  it("returns a valid YYYY-MM-DD snapshot date", () => {
+    const date = costMapGeneratedAt();
+    expect(date).toBeDefined();
+    expect(date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // must be a real calendar date
+    expect(new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10)).toBe(date);
+  });
+
+  it("never resolves reserved dunder keys as models", () => {
+    expect(resolvePrice("__meta__")).toBeNull();
+    expect(resolvePrice("__voice__")).toBeNull();
+    // a real model still resolves
+    expect(resolvePrice("gpt-4o")).not.toBeNull();
   });
 });

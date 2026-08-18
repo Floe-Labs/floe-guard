@@ -308,6 +308,14 @@ for (const [k, v] of Object.entries(raw)) {
 // null-prototype: model keys come from remote JSON, so a "__proto__" (or similar)
 // key is stored as plain data instead of mutating the object's prototype.
 const out = Object.create(null);
+// Provenance/freshness of this snapshot. pricing.py / pricing.ts split this
+// reserved key back out (like __voice__), so it never reaches the token resolver;
+// it's surfaced via cost_map_generated_at() / costMapGeneratedAt().
+out.__meta__ = {
+  generated_at: new Date().toISOString().slice(0, 10),
+  source:
+    "LiteLLM public model prices (bundled snapshot); voice rates verified from vendor list pages",
+};
 for (const [k, v] of entries) {
   const entry = {
     input_cost_per_token: v.input_cost_per_token,

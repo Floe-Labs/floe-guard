@@ -8,7 +8,7 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.18.0 / js 0.13.3
+## Unreleased — py 0.18.1 / js 0.14.0
 
 ### Fixed (js)
 
@@ -62,6 +62,13 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   rationale recorded inline in `pyproject.toml`.
 
 ### Added (py)
+
+- **Bundled-pricing freshness.** `cost_map_generated_at()` returns the
+  `YYYY-MM-DD` the bundled cost map was last generated/verified (from a reserved
+  `__meta__` key; `None` for a pre-metadata/invalid snapshot), so you can display
+  or gate on how fresh the drift-prone list rates are. `scripts/update-cost-map.mjs`
+  stamps it on every refresh; the token resolver excludes `__meta__` like
+  `__voice__`. TS parity: `costMapGeneratedAt()`.
 
 - **`floe-guard demo` — the no-key demo, runnable from the installed package.**
   `pip install floe-guard && floe-guard demo` runs the runaway-loop demo (stub
@@ -180,6 +187,12 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   aggregate-budget behavior are unchanged.
 
 ### Added (js)
+
+- **`costMapGeneratedAt()`** — parity with the Python
+  `cost_map_generated_at()`: the `YYYY-MM-DD` the bundled cost map was last
+  generated/verified (from the reserved `__meta__` key), or `undefined` for a
+  pre-metadata/invalid snapshot. The token map now also excludes reserved dunder
+  keys (`__voice__`, `__meta__`), matching Python.
 
 - **Cost map: Claude 3.5 family.** Added `claude-3-5-sonnet-20241022`,
   `claude-3-5-sonnet-20240620` ($3.00/$15.00 per 1M in/out) and

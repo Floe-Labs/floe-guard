@@ -16,6 +16,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from datetime import date
 from importlib import resources
 from typing import Any
 
@@ -47,9 +48,42 @@ def _load_cost_map() -> dict[str, Any]:
 # per-token prices), so keeping them out of _COST_MAP means the token resolver
 # and its whole-map invariants never see them. See voice_pricing.py.
 _VOICE_MAP_KEY = "__voice__"
+# Reserved metadata key: provenance/freshness of the bundled snapshot, e.g.
+# {"generated_at": "2026-08-17"}. Like __voice__ it is NOT a model, so it stays
+# out of _COST_MAP; surfaced via cost_map_generated_at().
+_META_KEY = "__meta__"
 _RAW_COST_MAP: dict[str, Any] = _load_cost_map()
 _VOICE_MAP: dict[str, Any] = _RAW_COST_MAP.get(_VOICE_MAP_KEY, {})
-_COST_MAP: dict[str, Any] = {k: v for k, v in _RAW_COST_MAP.items() if k != _VOICE_MAP_KEY}
+# Coerce to a dict — a null / non-dict ``__meta__`` in the JSON must not break
+# the accessor (the docstring promises a safe ``None``, not a crash).
+_meta_raw = _RAW_COST_MAP.get(_META_KEY, {})
+_META: dict[str, Any] = _meta_raw if isinstance(_meta_raw, dict) else {}
+# Exclude every reserved dunder key (__voice__, __meta__, …) so the token
+# resolver only ever sees real model ids.
+_COST_MAP: dict[str, Any] = {
+    k: v for k, v in _RAW_COST_MAP.items() if not (k.startswith("__") and k.endswith("__"))
+}
+
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def cost_map_generated_at() -> str | None:
+    """Date the bundled pricing snapshot was last generated/verified.
+
+    Returns the ISO ``YYYY-MM-DD`` string from the cost map's ``__meta__`` block,
+    or ``None`` if the metadata is missing, malformed, or not a valid calendar
+    date. Pricing is a drift-prone snapshot of public list rates; this surfaces
+    *how fresh* it is (a trust signal you can display or gate on).
+    """
+    meta = _META if isinstance(_META, dict) else {}
+    value = meta.get("generated_at")
+    if not isinstance(value, str) or not _ISO_DATE.fullmatch(value):
+        return None
+    try:
+        date.fromisoformat(value)  # reject a well-shaped but unreal date, e.g. 2026-13-40
+    except ValueError:
+        return None
+    return value
 
 
 # The one "<provider>/" prefix that is safe to strip: the remainder of a
