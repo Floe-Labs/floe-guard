@@ -8,7 +8,20 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.18.1 / js 0.14.0
+## Unreleased — py 0.19.0 / js 0.14.0
+
+### Added (py)
+
+- **`FloeCost` — the per-turn receipt contract, plus `turn_cost()`.** One shape
+  for cost whether it's a local estimate (`source="estimate"`, priced from the
+  bundled cost map — free, offline, no account) or hosted server-truth
+  (`source="hosted"`), with an optional `remaining_usd` filled from
+  `hosted_remaining_usd()` when a Floe key is present. `turn_cost(model,
+  prompt_tokens, completion_tokens)` returns a `FloeCost` (or `None`, fail-closed,
+  for an unpriceable model); `FloeCost.format()` renders a one-line receipt.
+  Adapters emit it once per turn so a developer sees what a call cost with no
+  extra config — and graduating to hosted is a key swap, not a re-integration
+  (identical shape). TS parity pending.
 
 ### Fixed (js)
 
