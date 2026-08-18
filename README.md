@@ -95,17 +95,23 @@ BUDGET EXCEEDED — call blocked
 
 ![floe-guard hard-stopping a runaway loop before it crosses a $0.10 ceiling](docs/stop-the-loop.gif)
 
-_Run it yourself: `python examples/runaway_loop.py` — no API key, no account, no network._
+_Run it yourself, straight from the install: `pip install floe-guard && floe-guard demo` — no API key, no account, no network._
 
 ## See it stop a loop (no API key needed)
 
+Straight from the install — no repository checkout needed:
+
 ```bash
-python examples/runaway_loop.py
+pip install floe-guard
+floe-guard demo
 ```
 
 This rigs a loop against a **stub LLM** — no real API key, no account, no network.
 It prices each fake `gpt-4o` call offline and the guard halts the loop after a few
-iterations. This is the reproducible "stop the loop" demo.
+iterations, before it can cross the $0.10 ceiling. This is the reproducible "stop
+the loop" demo. Cloned the repo? The same demo is
+[`examples/runaway_loop.py`](examples/runaway_loop.py) (a thin wrapper around
+`floe_guard.demo.run_demo`).
 
 ## What did that call cost?
 

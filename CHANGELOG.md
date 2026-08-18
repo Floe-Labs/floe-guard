@@ -8,7 +8,7 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.17.2 / js 0.13.3
+## Unreleased — py 0.18.0 / js 0.13.3
 
 ### Fixed (js)
 
@@ -62,6 +62,13 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   rationale recorded inline in `pyproject.toml`.
 
 ### Added (py)
+
+- **`floe-guard demo` — the no-key demo, runnable from the installed package.**
+  `pip install floe-guard && floe-guard demo` runs the runaway-loop demo (stub
+  LLM, no account, no network) straight from the wheel — no repository checkout
+  needed. The demo logic moved into the package (`floe_guard.demo.run_demo`);
+  `examples/runaway_loop.py` is now a thin wrapper around it, so there's one
+  source of truth. `--limit-usd` overrides the $0.10 ceiling.
 
 - **Cost map: Claude 3.5 family.** Added `claude-3-5-sonnet-20241022`,
   `claude-3-5-sonnet-20240620` ($3.00/$15.00 per 1M in/out) and
