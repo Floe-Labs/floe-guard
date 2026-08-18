@@ -8,7 +8,25 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.17.1
+## Unreleased — py 0.17.1 / js 0.13.2
+
+### Fixed (js)
+
+- **`wrapStream` now fails closed when a stream ends without a usage-bearing
+  finish part.** Previously, `flush()` silently released the reservation and
+  allowed the stream to complete as though no tokens were consumed (effective
+  $0 spend), violating the package's fail-closed philosophy. The new behavior
+  releases the reservation **and** throws a descriptive `Error` — consistent
+  with how `wrapGenerate` and `usageTokens()` handle missing token data — so
+  the stream is rejected rather than treated as free. Cancellation (`cancel()`)
+  behavior is unchanged.
+
+  **AI SDK contract note (verified against `ai@4.3.19` / `@ai-sdk/provider`):**
+  `LanguageModelV1StreamPart` defines the `finish` part as carrying `usage`
+  (`promptTokens`/`completionTokens`), but the `doStream` contract does **not**
+  guarantee that a stream *must* emit a finish part before closing. A stream
+  that ends without one is therefore a contract violation that the guard must
+  treat as unmeterable spend, not a free call.
 
 ### Fixed (py)
 
