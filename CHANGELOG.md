@@ -8,7 +8,25 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.18.0
+## Unreleased — py 0.18.0 / js 0.13.3
+
+### Fixed (js)
+
+- **`wrapStream` now fails closed when a stream ends without a usage-bearing
+  finish part.** Previously, `flush()` silently released the reservation and
+  allowed the stream to complete as though no tokens were consumed (effective
+  $0 spend), violating the package's fail-closed philosophy. The new behavior
+  releases the reservation **and** throws a descriptive `Error` — consistent
+  with how `wrapGenerate` and `usageTokens()` handle missing token data — so
+  the stream is rejected rather than treated as free. Cancellation (`cancel()`)
+  behavior is unchanged.
+
+  **AI SDK contract note (verified against `ai@4.3.19` / `@ai-sdk/provider`):**
+  `LanguageModelV1StreamPart` defines the `finish` part as carrying `usage`
+  (`promptTokens`/`completionTokens`), but the `doStream` contract does **not**
+  guarantee that a stream *must* emit a finish part before closing. A stream
+  that ends without one is therefore a contract violation that the guard must
+  treat as unmeterable spend, not a free call.
 
 ### Fixed (py)
 
@@ -51,6 +69,12 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   needed. The demo logic moved into the package (`floe_guard.demo.run_demo`);
   `examples/runaway_loop.py` is now a thin wrapper around it, so there's one
   source of truth. `--limit-usd` overrides the $0.10 ceiling.
+
+- **Cost map: Claude 3.5 family.** Added `claude-3-5-sonnet-20241022`,
+  `claude-3-5-sonnet-20240620` ($3.00/$15.00 per 1M in/out) and
+  `claude-3-5-haiku-20241022` ($0.80/$4.00 per 1M) to the bundled cost map, so
+  they price instead of raising `UnpriceableModelError` under the default
+  `fail_closed=True`. (Closes #51.)
 
 - **Opt-in ledger sync → Reconcile Mode / Coverage Score.** A new **explicit,
   off-by-default** way to push your local spend ledger to Floe so **Coverage
@@ -156,6 +180,11 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   aggregate-budget behavior are unchanged.
 
 ### Added (js)
+
+- **Cost map: Claude 3.5 family.** Added `claude-3-5-sonnet-20241022`,
+  `claude-3-5-sonnet-20240620` ($3.00/$15.00 per 1M in/out) and
+  `claude-3-5-haiku-20241022` ($0.80/$4.00 per 1M) to the bundled cost map
+  (kept byte-identical with the Python copy).
 
 - **Opt-in ledger sync — `BudgetGuard.enableSync()` / `disableSync()` / `sync()`
   + `pushLedger()`** (parity with the Python client). Pushes the guard's

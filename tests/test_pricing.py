@@ -251,3 +251,17 @@ def test_price_tokens_caching_constants() -> None:
     assert _CACHE_CREATION_1H_MULTIPLIER == 2.00
     assert _CACHE_READ_MULTIPLIER == 0.10
 
+def test_resolves_claude_3_5_family() -> None:
+    # claude-3-5-sonnet and claude-3-5-haiku were missing from the cost map,
+    # causing UnpriceableModelError for anyone still on these models.
+    expected = {
+        "claude-3-5-sonnet-20241022": (3e-06, 1.5e-05),
+        "claude-3-5-sonnet-20240620": (3e-06, 1.5e-05),
+        "claude-3-5-haiku-20241022": (8e-07, 4e-06),
+    }
+    for model, (input_cost, output_cost) in expected.items():
+        priced = resolve_price(model)
+        assert priced is not None, f"{model} should be priceable without ManualPrice"
+        assert priced.source == "cost_map"
+        assert priced.input_cost_per_token == pytest.approx(input_cost)
+        assert priced.output_cost_per_token == pytest.approx(output_cost)
