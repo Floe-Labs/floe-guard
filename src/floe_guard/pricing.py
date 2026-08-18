@@ -31,11 +31,20 @@ class ManualPrice:
 
 @dataclass(frozen=True)
 class PricedModel:
-    """A resolved per-token price plus where it came from."""
+    """A resolved per-token price plus where it came from.
+
+    ``cache_read_cost_per_token`` / ``cache_creation_cost_per_token`` are the
+    model's published prompt-cache rates (from the cost map), or ``None`` when the
+    map has none — in which case :func:`price_tokens` falls back to a conservative
+    per-provider multiplier of the base input rate. Override-sourced prices leave
+    them ``None`` (an override carries only base input/output).
+    """
 
     input_cost_per_token: float
     output_cost_per_token: float
     source: str  # "override" | "cost_map"
+    cache_read_cost_per_token: float | None = None
+    cache_creation_cost_per_token: float | None = None
 
 
 def _load_cost_map() -> dict[str, Any]:
@@ -169,6 +178,10 @@ def resolve_price(
                 input_cost_per_token=float(input_cost),
                 output_cost_per_token=float(output_cost),
                 source="cost_map",
+                cache_read_cost_per_token=_finite_or_none(entry.get("cache_read_input_token_cost")),
+                cache_creation_cost_per_token=_finite_or_none(
+                    entry.get("cache_creation_input_token_cost")
+                ),
             )
     return None
 
@@ -189,6 +202,13 @@ def _both_finite(a: Any, b: Any) -> bool:
     )
 
 
+def _finite_or_none(x: Any) -> float | None:
+    """A finite float value, or ``None`` (missing, non-numeric, NaN, or inf)."""
+    if isinstance(x, (int, float)) and math.isfinite(x):
+        return float(x)
+    return None
+
+
 def price_tokens(
     priced: PricedModel,
     prompt_tokens: int,
@@ -205,9 +225,25 @@ def price_tokens(
     cc_1h = max(0, cache_creation_input_tokens_1h)
     cr = max(0, cache_read_input_tokens)
 
-    cache_creation_cost = cc * priced.input_cost_per_token * _CACHE_CREATION_MULTIPLIER
+    # Per-token cache rates: prefer the model's published rate (correct per
+    # provider — Anthropic reads at ~0.1x, OpenAI at ~0.5x), falling back to the
+    # conservative multiplier of the base input rate when the map has none. The
+    # 1h-creation rate has no published field (LiteLLM carries only the 5m
+    # creation rate), so it always uses its multiplier.
+    cache_creation_rate = (
+        priced.cache_creation_cost_per_token
+        if priced.cache_creation_cost_per_token is not None
+        else priced.input_cost_per_token * _CACHE_CREATION_MULTIPLIER
+    )
+    cache_read_rate = (
+        priced.cache_read_cost_per_token
+        if priced.cache_read_cost_per_token is not None
+        else priced.input_cost_per_token * _CACHE_READ_MULTIPLIER
+    )
+
+    cache_creation_cost = cc * cache_creation_rate
     cache_creation_1h_cost = cc_1h * priced.input_cost_per_token * _CACHE_CREATION_1H_MULTIPLIER
-    cache_read_cost = cr * priced.input_cost_per_token * _CACHE_READ_MULTIPLIER
+    cache_read_cost = cr * cache_read_rate
 
     cost = (
         (p * priced.input_cost_per_token)

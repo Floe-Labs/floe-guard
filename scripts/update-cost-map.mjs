@@ -326,6 +326,22 @@ for (const [k, v] of entries) {
     litellm_provider: v.litellm_provider,
     mode: v.mode,
   };
+  // Per-model prompt-cache rates, when upstream publishes them and they are
+  // finite and positive (mirrors the input/output finiteness handling). Kept
+  // optional so a model with no published cache rate simply omits them, and
+  // pricing falls back to the conservative per-provider multiplier.
+  if (
+    Number.isFinite(v.cache_read_input_token_cost) &&
+    v.cache_read_input_token_cost > 0
+  ) {
+    entry.cache_read_input_token_cost = v.cache_read_input_token_cost;
+  }
+  if (
+    Number.isFinite(v.cache_creation_input_token_cost) &&
+    v.cache_creation_input_token_cost > 0
+  ) {
+    entry.cache_creation_input_token_cost = v.cache_creation_input_token_cost;
+  }
   const existing = out[k];
   if (existing === undefined) {
     out[k] = entry;
@@ -356,6 +372,19 @@ for (const [k, v] of entries) {
     // and must not keep a mode that reads as "output is free".
     mode: output_cost_per_token === 0 ? "embedding" : "chat",
   };
+  // Merge cache rates toward the dearer rate too (Math.max), matching the
+  // under-metering-averse merge above. A rate present on only one side wins as-is;
+  // absent on both, the field stays omitted.
+  const cacheRead = Math.max(
+    existing.cache_read_input_token_cost ?? -Infinity,
+    entry.cache_read_input_token_cost ?? -Infinity,
+  );
+  if (Number.isFinite(cacheRead)) merged.cache_read_input_token_cost = cacheRead;
+  const cacheCreation = Math.max(
+    existing.cache_creation_input_token_cost ?? -Infinity,
+    entry.cache_creation_input_token_cost ?? -Infinity,
+  );
+  if (Number.isFinite(cacheCreation)) merged.cache_creation_input_token_cost = cacheCreation;
   out[k] = merged;
   console.warn(
     `NOTE: ${k} is listed more than once upstream — kept the dearer rate in each ` +

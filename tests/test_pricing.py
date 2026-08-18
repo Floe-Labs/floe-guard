@@ -292,6 +292,73 @@ def test_cost_map_generated_at_returns_none_for_invalid_metadata(monkeypatch, me
 
     monkeypatch.setattr(pricing, "_META", meta)
     assert cost_map_generated_at() is None
+
+
+def test_cost_map_carries_per_provider_cache_rates() -> None:
+    # The migration added per-model cache_read rates from LiteLLM. Anthropic and
+    # OpenAI publish DIFFERENT read ratios (Anthropic ~0.1x input, OpenAI ~0.5x),
+    # so the map must reflect both — the whole point of provider-aware pricing.
+    from floe_guard.pricing import _COST_MAP
+
+    anthropic = _COST_MAP["claude-3-7-sonnet-20250219"]
+    openai = _COST_MAP["gpt-4o"]
+    assert "cache_read_input_token_cost" in anthropic
+    assert "cache_read_input_token_cost" in openai
+    a_ratio = anthropic["cache_read_input_token_cost"] / anthropic["input_cost_per_token"]
+    o_ratio = openai["cache_read_input_token_cost"] / openai["input_cost_per_token"]
+    assert a_ratio == pytest.approx(0.1)
+    assert o_ratio == pytest.approx(0.5)
+    assert a_ratio != o_ratio
+
+
+def test_resolve_price_populates_cache_rates() -> None:
+    anthropic = resolve_price("claude-3-7-sonnet-20250219")
+    assert anthropic is not None
+    assert anthropic.cache_read_cost_per_token == pytest.approx(3e-7)
+    assert anthropic.cache_creation_cost_per_token is not None
+
+    openai = resolve_price("gpt-4o")
+    assert openai is not None
+    assert openai.cache_read_cost_per_token == pytest.approx(1.25e-6)
+
+
+def test_resolve_price_cache_rates_none_when_absent_or_override() -> None:
+    # A priced model the map has no cache rate for → None (falls back at pricing time).
+    no_cache = resolve_price("claude-3-5-sonnet-20241022")
+    assert no_cache is not None
+    assert no_cache.cache_read_cost_per_token is None
+    assert no_cache.cache_creation_cost_per_token is None
+
+    # Override-sourced prices never carry cache rates.
+    ov = resolve_price("gpt-4o", {"gpt-4o": ManualPrice(1e-9, 2e-9)})
+    assert ov is not None and ov.source == "override"
+    assert ov.cache_read_cost_per_token is None
+    assert ov.cache_creation_cost_per_token is None
+
+
+def test_price_tokens_uses_model_cache_rate() -> None:
+    # Cache-read priced at the model's OWN rate, not a one-size-fits-all multiplier.
+    anthropic = resolve_price("claude-3-7-sonnet-20250219")
+    openai = resolve_price("gpt-4o")
+    assert anthropic is not None and openai is not None
+
+    a_cost = price_tokens(anthropic, 0, 0, cache_read_input_tokens=1000)
+    assert a_cost == pytest.approx(1000 * anthropic.cache_read_cost_per_token)
+
+    o_cost = price_tokens(openai, 0, 0, cache_read_input_tokens=1000)
+    assert o_cost == pytest.approx(1000 * openai.cache_read_cost_per_token)
+    # Different providers, different cache-read cost for the same token count.
+    assert a_cost != o_cost
+
+
+def test_price_tokens_falls_back_to_multiplier_without_cache_rate() -> None:
+    # cache_read_cost_per_token is None → old behavior: input * 0.10.
+    priced = PricedModel(input_cost_per_token=1e-6, output_cost_per_token=2e-6, source="cost_map")
+    assert priced.cache_read_cost_per_token is None
+    cost = price_tokens(priced, 0, 0, cache_read_input_tokens=1000)
+    assert cost == pytest.approx(1000 * 1e-6 * 0.10)
+
+
 def test_resolves_claude_3_5_family() -> None:
     # claude-3-5-sonnet and claude-3-5-haiku were missing from the cost map,
     # causing UnpriceableModelError for anyone still on these models.
