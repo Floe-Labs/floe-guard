@@ -30,19 +30,32 @@ interface CostMapEntry {
   output_cost_per_token?: unknown;
 }
 
-const COST_MAP = costMapJson as Record<string, CostMapEntry>;
+// Reserved dunder keys (__voice__, __meta__) are NOT models — exclude them so the
+// token resolver only ever sees real model ids (parity with pricing.py's _COST_MAP).
+const COST_MAP: Record<string, CostMapEntry> = Object.fromEntries(
+  Object.entries(costMapJson as Record<string, CostMapEntry>).filter(
+    ([k]) => !(k.startsWith("__") && k.endsWith("__")),
+  ),
+);
 
 /**
  * Date the bundled pricing snapshot was last generated/verified (ISO
- * `YYYY-MM-DD`), or `undefined` if the bundled map predates the metadata.
- * Pricing is a drift-prone snapshot of public list rates; this surfaces *how
- * fresh* it is — a trust signal you can display or gate on. Parity with the
- * Python `cost_map_generated_at()`.
+ * `YYYY-MM-DD`), or `undefined` if the metadata is missing, malformed, or not a
+ * valid calendar date. Pricing is a drift-prone snapshot of public list rates;
+ * this surfaces *how fresh* it is — a trust signal you can display or gate on.
+ * Parity with the Python `cost_map_generated_at()`.
  */
 export function costMapGeneratedAt(): string | undefined {
   const meta = (costMapJson as Record<string, unknown>).__meta__;
-  const value = (meta as Record<string, unknown> | undefined)?.generated_at;
-  return typeof value === "string" ? value : undefined;
+  const value =
+    meta && typeof meta === "object"
+      ? (meta as Record<string, unknown>).generated_at
+      : undefined;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  // Reject a well-shaped but unreal date: JS rolls 2026-13-40 over, so compare back.
+  const d = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== value) return undefined;
+  return value;
 }
 
 /**

@@ -8,7 +8,25 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.18.0
+## Unreleased — py 0.18.1 / js 0.14.0
+
+### Fixed (js)
+
+- **`wrapStream` now fails closed when a stream ends without a usage-bearing
+  finish part.** Previously, `flush()` silently released the reservation and
+  allowed the stream to complete as though no tokens were consumed (effective
+  $0 spend), violating the package's fail-closed philosophy. The new behavior
+  releases the reservation **and** throws a descriptive `Error` — consistent
+  with how `wrapGenerate` and `usageTokens()` handle missing token data — so
+  the stream is rejected rather than treated as free. Cancellation (`cancel()`)
+  behavior is unchanged.
+
+  **AI SDK contract note (verified against `ai@4.3.19` / `@ai-sdk/provider`):**
+  `LanguageModelV1StreamPart` defines the `finish` part as carrying `usage`
+  (`promptTokens`/`completionTokens`), but the `doStream` contract does **not**
+  guarantee that a stream *must* emit a finish part before closing. A stream
+  that ends without one is therefore a contract violation that the guard must
+  treat as unmeterable spend, not a free call.
 
 ### Fixed (py)
 
@@ -47,10 +65,23 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 
 - **Bundled-pricing freshness.** `cost_map_generated_at()` returns the
   `YYYY-MM-DD` the bundled cost map was last generated/verified (from a reserved
-  `__meta__` key), so you can display or gate on how fresh the drift-prone public
-  list rates are. `scripts/update-cost-map.mjs` stamps it on every refresh; the
-  token resolver excludes `__meta__` the same way it excludes `__voice__`. TS
-  parity: `costMapGeneratedAt()`.
+  `__meta__` key; `None` for a pre-metadata/invalid snapshot), so you can display
+  or gate on how fresh the drift-prone list rates are. `scripts/update-cost-map.mjs`
+  stamps it on every refresh; the token resolver excludes `__meta__` like
+  `__voice__`. TS parity: `costMapGeneratedAt()`.
+
+- **`floe-guard demo` — the no-key demo, runnable from the installed package.**
+  `pip install floe-guard && floe-guard demo` runs the runaway-loop demo (stub
+  LLM, no account, no network) straight from the wheel — no repository checkout
+  needed. The demo logic moved into the package (`floe_guard.demo.run_demo`);
+  `examples/runaway_loop.py` is now a thin wrapper around it, so there's one
+  source of truth. `--limit-usd` overrides the $0.10 ceiling.
+
+- **Cost map: Claude 3.5 family.** Added `claude-3-5-sonnet-20241022`,
+  `claude-3-5-sonnet-20240620` ($3.00/$15.00 per 1M in/out) and
+  `claude-3-5-haiku-20241022` ($0.80/$4.00 per 1M) to the bundled cost map, so
+  they price instead of raising `UnpriceableModelError` under the default
+  `fail_closed=True`. (Closes #51.)
 
 - **Opt-in ledger sync → Reconcile Mode / Coverage Score.** A new **explicit,
   off-by-default** way to push your local spend ledger to Floe so **Coverage
@@ -135,14 +166,7 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   stdout and stderr and asserts that "Starting a runaway loop" precedes the
   "BUDGET EXCEEDED" banner.
 
-## Unreleased — js 0.14.0
-
-### Added (js)
-
-- **`costMapGeneratedAt()`** — parity with the Python `cost_map_generated_at()`:
-  returns the `YYYY-MM-DD` the bundled cost map was last generated/verified (from
-  the reserved `__meta__` key), or `undefined` on a pre-metadata map. Surfaces how
-  fresh the drift-prone bundled list rates are.
+## Unreleased — js 0.13.1
 
 ### Fixed (js)
 
@@ -163,6 +187,17 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   aggregate-budget behavior are unchanged.
 
 ### Added (js)
+
+- **`costMapGeneratedAt()`** — parity with the Python
+  `cost_map_generated_at()`: the `YYYY-MM-DD` the bundled cost map was last
+  generated/verified (from the reserved `__meta__` key), or `undefined` for a
+  pre-metadata/invalid snapshot. The token map now also excludes reserved dunder
+  keys (`__voice__`, `__meta__`), matching Python.
+
+- **Cost map: Claude 3.5 family.** Added `claude-3-5-sonnet-20241022`,
+  `claude-3-5-sonnet-20240620` ($3.00/$15.00 per 1M in/out) and
+  `claude-3-5-haiku-20241022` ($0.80/$4.00 per 1M) to the bundled cost map
+  (kept byte-identical with the Python copy).
 
 - **Opt-in ledger sync — `BudgetGuard.enableSync()` / `disableSync()` / `sync()`
   + `pushLedger()`** (parity with the Python client). Pushes the guard's

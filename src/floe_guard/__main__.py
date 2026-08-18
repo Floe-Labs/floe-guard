@@ -1,11 +1,17 @@
 """floe-guard CLI.
 
-One command today: ``floe-guard push`` — the **opt-in** ledger sync. It reads an
-:meth:`~floe_guard.BudgetGuard.export_log` JSONL ledger (from a file or stdin) and
-POSTs it to Floe's Reconcile Mode so your **Coverage Score** can count spend the
-gateway never routed (BYOK / self-hosted / off-path). Nothing runs on import or in
-the background — ``push`` is a one-shot send you invoke, with your key. Zero
-telemetry otherwise.
+Two commands:
+
+- ``floe-guard demo`` — run the no-key "stop a loop" demo (stub LLM, no account,
+  no network) straight from the installed package. ``--limit-usd`` sets the
+  ceiling (default $0.10).
+- ``floe-guard push`` — the **opt-in** ledger sync. It reads an
+  :meth:`~floe_guard.BudgetGuard.export_log` JSONL ledger (from a file or stdin)
+  and POSTs it to Floe's Reconcile Mode so your **Coverage Score** can count spend
+  the gateway never routed (BYOK / self-hosted / off-path).
+
+Nothing runs on import or in the background — every command is invoked explicitly,
+and only ``push`` touches the network (with your key). Zero telemetry otherwise.
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ import argparse
 import sys
 from collections.abc import Sequence
 
+from .demo import run_demo
 from .errors import LedgerSyncError
 from .sync import push_ledger
 
@@ -48,7 +55,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="API base URL. Defaults to $FLOE_API_BASE_URL, else the production host.",
     )
 
+    demo = sub.add_parser(
+        "demo",
+        help="Run the no-key 'stop a loop' demo (no account, no network).",
+        description=(
+            "Run the runaway-loop demo: a naive agent loop that floe-guard hard-stops "
+            "before it crosses a $0.10 ceiling. Stub LLM — no API key, no account, no "
+            "network. The same demo as examples/runaway_loop.py, runnable straight from "
+            "the installed package."
+        ),
+    )
+    demo.add_argument(
+        "--limit-usd",
+        type=float,
+        default=0.10,
+        help="Spend ceiling for the demo, in USD (default: 0.10).",
+    )
+
     args = parser.parse_args(argv)
+
+    if args.command == "demo":
+        try:
+            run_demo(limit_usd=args.limit_usd)
+        except ValueError as exc:
+            # e.g. a negative/non-finite --limit-usd; surface a clean CLI error
+            # (exit 2) instead of a Python traceback.
+            parser.error(str(exc))
+        return 0
 
     if args.command == "push":
         try:

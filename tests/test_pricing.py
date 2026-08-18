@@ -253,21 +253,56 @@ def test_price_tokens_caching_constants() -> None:
 
 
 
-def test_cost_map_generated_at_is_iso_date():
-    """The bundled snapshot exposes a YYYY-MM-DD freshness date."""
+def test_cost_map_generated_at_is_iso_date() -> None:
+    """The bundled snapshot exposes a valid YYYY-MM-DD freshness date."""
     import re
 
     from floe_guard import cost_map_generated_at
 
-    date = cost_map_generated_at()
-    assert date is not None
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", date), date
+    value = cost_map_generated_at()
+    assert value is not None
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", value), value
 
 
-def test_reserved_meta_keys_are_not_priceable_models():
+def test_reserved_meta_keys_are_not_priceable_models() -> None:
     """__meta__ / __voice__ are reserved keys, never resolved as models."""
     from floe_guard.pricing import _COST_MAP
 
     assert "__meta__" not in _COST_MAP
     assert "__voice__" not in _COST_MAP
     assert "gpt-4o" in _COST_MAP  # real models are still present
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        {},  # no generated_at
+        None,  # __meta__ null / non-dict
+        "2026-01-01",  # __meta__ a string, not a dict
+        {"generated_at": 20260101},  # non-string date
+        {"generated_at": "not-a-date"},  # malformed
+        {"generated_at": "2026-1-1"},  # not zero-padded YYYY-MM-DD
+        {"generated_at": "2026-13-40"},  # well-shaped but not a real calendar date
+    ],
+)
+def test_cost_map_generated_at_returns_none_for_invalid_metadata(monkeypatch, meta) -> None:
+    """The accessor returns None for missing / non-dict / non-string / invalid dates."""
+    import floe_guard.pricing as pricing
+    from floe_guard import cost_map_generated_at
+
+    monkeypatch.setattr(pricing, "_META", meta)
+    assert cost_map_generated_at() is None
+def test_resolves_claude_3_5_family() -> None:
+    # claude-3-5-sonnet and claude-3-5-haiku were missing from the cost map,
+    # causing UnpriceableModelError for anyone still on these models.
+    expected = {
+        "claude-3-5-sonnet-20241022": (3e-06, 1.5e-05),
+        "claude-3-5-sonnet-20240620": (3e-06, 1.5e-05),
+        "claude-3-5-haiku-20241022": (8e-07, 4e-06),
+    }
+    for model, (input_cost, output_cost) in expected.items():
+        priced = resolve_price(model)
+        assert priced is not None, f"{model} should be priceable without ManualPrice"
+        assert priced.source == "cost_map"
+        assert priced.input_cost_per_token == pytest.approx(input_cost)
+        assert priced.output_cost_per_token == pytest.approx(output_cost)

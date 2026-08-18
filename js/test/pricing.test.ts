@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { resolvePrice } from "../src/pricing";
+import { costMapGeneratedAt, resolvePrice } from "../src/pricing";
 
 describe("resolvePrice", () => {
   it("resolves a known model and its provider-prefixed form", () => {
@@ -103,5 +103,37 @@ describe("resolvePrice", () => {
 
   it("only strips ASCII-digit date suffixes (parity with Python's re.ASCII)", () => {
     expect(resolvePrice("gpt-4o-٢٠٢٥٠١٠١")).toBeNull();
+  });
+
+  it("resolves claude-3-5-sonnet and claude-3-5-haiku without an override", () => {
+    const expected: Record<string, [number, number]> = {
+      "claude-3-5-sonnet-20241022": [3e-6, 1.5e-5],
+      "claude-3-5-sonnet-20240620": [3e-6, 1.5e-5],
+      "claude-3-5-haiku-20241022": [8e-7, 4e-6],
+    };
+    for (const [model, [inputCost, outputCost]] of Object.entries(expected)) {
+      const priced = resolvePrice(model);
+      expect(priced, model).not.toBeNull();
+      expect(priced!.source).toBe("cost_map");
+      expect(priced!.inputCostPerToken).toBe(inputCost);
+      expect(priced!.outputCostPerToken).toBe(outputCost);
+    }
+  });
+});
+
+describe("costMapGeneratedAt / reserved keys", () => {
+  it("returns a valid YYYY-MM-DD snapshot date", () => {
+    const date = costMapGeneratedAt();
+    expect(date).toBeDefined();
+    expect(date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // must be a real calendar date
+    expect(new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10)).toBe(date);
+  });
+
+  it("never resolves reserved dunder keys as models", () => {
+    expect(resolvePrice("__meta__")).toBeNull();
+    expect(resolvePrice("__voice__")).toBeNull();
+    // a real model still resolves
+    expect(resolvePrice("gpt-4o")).not.toBeNull();
   });
 });
