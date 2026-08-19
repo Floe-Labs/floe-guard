@@ -12,17 +12,20 @@ voice turn, or tool invocation *before* it crosses your USD ceiling — a runawa
 dies at $0.10 instead of $4,000. In-process, no account, no signup, **no telemetry by default**.
 
 **Python** (`pip install floe-guard`): plain `check()` / `record()` or adapters for
-[OpenAI](#openai) · [Anthropic](#anthropic) · [Gemini](#google-gemini) · [CrewAI](#crewai) ·
-[LiteLLM](#litellm) · [LangChain](#langchain) · [LangGraph](#langgraph); voice adapters for
+[OpenAI](#openai) · [Anthropic](docs/adapters.md#anthropic) · [Gemini](docs/adapters.md#google-gemini) · [CrewAI](docs/adapters.md#crewai) ·
+[LiteLLM](docs/adapters.md#litellm) · [LangChain](docs/adapters.md#langchain) · [LangGraph](docs/adapters.md#langgraph); voice adapters for
 [Pipecat](#pipecat-voice) and [LiveKit](#livekit-voice);
 [pre-call admission gates](#voice-admission-gates-pre-call).
 
-**TypeScript** (`npm i floe-guard`): [Vercel AI SDK](#vercel-ai-sdk) middleware, native
+**TypeScript** (`npm i floe-guard`): [Vercel AI SDK](docs/adapters.md#vercel-ai-sdk) middleware, native
 [LiveKit · Vapi · Retell](#typescript-voice-adapters) voice adapters.
 See the [adapter matrix](#adapter-matrix) for what ships in Python vs TypeScript.
 
+> Reading this on PyPI? The `docs/…` and `examples/…` links resolve on the
+> [GitHub README](https://github.com/Floe-Labs/floe-guard), not on the PyPI page.
+
 The hard-stop is contract-based: adapters gate LLM calls automatically; for paid
-tools, [`reserve_tool()` / `settle_tool()`](#tool-spend-under-the-same-ceiling)
+tools, [`reserve_tool()` / `settle_tool()`](docs/advanced.md#tool-spend-under-the-same-ceiling)
 block *before* the call runs (`record_tool()` alone meters after the fact — it
 can't stop a call already made).
 
@@ -223,124 +226,13 @@ where the local ceiling earns its keep. Pick your stack; each is a drop-in adapt
 a few lines, no rearchitecting:
 
 - **OpenAI / Anthropic / Gemini** — [`guarded_completion`](#openai) wraps the client call.
-- **LangChain / LangGraph** — a [callback handler](#langchain) / [`guarded_node`](#langgraph) per fan-out branch.
-- **CrewAI / LiteLLM** — [`budget_guarded_llm`](#crewai) / [`guarded_completion`](#litellm).
+- **LangChain / LangGraph** — a [callback handler](docs/adapters.md#langchain) / [`guarded_node`](docs/adapters.md#langgraph) per fan-out branch.
+- **CrewAI / LiteLLM** — [`budget_guarded_llm`](docs/adapters.md#crewai) / [`guarded_completion`](docs/adapters.md#litellm).
 - **Voice (Pipecat · LiveKit · Vapi · Retell)** — [per-turn voice adapters](#voice-adapters-stt--llm--tts).
 
 See the [adapter matrix](#adapter-matrix) for what ships in Python vs TypeScript.
 
 ## Framework adapters (optional extras)
-
-### CrewAI
-
-```bash
-pip install floe-guard[crewai]
-```
-
-```python
-from crewai import Agent, Crew
-from floe_guard import BudgetGuard
-from floe_guard.integrations.crewai import budget_guarded_llm
-
-guard = BudgetGuard(limit_usd=1.00)
-llm = budget_guarded_llm(guard, "gpt-4o")   # meters AND hard-stops
-Crew(agents=[Agent(..., llm=llm)], tasks=[...]).kickoff()
-```
-
-CrewAI runs on LiteLLM, so one callback meters every agent and task under a
-single budget. Use `budget_guarded_llm` (not just `guard_crew`) to get the hard
-stop: LiteLLM can swallow exceptions raised inside its callbacks (verified on
-litellm 1.91.x), so a callback alone may keep the crew running past a
-violation. `budget_guarded_llm` also enforces in the LLM call path — where a
-raise reliably reaches CrewAI — re-raising any violation the callback recorded
-before the next call runs. `guard_crew(guard)` remains available for metering
-existing crews; check the returned callback's `tripped` attribute (and the
-`floe_guard` logger's ERROR output) if you use it alone. A recorded violation
-latches for the life of the callback — after remediating (say, adding a price
-override), call `callback.reset()` or build a fresh guard.
-
-### LiteLLM
-
-```bash
-pip install floe-guard[litellm]
-```
-
-```python
-from floe_guard import BudgetGuard
-from floe_guard.integrations.litellm import guarded_completion
-
-guard = BudgetGuard(limit_usd=1.00)
-response = guarded_completion(guard, model="gpt-4o", messages=[...])
-```
-
-Prefer the LiteLLM-native callback? Register `budget_guard_callback(guard)` on
-`litellm.callbacks` — but know its limit: LiteLLM runs callbacks inside
-`except Exception`, so the callback's enforcement raise can be swallowed and
-your loop keeps going. The callback records any violation on its `tripped`
-attribute and logs it at ERROR level; consult `tripped` in your own loop, or
-use `guarded_completion` (which enforces at the call site) for the guaranteed
-stop. Wrapper enforcement is tested against litellm 1.91.x.
-
-### LangChain
-
-```bash
-pip install floe-guard[langchain] langchain-openai   # langchain-openai only for the ChatOpenAI example below
-```
-
-```python
-from langchain_openai import ChatOpenAI
-from floe_guard import BudgetGuard
-from floe_guard.integrations.langchain import budget_guard_callback_handler
-
-guard = BudgetGuard(limit_usd=1.00)
-llm = ChatOpenAI(model="gpt-4o", callbacks=[budget_guard_callback_handler(guard)])
-llm.invoke("hello")            # checks budget before the call, records spend after
-```
-
-The handler checks the budget on LLM start (raising `BudgetExceeded` aborts the
-call before it runs) and records token usage on LLM end.
-
-### LangGraph
-
-```bash
-pip install floe-guard[langgraph]
-```
-
-```python
-import operator
-from typing import Annotated
-from typing_extensions import TypedDict
-
-from floe_guard import BudgetGuard
-from floe_guard.integrations.langgraph import AdvisoryChannel, guarded_node
-
-class State(TypedDict):
-    results: Annotated[list, operator.add]
-    budget: AdvisoryChannel          # typed BudgetAdvisory, refreshed per call
-
-guard = BudgetGuard(limit_usd=0.10)
-
-@guarded_node(guard, estimated_cost=0.01)   # reserve() before, settle()/release() after
-def worker(state: State) -> dict:
-    response = my_llm_call(state)
-    return {"results": [response["text"]], "usage": {
-        "model": response["model"],
-        "prompt_tokens": response["prompt_tokens"],
-        "completion_tokens": response["completion_tokens"],
-    }}
-```
-
-`guarded_node` gives every branch of a `StateGraph` fan-out its own atomic
-slice of the ceiling (reserve-before / settle-after, the same contract the
-OpenAI and Anthropic adapters use), so N parallel sub-agents can't race one
-shared total. Pass `estimated_cost` to hold a conservative fixed slice on
-every call of that node (the `0.01` above); a node that omits it estimates
-from the guard's last settled cost instead, which is `0` on a fresh guard, so
-seed a cold-start fan-out explicitly. After each settled call it writes the guard's `BudgetAdvisory`
-into `state["budget"]`, so a router node can downshift to a cheaper model on
-`near_limit` *before* the hard-stop — see
-[`examples/langgraph_budget_aware.py`](examples/langgraph_budget_aware.py) for
-the full budget-aware router (no API key needed).
 
 ### OpenAI
 
@@ -364,96 +256,7 @@ Use `guarded_acompletion` with an `AsyncOpenAI` client for async. See
 [`examples/openai_adapter.py`](examples/openai_adapter.py) for a runnable
 hard-stop demo (no API key needed).
 
-### Anthropic
-
-```bash
-pip install floe-guard[anthropic]
-```
-
-```python
-from anthropic import Anthropic
-from floe_guard import BudgetGuard
-from floe_guard.integrations.anthropic import guarded_completion
-
-guard = BudgetGuard(limit_usd=1.00)
-client = Anthropic()
-response = guarded_completion(guard, client, model="claude-3-7-sonnet-20250219", max_tokens=1024, messages=[...])
-```
-
-Same reserve-before / record-after contract as the OpenAI adapter; Anthropic's
-`input_tokens` / `output_tokens` are mapped onto the guard's prompt/completion
-pricing. Use `guarded_acompletion` with an `AsyncAnthropic` client for async.
-See [`examples/anthropic_adapter.py`](examples/anthropic_adapter.py) for a
-runnable demo of the adapter's native prompt-cache pricing — a cached read
-costs a fraction of a fresh one (no API key needed).
-
-### Google Gemini
-
-```bash
-pip install 'floe-guard[gemini]'
-```
-
-```python
-from google import genai
-from floe_guard import BudgetGuard
-from floe_guard.integrations.gemini import guarded_completion
-
-guard = BudgetGuard(limit_usd=1.00)
-client = genai.Client(api_key="...")
-response = guarded_completion(guard, client, model="gemini-2.5-flash", contents="hello")
-```
-
-Same reserve-before / record-after contract as the OpenAI adapter. Gemini splits
-usage across five counters and this adapter maps all of them: thinking tokens
-(`thoughts_token_count`) and tool-result tokens (`tool_use_prompt_token_count`)
-are billed but sit *outside* the obvious prompt/candidates pair, so omitting them
-would under-meter; cached tokens are carved out of the prompt count (Gemini
-includes them there) and re-priced at the cheaper cache-read rate rather than
-charged twice. Use `guarded_acompletion` for async.
-
-**Vertex AI callers must supply prices.** One SDK serves both Google AI Studio
-and Vertex with *identical model ids*, but Vertex bills up to 50% more, and the
-bundled map carries AI Studio rates — so metering a Vertex call against it would
-under-meter. The model id can't reveal the backend, but the client can: the
-adapter reads `client.vertexai` and fails closed unless you pass your own rates.
-
-```python
-from floe_guard import ManualPrice
-
-guard = BudgetGuard(limit_usd=1.00, price_overrides={
-    "gemini-2.5-flash": ManualPrice(3.0e-7, 2.5e-6),   # your Vertex rates
-})
-```
-
-Streaming isn't wrapped — `generate_content_stream` only reports usage on its
-final chunk (or never, if you stop early), so use
-[`guard_stream()`](#request-sized-estimates-and-mid-stream-enforcement) to meter
-a stream chunk-by-chunk instead.
-
-### Vercel AI SDK
-
-The Vercel AI SDK is TypeScript-only, so it ships as a separate npm package that
-lives in [`js/`](js/). It works with both **AI SDK v4 and v5**.
-
-```bash
-npm i floe-guard ai @ai-sdk/openai
-```
-
-```ts
-import { wrapLanguageModel } from "ai";
-import { openai } from "@ai-sdk/openai";
-import { BudgetGuard, budgetGuardMiddleware } from "floe-guard";
-
-const guard = new BudgetGuard(5.0);                   // your ceiling, in USD
-const model = wrapLanguageModel({
-  model: openai("gpt-4o"),
-  middleware: budgetGuardMiddleware(guard),           // throws before crossing
-});
-```
-
-The middleware `check()`s before each call (throwing `BudgetExceeded` to halt the
-run) and `record()`s priced usage after — same semantics as the Python guard. See
-[`js/README.md`](js/README.md).
+Every other adapter follows the same reserve-before / record-after contract — full walkthroughs live in **[docs/adapters.md](docs/adapters.md)**: [CrewAI](docs/adapters.md#crewai) · [LiteLLM](docs/adapters.md#litellm) · [LangChain](docs/adapters.md#langchain) · [LangGraph](docs/adapters.md#langgraph) · [Anthropic](docs/adapters.md#anthropic) · [Gemini](docs/adapters.md#google-gemini) · [Vercel AI SDK](docs/adapters.md#vercel-ai-sdk).
 
 ## Voice adapters (STT → LLM → TTS)
 
@@ -651,9 +454,9 @@ call-level intervention.) Budget, not balance. US-only telephony, v1.
 
 | Adapter | Python | TypeScript |
 |---|---|---|
-| OpenAI | ✅ | via [Vercel AI SDK](#vercel-ai-sdk) |
-| Anthropic | ✅ | via [Vercel AI SDK](#vercel-ai-sdk) |
-| Google Gemini | ✅ | via [Vercel AI SDK](#vercel-ai-sdk) |
+| OpenAI | ✅ | via [Vercel AI SDK](docs/adapters.md#vercel-ai-sdk) |
+| Anthropic | ✅ | via [Vercel AI SDK](docs/adapters.md#vercel-ai-sdk) |
+| Google Gemini | ✅ | via [Vercel AI SDK](docs/adapters.md#vercel-ai-sdk) |
 | LangChain | ✅ | — |
 | LangGraph | ✅ | — |
 | CrewAI | ✅ | — |
@@ -788,198 +591,15 @@ amounts, so field access is a light remap. See
 `remainingUsd`), with newer TypeScript fields marked as optional. The JSONL schema and
 behavior produced by `exportLog()` match Python's `export_log()` exactly.
 
-## Per-call spend log
+## Spend log, tools, tokens & deadlines
 
-The guard keeps a typed, in-memory ledger of everything it priced: each
-`record()` / `settle()` appends one `SpendEvent`, and `record_tool()` lets paid
-non-LLM calls (search APIs, scrapers) spend the same budget and land in the same
-log. The events sum to `spent_usd` (unless a `max_log_events` ring buffer has
-evicted old ones) — no more rebuilding per-call breakdowns around the guard.
+Beyond the dollar hard-stop, floe-guard carries a few more budget dimensions — full reference in **[docs/advanced.md](docs/advanced.md)**:
 
-```python
-guard = BudgetGuard(limit_usd=1.00)                      # max_log_events=N caps memory
-guard.record("gpt-4o", 1_200, 350, label="researcher")   # label is optional
-guard.record_tool("serpapi.search", 0.01, label="researcher")
-
-guard.spend_log      # [SpendEvent(timestamp=…, kind="llm", model_or_tool="gpt-4o",
-                     #             prompt_tokens=1200, completion_tokens=350,
-                     #             cost_usd=0.0065, label="researcher"), …]
-print(guard.export_log(), end="")   # JSONL, one event per line
-```
-
-`export_log()` emits a stable snake_case schema —
-`{timestamp, kind: llm|tool, model_or_tool, prompt_tokens, completion_tokens,
-cost_usd, label?, reserved?}` — identical to the TS package's `exportLog()`, so
-every agent produces the same shape regardless of stack and the streams can be
-concatenated and analysed together.
-
-## Tool spend under the same ceiling
-
-Tool-heavy agents often spend more on paid APIs (Apollo lookups, Exa searches,
-scrapers) than on tokens — and those dollars must count against the same cap,
-or the kill-switch guarantee is fiction for them. Tool spend is a first-class
-primitive with the full reserve/settle contract; it's actually **stronger**
-than the LLM path, because the price is known *before* the call:
-
-```python
-# pre-call hard-stop — the crossing call NEVER runs
-handle = guard.reserve_tool(0.02)              # raises BudgetExceeded before Apollo
-try:
-    result = apollo.people_lookup(...)
-    guard.settle_tool("apollo.people_lookup", 0.02, reserved=handle)
-except Exception:
-    guard.release(handle)                      # free the reservation if the call fails
-    raise
-
-guard.record_tool("exa.search", 0.004)         # post-hoc, for metered APIs
-
-guard.tool_costs     # {"apollo.people_lookup": 0.42, "exa.search": 0.11}
-guard.remaining_usd  # tokens + tools, one ceiling
-```
-
-`record_tool` also updates the next-call estimate, so a plain
-`check()`/`record_tool` loop stops *before* the crossing call — a runaway tool
-loop dies exactly like a runaway LLM loop. (Tool and LLM estimates are tracked
-separately; the default prediction is the costlier of the two, so a cheap tool
-call never shrinks the hold ahead of an expensive LLM call.) The caller supplies the USD (there
-is no tool cost-map); every tool call lands in `spend_log` as a
-`kind: "tool"` event. Same API in TS (`reserveTool`/`settleTool`/`recordTool`/
-`toolCosts`). See [`examples/tool_budget.py`](examples/tool_budget.py).
-
-## Token ceilings and per-step budgets
-
-Dollars aren't the only runaway. A token ceiling caps *total recorded token
-usage — every bucket the guard counts: prompt, completion, and cache* regardless
-of price, and a **per-step** cap keeps one step of a sequential loop from
-starving the rest even when the global budget has room.
-Both ride on the same reserve/settle machinery — they're a second dimension, not
-a second guard:
-
-```python
-from floe_guard import BudgetGuard, TokenBudgetExceeded
-
-# aggregate token ceiling alongside the USD ceiling
-guard = BudgetGuard(limit_usd=100.0, token_limit=20_000)
-
-guard.check(estimated_tokens=1_200)      # raises TokenBudgetExceeded if it'd cross
-guard.record("gpt-4o", 800, 400)         # tokens accrue for free from the counts
-
-# a per-step cap for one step of a sequential loop
-with guard.step(max_tokens=5_000) as g:  # g IS guard — adapters pass it through
-    g.record("gpt-4o", 3_000, 1_500)
-    g.check(estimated_tokens=1_000)       # 4_500 + 1_000 > 5_000 → scope="step"
-
-adv = guard.advisory()
-adv.token_used_bps        # aggregate token utilization (None if no token_limit)
-adv.remaining_tokens      # tokens left before the ceiling (None if no token_limit)
-adv.step_remaining_tokens # active step's headroom (None if no step, or its token cap is unset)
-```
-
-`TokenBudgetExceeded` subclasses `BudgetExceeded`, so budget-aware retry treats a
-token block as terminal automatically. With no `token_limit` and no `step()`, USD
-enforcement is unchanged and `reserve()` still returns a plain `float` — a
-`BudgetReservation` handle appears only when tokens are actually reserved or a
-step is active. (`advisory()` gains the token/step fields shown above; they're
-additive and `None` when their dimension is unused.) In TS the step is a callback
-and fields are camelCase:
-
-```ts
-const guard = new BudgetGuard(100, { tokenLimit: 20_000 });
-guard.check(undefined, { estimatedTokens: 1_200 });
-guard.step({ maxTokens: 5_000 }, (g) => {
-  g.record("gpt-4o", 3_000, 1_500);
-  g.check(undefined, { estimatedTokens: 1_000 }); // throws TokenBudgetExceeded
-});
-guard.advisory().stepRemainingTokens;
-```
-
-See [`examples/step_budget.py`](examples/step_budget.py) (no network).
-
-## LatencyBudget — deadlines, the same way
-
-Money isn't the only budget an agent burns. `LatencyBudget` is `BudgetGuard`'s
-sibling for **time**: it tracks cumulative elapsed time across a tool chain
-against an end-user SLA and stops the *next* call before it would blow it.
-
-```python
-from floe_guard import LatencyBudget, DeadlineExceeded
-
-deadline = LatencyBudget(sla_ms=5000)          # the user is promised 5s
-
-for step in plan:
-    deadline.check(expected_ms=step.est_ms)    # raises DeadlineExceeded when projected over
-    model = DEFAULT_MODEL
-    if deadline.advisory().near_deadline:      # 80% consumed by default —
-        model = FAST_FALLBACK                  # downshift BEFORE the wall
-    run(step, model, timeout_ms=deadline.remaining_ms)
-```
-
-Same shape in TypeScript: `new LatencyBudget(5000)`, `check(expectedMs)`,
-`remainingMs`, `advisory().nearDeadline`.
-
-Honest scope, mirroring the rest of this package:
-
-- **Monotonic clock** (`time.monotonic()` / `performance.now()`) — NTP steps
-  and DST can't corrupt the budget.
-- **Cooperative, not preemptive.** The guard supplies the deadline *signal*;
-  killing an already-running stalled call is your framework's job (asyncio
-  cancellation, `AbortSignal`). `check()` prevents the next call from starting.
-- **Advisory symmetry.** `near_deadline` / `used_bps` / `remaining_ms` are the
-  latency twin of the budget advisory's `near_limit` / `used_bps` /
-  `remaining_usd` — taper logic written against one ports to the other.
-- **In-process.** One instance per request/run; distributed/server-side latency
-  tracking is out of scope.
-
-## Request-sized estimates and mid-stream enforcement
-
-Two gaps in last-cost prediction, closed in 0.4.0 (Python):
-
-**The oversized first call.** `check()`/`reserve()` predict from the *last*
-call — blind on call #1, wrong for a call much bigger than the previous one.
-`estimate_call()` prices the **actual incoming request** so even a first call
-that alone would cross the cap blocks pre-flight:
-
-```python
-est = guard.estimate_call("gpt-4o", prompt_tokens=12_000, max_completion_tokens=4_096)
-handle = guard.reserve(est)   # raises BudgetExceeded NOW if this call can't fit
-try:
-    response = call_your_llm(model="gpt-4o", ...)
-    guard.settle("gpt-4o", response.usage.prompt_tokens, response.usage.completion_tokens, reserved=handle)
-except Exception:
-    guard.release(handle)      # free the reservation if the call fails
-    raise
-```
-
-The LiteLLM adapter does this automatically (prompt tokens via
-`litellm.token_counter`, output cap from `max_tokens`), and the LangChain
-handler sizes its pre-call `check()` the same way. Unpriceable or unsized
-requests fall back to the old last-cost prediction — the wiring only ever
-tightens enforcement.
-
-**The stream that runs long.** `record()` meters a *completed* response — too
-late for a generation that starts cheap and keeps going. `guard_stream()` (or
-the underlying `StreamGuard`) re-prices the call on every chunk and cuts the
-stream off **mid-generation**, settling the tokens actually consumed instead of
-recording a big overshoot after the fact:
-
-```python
-from floe_guard import StreamGuard
-
-# The context manager guarantees the reservation is settled or released:
-handle = guard.reserve(guard.estimate_call("gpt-4o", prompt_tokens=1_000, max_tokens=100))
-with StreamGuard(guard, "gpt-4o", prompt_tokens=1_000, reserved=handle) as sg:
-    for chunk in stream:
-        sg.feed_text(chunk.text)                       # raises BudgetExceeded mid-stream
-        consume(chunk)
-    sg.finish(completion_tokens=reported_usage_tokens) # reconcile to real usage
-```
-
-> [!NOTE]
-> A generator wrapper `guard_stream(guard, ...)` is also available for automated reservation settling/releasing on stream termination, but does not support post-hoc usage reconciliation via `finish()`.
-
-Chunk sizes are estimated at ~4 chars/token (pass `count_tokens=` for a real
-tokenizer). See [`examples/streaming_guard.py`](examples/streaming_guard.py)
-for a runnable demo (no API key).
+- **[Per-call spend log](docs/advanced.md#per-call-spend-log)** — a typed in-memory ledger of everything priced; `export_log()` emits stable JSONL.
+- **[Tool spend under the same ceiling](docs/advanced.md#tool-spend-under-the-same-ceiling)** — `reserve_tool()` / `settle_tool()` put paid API calls under the same cap as tokens.
+- **[Token ceilings & per-step budgets](docs/advanced.md#token-ceilings-and-per-step-budgets)** — a token cap and per-step cap alongside the USD ceiling.
+- **[LatencyBudget](docs/advanced.md#latencybudget--deadlines-the-same-way)** — the same reserve/advisory pattern for time against an SLA.
+- **[Request-sized estimates & mid-stream enforcement](docs/advanced.md#request-sized-estimates-and-mid-stream-enforcement)** — `estimate_call()` for the oversized first call; `guard_stream()` to cut a stream mid-generation.
 
 ## One line to hosted
 
@@ -1068,7 +688,7 @@ Or one-shot from a saved ledger:
 floe-guard push ledger.jsonl --key floe_…   # or: your_export_log_producer | floe-guard push
 ```
 
-**The request body is exactly the [`export_log()`](#per-call-spend-log) JSONL** —
+**The request body is exactly the [`export_log()`](docs/advanced.md#per-call-spend-log) JSONL** —
 one line per priced spend event: `timestamp`, `kind` (`llm`/`tool`),
 `model_or_tool`, `prompt_tokens`, `completion_tokens`, `cost_usd`, and the
 optional `label` / `reserved` you set. **No prompts, no message content, no

@@ -46,6 +46,22 @@ jobs:
           diff -q src/floe_guard/cost_map.json js/src/cost_map.json \
             || { echo "::error::cost_map.json drifted between src/floe_guard/ and js/src/ — re-sync the two copies."; exit 1; }
 
+  examples-index:
+    # README's "## Examples" table must list exactly the examples/*.py scripts
+    # on disk — a new example without a row, or a row whose file was removed,
+    # fails loudly so the table never drifts from the directory.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - name: README examples table must match examples/
+        run: python scripts/check_examples_index.py
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
