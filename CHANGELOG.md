@@ -8,6 +8,12 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.20.1 / js 0.15.0
+
+### Documentation (py)
+
+- **README Restructure and Examples Index**: Restructured the root README to improve readability, compressed the introductory sections, reordered logical sections (motivation/mechanics earlier), and added a central index table mapping all 16 `examples/*.py` scripts (including the orphaned `langchain_groq_example.py`).
+
 ## Unreleased — py 0.20.0 / js 0.15.0
 
 ### Added (py)
