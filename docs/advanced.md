@@ -180,7 +180,7 @@ recording a big overshoot after the fact:
 from floe_guard import StreamGuard
 
 # The context manager guarantees the reservation is settled or released:
-handle = guard.reserve(guard.estimate_call("gpt-4o", prompt_tokens=1_000, max_tokens=100))
+handle = guard.reserve(guard.estimate_call("gpt-4o", prompt_tokens=1_000, max_completion_tokens=100))
 with StreamGuard(guard, "gpt-4o", prompt_tokens=1_000, reserved=handle) as sg:
     for chunk in stream:
         sg.feed_text(chunk.text)                       # raises BudgetExceeded mid-stream

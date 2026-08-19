@@ -3,9 +3,9 @@
 The README carries a "## Examples" table with one row per runnable script in
 ``examples/``. It drifts silently: a new ``examples/*.py`` lands without a row,
 or a row outlives the file it points to. This check compares the set of
-``examples/*.py`` files (excluding ``__init__.py``) against the set of
-``examples/<name>.py`` paths referenced as rows under the "## Examples" heading,
-and fails loudly on any mismatch.
+``examples/*.py`` filenames on disk (excluding ``__init__.py``) against the set
+of filenames referenced as ``examples/<name>.py`` table rows under the
+"## Examples" heading, and fails loudly on any mismatch.
 
 Run from the repo root::
 
@@ -32,14 +32,15 @@ def files_on_disk() -> set[str]:
 
 
 def files_in_table() -> set[str]:
-    """Every examples/<name>.py referenced as a row in the README Examples table."""
+    """Every examples/*.py filename referenced as a table row under "## Examples"."""
     lines = README.read_text(encoding="utf-8").splitlines()
     in_table = False
     referenced: set[str] = set()
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("## "):
-            # Enter the section on the Examples heading; leave it on the next.
+        if re.match(r"^#{1,6}\s", stripped):
+            # Enter the section on the Examples heading; leave it on any other
+            # heading (any level), so a nested table can't extend the scan.
             in_table = stripped == "## Examples"
             continue
         if not in_table:

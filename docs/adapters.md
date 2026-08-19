@@ -2,7 +2,7 @@
 
 Optional-extra adapters for floe-guard. Each follows the same reserve-before / record-after contract as the [OpenAI adapter in the README](../README.md#openai) — install the extra, wrap your call, done.
 
-### CrewAI
+## CrewAI
 
 ```bash
 pip install floe-guard[crewai]
@@ -30,7 +30,7 @@ existing crews; check the returned callback's `tripped` attribute (and the
 latches for the life of the callback — after remediating (say, adding a price
 override), call `callback.reset()` or build a fresh guard.
 
-### LiteLLM
+## LiteLLM
 
 ```bash
 pip install floe-guard[litellm]
@@ -52,7 +52,7 @@ attribute and logs it at ERROR level; consult `tripped` in your own loop, or
 use `guarded_completion` (which enforces at the call site) for the guaranteed
 stop. Wrapper enforcement is tested against litellm 1.91.x.
 
-### LangChain
+## LangChain
 
 ```bash
 pip install floe-guard[langchain] langchain-openai   # langchain-openai only for the ChatOpenAI example below
@@ -71,7 +71,7 @@ llm.invoke("hello")            # checks budget before the call, records spend af
 The handler checks the budget on LLM start (raising `BudgetExceeded` aborts the
 call before it runs) and records token usage on LLM end.
 
-### LangGraph
+## LangGraph
 
 ```bash
 pip install floe-guard[langgraph]
@@ -113,7 +113,7 @@ into `state["budget"]`, so a router node can downshift to a cheaper model on
 [`examples/langgraph_budget_aware.py`](../examples/langgraph_budget_aware.py) for
 the full budget-aware router (no API key needed).
 
-### Anthropic
+## Anthropic
 
 ```bash
 pip install floe-guard[anthropic]
@@ -136,7 +136,7 @@ See [`examples/anthropic_adapter.py`](../examples/anthropic_adapter.py) for a
 runnable demo of the adapter's native prompt-cache pricing — a cached read
 costs a fraction of a fresh one (no API key needed).
 
-### Google Gemini
+## Google Gemini
 
 ```bash
 pip install 'floe-guard[gemini]'
@@ -179,7 +179,7 @@ final chunk (or never, if you stop early), so use
 [`guard_stream()`](advanced.md#request-sized-estimates-and-mid-stream-enforcement) to meter
 a stream chunk-by-chunk instead.
 
-### Vercel AI SDK
+## Vercel AI SDK
 
 The Vercel AI SDK is TypeScript-only, so it ships as a separate npm package that
 lives in [`js/`](../js/). It works with both **AI SDK v4 and v5**.

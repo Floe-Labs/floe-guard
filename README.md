@@ -21,6 +21,9 @@ dies at $0.10 instead of $4,000. In-process, no account, no signup, **no telemet
 [LiveKit · Vapi · Retell](#typescript-voice-adapters) voice adapters.
 See the [adapter matrix](#adapter-matrix) for what ships in Python vs TypeScript.
 
+> Reading this on PyPI? The `docs/…` and `examples/…` links resolve on the
+> [GitHub README](https://github.com/Floe-Labs/floe-guard), not on the PyPI page.
+
 The hard-stop is contract-based: adapters gate LLM calls automatically; for paid
 tools, [`reserve_tool()` / `settle_tool()`](docs/advanced.md#tool-spend-under-the-same-ceiling)
 block *before* the call runs (`record_tool()` alone meters after the fact — it
