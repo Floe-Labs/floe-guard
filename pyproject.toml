@@ -37,8 +37,8 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-litellm = ["litellm>=1.0"]
-crewai = ["crewai>=0.30", "litellm>=1.0"]
+litellm = ["litellm>=1.91.0"]
+crewai = ["crewai>=0.30", "litellm>=1.91.0"]
 langchain = ["langchain-core>=0.3"]
 langgraph = ["langgraph>=1.0"]
 openai = ["openai>=1.0"]

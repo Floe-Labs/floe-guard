@@ -1,4 +1,5 @@
 """LiteLLM adapter (optional extra: ``pip install floe-guard[litellm]``).
+Requires ``litellm >= 1.91.0``.
 
 Two ways to wire the guard into LiteLLM:
 

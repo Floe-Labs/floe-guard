@@ -9,7 +9,7 @@
 
 **The spend meter and budget gate for AI agents.** Hard-stops the next LLM call,
 voice turn, or tool invocation *before* it crosses your USD ceiling — a runaway loop
-dies at $0.10 instead of $4,000. In-process, no account, no signup, **no telemetry**.
+dies at $0.10 instead of $4,000. In-process, no account, no signup, **no telemetry by default**.
 
 **Python** (`pip install floe-guard`): plain `check()` / `record()` or adapters for
 [OpenAI](#openai) · [Anthropic](#anthropic) · [Gemini](#google-gemini) · [CrewAI](#crewai) ·
@@ -716,7 +716,9 @@ adv = guard.advisory()
 # BudgetAdvisory(near_limit=False, used_bps=125, remaining_usd=0.0987, ...)
 model = "gpt-4o-mini" if adv.near_limit else "gpt-4o"        # downshift near the cap
 
-guard.check()                  # still the hard line — taper or not, this holds
+# On the very first call, check() has no historical usage to predict cost with.
+# To ensure the ceiling is enforced on the first run, pass an estimated cost:
+guard.check(estimated_cost=0.01)  # still the hard line — taper or not, this holds
 response = call_your_llm(model)
 guard.record(model, response.usage.prompt_tokens, response.usage.completion_tokens)
 ```
@@ -780,8 +782,11 @@ The taper logic you just wrote carries over to hosted — the same near-limit
 signal (`near_limit` + `used_bps`), answered across *every* vendor and cap; the
 hosted `X-Floe-Budget-Advisory` header nests it under `tightest` with raw-integer
 amounts, so field access is a light remap. See
-[One line to hosted](#one-line-to-hosted). The TS package exposes the identical
-`guard.advisory()`.
+[One line to hosted](#one-line-to-hosted). The TypeScript package exposes
+`guard.advisory()`, mapping fields from Python's `snake_case` (e.g., `near_limit`,
+`used_bps`, `remaining_usd`) to TypeScript's `camelCase` (`nearLimit`, `usedBps`,
+`remainingUsd`), with newer TypeScript fields marked as optional. The JSONL schema and
+behavior produced by `exportLog()` match Python's `export_log()` exactly.
 
 ## Per-call spend log
 
@@ -819,8 +824,12 @@ than the LLM path, because the price is known *before* the call:
 ```python
 # pre-call hard-stop — the crossing call NEVER runs
 handle = guard.reserve_tool(0.02)              # raises BudgetExceeded before Apollo
-result = apollo.people_lookup(...)
-guard.settle_tool("apollo.people_lookup", 0.02, reserved=handle)
+try:
+    result = apollo.people_lookup(...)
+    guard.settle_tool("apollo.people_lookup", 0.02, reserved=handle)
+except Exception:
+    guard.release(handle)                      # free the reservation if the call fails
+    raise
 
 guard.record_tool("exa.search", 0.004)         # post-hoc, for metered APIs
 
@@ -933,6 +942,12 @@ that alone would cross the cap blocks pre-flight:
 ```python
 est = guard.estimate_call("gpt-4o", prompt_tokens=12_000, max_completion_tokens=4_096)
 handle = guard.reserve(est)   # raises BudgetExceeded NOW if this call can't fit
+try:
+    response = call_your_llm(model="gpt-4o", ...)
+    guard.settle("gpt-4o", response.usage.prompt_tokens, response.usage.completion_tokens, reserved=handle)
+except Exception:
+    guard.release(handle)      # free the reservation if the call fails
+    raise
 ```
 
 The LiteLLM adapter does this automatically (prompt tokens via
@@ -948,17 +963,23 @@ stream off **mid-generation**, settling the tokens actually consumed instead of
 recording a big overshoot after the fact:
 
 ```python
-from floe_guard import guard_stream
+from floe_guard import StreamGuard
 
-for chunk in guard_stream(guard, "gpt-4o", stream, prompt_tokens=1_000):
-    print(chunk, end="")   # raises BudgetExceeded mid-stream at the ceiling
+# The context manager guarantees the reservation is settled or released:
+handle = guard.reserve(guard.estimate_call("gpt-4o", prompt_tokens=1_000, max_tokens=100))
+with StreamGuard(guard, "gpt-4o", prompt_tokens=1_000, reserved=handle) as sg:
+    for chunk in stream:
+        sg.feed_text(chunk.text)                       # raises BudgetExceeded mid-stream
+        consume(chunk)
+    sg.finish(completion_tokens=reported_usage_tokens) # reconcile to real usage
 ```
 
+> [!NOTE]
+> A generator wrapper `guard_stream(guard, ...)` is also available for automated reservation settling/releasing on stream termination, but does not support post-hoc usage reconciliation via `finish()`.
+
 Chunk sizes are estimated at ~4 chars/token (pass `count_tokens=` for a real
-tokenizer); the final accrual reconciles to provider-reported usage via
-`StreamGuard.finish(...)`. See
-[`examples/streaming_guard.py`](examples/streaming_guard.py) for a runnable
-demo (no API key).
+tokenizer). See [`examples/streaming_guard.py`](examples/streaming_guard.py)
+for a runnable demo (no API key).
 
 ## One line to hosted
 
