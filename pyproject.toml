@@ -11,13 +11,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "floe-guard"
-version = "0.20.1"
+version = "0.21.0"
 description = "Local budget guardrail for AI agents — hard-stops a runaway loop before its next LLM call crosses a spend ceiling. No account, no network."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Floe Labs" }]
-keywords = ["llm", "agents", "budget", "guardrail", "crewai", "litellm", "langchain", "langgraph", "cost", "openai", "anthropic", "gemini", "voice", "stt", "tts", "livekit", "deepgram", "elevenlabs", "twilio"]
+keywords = ["llm", "agents", "budget", "guardrail", "crewai", "litellm", "langchain", "langgraph", "cost", "openai", "anthropic", "gemini", "voice", "stt", "tts", "livekit", "deepgram", "elevenlabs", "twilio", "vapi", "retell"]
 classifiers = [
     # Kept at Beta for 0.17.0 (decided 2026-08): the README's "Honest about what
     # this is" caveats — estimate-based enforcement, cold-start concurrency not
@@ -46,6 +46,11 @@ anthropic = ["anthropic>=0.40"]
 gemini = ["google-genai>=1.0"]
 pipecat = ["pipecat-ai>=1.0"]
 livekit = ["livekit-agents>=1.0"]
+# Vapi and Retell adapters are framework-free (no dependency), so their extras
+# exist for discoverability and install-surface parity with the rest of the
+# voice adapters.
+vapi = []
+retell = []
 dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
 
 [project.scripts]

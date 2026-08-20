@@ -1,8 +1,8 @@
 """The voice-call-cost examples must run with no API key and no network.
 
-AC1: a Pipecat and a LiveKit demo each emit a per-leg breakdown (STT / LLM / TTS
-/ telephony) summing to a total call cost, priced entirely from the bundled cost
-map with no manual rates.
+AC1: LiveKit, Pipecat, Vapi, and Retell demos each emit a per-leg breakdown
+(STT / LLM / TTS / telephony) summing to a total call cost, priced entirely from
+the bundled cost map with no manual rates.
 """
 
 from __future__ import annotations
@@ -59,5 +59,33 @@ async def test_pipecat_voice_call_cost_example(monkeypatch: pytest.MonkeyPatch) 
 
     _assert_four_legs_sum_to_total(
         guard, {"gpt-4o", "pipecat-stt", "pipecat-tts", "pipecat-telephony"}
+    )
+    assert "OPENAI_API_KEY" not in os.environ
+
+
+@pytest.mark.asyncio
+async def test_vapi_voice_call_cost_example(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FLOE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    demo = _load("voice_call_cost_vapi")
+
+    guard = await demo.run()
+
+    _assert_four_legs_sum_to_total(
+        guard, {"gpt-4o", "vapi-stt", "vapi-tts", "vapi-telephony"}
+    )
+    assert "OPENAI_API_KEY" not in os.environ
+
+
+@pytest.mark.asyncio
+async def test_retell_voice_call_cost_example(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FLOE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    demo = _load("voice_call_cost_retell")
+
+    guard = await demo.run()
+
+    _assert_four_legs_sum_to_total(
+        guard, {"gpt-4o", "retell-stt", "retell-tts", "retell-telephony"}
     )
     assert "OPENAI_API_KEY" not in os.environ
