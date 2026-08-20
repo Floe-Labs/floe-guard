@@ -185,9 +185,7 @@ def test_meters_stt_tts_telephony_from_named_vendors() -> None:
 
     assert stt == pytest.approx(price_voice_leg("stt", 30, model="deepgram-nova-3"))
     assert tts == pytest.approx(price_voice_leg("tts", 1_200, model="elevenlabs-flash-v2.5"))
-    assert tel == pytest.approx(
-        price_voice_leg("telephony", 2.5, model="twilio-us-inbound-local")
-    )
+    assert tel == pytest.approx(price_voice_leg("telephony", 2.5, model="twilio-us-inbound-local"))
     assert guard.tool_costs["retell-stt"] == pytest.approx(stt)
     assert guard.tool_costs["retell-tts"] == pytest.approx(tts)
     assert guard.tool_costs["retell-telephony"] == pytest.approx(tel)

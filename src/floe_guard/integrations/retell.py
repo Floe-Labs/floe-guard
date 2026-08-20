@@ -237,9 +237,7 @@ class RetellBudgetGuard:
         ``$/min × expected minutes``) to reject earlier, when the remaining
         budget can't cover the call.
         """
-        return retell_gate(
-            self._guard, estimated_call_usd=estimated_call_usd, admit=admit
-        )
+        return retell_gate(self._guard, estimated_call_usd=estimated_call_usd, admit=admit)
 
     def response(
         self,

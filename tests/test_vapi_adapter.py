@@ -248,9 +248,9 @@ def test_assistant_request_rejects_exhausted_call_with_spoken_error() -> None:
     guard = BudgetGuard(limit_usd=1.00)
     guard.record_tool("prior", 1.0)
     budget = VapiBudgetGuard(guard)
-    assert budget.assistant_request(
-        assistant_id="asst_123", error_message="Out of budget."
-    ) == {"error": "Out of budget."}
+    assert budget.assistant_request(assistant_id="asst_123", error_message="Out of budget.") == {
+        "error": "Out of budget."
+    }
 
 
 # ── voice legs price via the cost map ──────────────────────────────────────────
@@ -271,9 +271,7 @@ def test_meters_stt_tts_telephony_from_named_vendors() -> None:
 
     assert stt == pytest.approx(price_voice_leg("stt", 30, model="deepgram-nova-3"))
     assert tts == pytest.approx(price_voice_leg("tts", 1_200, model="elevenlabs-flash-v2.5"))
-    assert tel == pytest.approx(
-        price_voice_leg("telephony", 2.5, model="twilio-us-inbound-local")
-    )
+    assert tel == pytest.approx(price_voice_leg("telephony", 2.5, model="twilio-us-inbound-local"))
     assert guard.tool_costs["vapi-stt"] == pytest.approx(stt)
     assert guard.tool_costs["vapi-tts"] == pytest.approx(tts)
     assert guard.tool_costs["vapi-telephony"] == pytest.approx(tel)
