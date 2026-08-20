@@ -377,3 +377,82 @@ async def test_closing_a_finished_stream_does_not_double_release() -> None:
 
     await stream.aclose()  # already finished - must not release the settled hold
     assert guard.remaining_usd == pytest.approx(1.0 - 0.002)
+
+
+@pytest.mark.asyncio
+async def test_no_double_release_when_first_stream_pull_raises() -> None:
+    guard = _guard()
+    budget = VapiBudgetGuard(guard, model="m")
+    after_turn1 = await _prime_estimate(guard, budget)
+    before = guard.remaining_usd
+
+    async def source():
+        raise RuntimeError("pull boom")
+        yield {"choices": []}
+
+    stream = budget.guard_stream(source, model="m")
+    assert guard.remaining_usd == pytest.approx(before - 0.002)
+
+    with pytest.raises(RuntimeError, match="pull boom"):
+        async for _ in stream:
+            pass
+    assert guard.remaining_usd == pytest.approx(after_turn1)
+
+    await stream.aclose()
+    assert guard.remaining_usd == pytest.approx(after_turn1)
+
+
+@pytest.mark.asyncio
+async def test_no_double_release_when_first_stream_pull_is_usage_less_and_empty() -> None:
+    guard = _guard()
+    budget = VapiBudgetGuard(guard, model="m")
+    after_turn1 = await _prime_estimate(guard, budget)
+    before = guard.remaining_usd
+
+    async def source():
+        if False:
+            yield {}
+
+    stream = budget.guard_stream(source, model="m")
+    assert guard.remaining_usd == pytest.approx(before - 0.002)
+
+    with pytest.raises(VapiUsageMissingError):
+        await drain_stream(stream)
+    assert guard.remaining_usd == pytest.approx(after_turn1)
+
+    await stream.aclose()
+    assert guard.remaining_usd == pytest.approx(after_turn1)
+
+
+@pytest.mark.asyncio
+async def test_garbage_collection_releases_hold_for_unstarted_stream() -> None:
+    guard = _guard()
+    budget = VapiBudgetGuard(guard, model="m")
+    after_turn1 = await _prime_estimate(guard, budget)
+    before = guard.remaining_usd
+
+    stream = budget.guard_stream(lambda: sse_stream(5), model="m")
+    assert guard.remaining_usd == pytest.approx(before - 0.002)
+
+    del stream
+    import gc
+    gc.collect()
+
+    assert guard.remaining_usd == pytest.approx(after_turn1)
+
+
+@pytest.mark.asyncio
+async def test_malformed_usage_values_rejected() -> None:
+    guard = _guard()
+    budget = VapiBudgetGuard(guard, model="m")
+    await _prime_estimate(guard, budget)
+
+    with pytest.raises(VapiUsageMissingError):
+        await budget.guard_completion(
+            lambda: {"usage": {"prompt_tokens": -10, "completion_tokens": 5}}
+        )
+
+    with pytest.raises(VapiUsageMissingError):
+        await budget.guard_completion(
+            lambda: {"usage": {"prompt_tokens": 10, "completion_tokens": 5.5}}
+        )

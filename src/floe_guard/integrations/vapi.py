@@ -86,7 +86,7 @@ from __future__ import annotations
 import inspect
 import logging
 import math
-from collections.abc import AsyncIterable, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterable, Awaitable, Callable
 from typing import Any, TypeVar
 
 from ..errors import BudgetExceeded, FloeGuardError
@@ -114,16 +114,23 @@ class VapiUsageMissingError(FloeGuardError):
     def __init__(self, model: str) -> None:
         self.model = model
         super().__init__(
-            f"Vapi custom-LLM stream for model {model!r} ended with no token usage "
-            f"to settle against. OpenAI-style SSE only includes usage when the "
-            f"upstream request sets stream_options:{{ 'include_usage': True }} — "
-            f"set it, or the guard cannot meter the turn (it refuses rather than "
-            f"accrue a silent $0)."
+            f"Vapi custom-LLM result for model {model!r} contained no token usage "
+            f"to settle against. For streaming OpenAI-style SSE, set "
+            f"stream_options:{{'include_usage': True}}; for non-streaming calls, "
+            f"ensure the completion includes its usage block. The guard refuses "
+            f"rather than accruing a silent $0."
         )
 
 
 def _finite_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    """A finite, non-negative integer token count (``True`` counts as invalid)."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= 0
+        and (isinstance(value, int) or float(value).is_integer())
+    )
 
 
 def read_usage(usage: Any) -> tuple[int, int] | None:
@@ -153,7 +160,7 @@ def _completion_usage(completion: Any) -> Any:
     return getattr(completion, "usage", None)
 
 
-class _GuardedStream:
+class _GuardedStream(AsyncGenerator[Any, None]):
     """Async-iterator wrapper that owns a guarded generator's reservation.
 
     A generator's ``finally`` cannot run before the generator is started —
@@ -169,10 +176,10 @@ class _GuardedStream:
 
     def __init__(
         self,
-        gen: AsyncIterable[Any],
+        gen: AsyncGenerator[Any, None],
         release: Callable[[], None],
     ) -> None:
-        self._gen = gen
+        self._gen: AsyncGenerator[Any, None] | None = gen
         self._release = release
         self._started = False
 
@@ -183,13 +190,44 @@ class _GuardedStream:
         gen = self._gen
         if gen is None:
             raise StopAsyncIteration
+        self._started = True
         try:
             item = await gen.__anext__()
         except StopAsyncIteration:
             self._gen = None
             raise
-        self._started = True
+        except BaseException:
+            self._gen = None
+            raise
         return item
+
+    async def asend(self, value: Any) -> Any:
+        gen = self._gen
+        if gen is None:
+            raise StopAsyncIteration
+        self._started = True
+        try:
+            return await gen.asend(value)
+        except StopAsyncIteration:
+            self._gen = None
+            raise
+        except BaseException:
+            self._gen = None
+            raise
+
+    async def athrow(self, *args: Any, **kwargs: Any) -> Any:
+        gen = self._gen
+        if gen is None:
+            raise StopAsyncIteration
+        self._started = True
+        try:
+            return await gen.athrow(*args, **kwargs)
+        except StopAsyncIteration:
+            self._gen = None
+            raise
+        except BaseException:
+            self._gen = None
+            raise
 
     async def aclose(self) -> None:
         gen, self._gen = self._gen, None
@@ -197,10 +235,18 @@ class _GuardedStream:
             return
         if not self._started:
             self._release()
-        # Started: delegate so the generator's own finally runs (it settles or
-        # releases). Unstarted: closing the bare generator is a no-op after the
-        # eager release above.
         await gen.aclose()
+
+    def __del__(self) -> None:
+        try:
+            started = getattr(self, "_started", True)
+            gen = getattr(self, "_gen", None)
+            if not started and gen is not None:
+                release = getattr(self, "_release", None)
+                if release is not None:
+                    release()
+        except Exception:
+            pass
 
 
 class VapiBudgetGuard:
@@ -327,7 +373,7 @@ class VapiBudgetGuard:
         *,
         model: str | None = None,
         estimated_cost: float | None = None,
-    ) -> AsyncIterable[Any]:
+    ) -> _GuardedStream:
         """Guard a **streaming** model turn: reserve, then wrap the SSE chunk
         stream so it settles on the final chunk's ``usage``, releasing the hold
         on error or early abort.
@@ -375,7 +421,7 @@ class VapiBudgetGuard:
         run: Callable[[], AsyncIterable[Any] | Awaitable[AsyncIterable[Any]]],
         model: str,
         reserved: ReservationHandle,
-    ) -> AsyncIterable[Any]:
+    ) -> AsyncGenerator[Any, None]:
         usage: tuple[int, int] | None = None
         settled = False
         try:

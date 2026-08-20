@@ -267,6 +267,10 @@ def test_settle_turn_refuses_malformed_usage_payload() -> None:
         budget.settle_turn(1, {"promptTokens": 10, "completionTokens": None})
     with pytest.raises(ValueError, match="promptTokens"):
         budget.settle_turn(1, {"promptTokens": "lots", "completionTokens": 5})
+    with pytest.raises(ValueError, match="promptTokens"):
+        budget.settle_turn(1, {"promptTokens": -10, "completionTokens": 5})
+    with pytest.raises(ValueError, match="completionTokens"):
+        budget.settle_turn(1, {"promptTokens": 10, "completionTokens": 5.5})
     assert guard.advisory().spent_usd == 0.0  # nothing settled at a guessed cost
 
 

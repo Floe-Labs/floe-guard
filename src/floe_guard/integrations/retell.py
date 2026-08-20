@@ -80,11 +80,17 @@ from ..voice_pricing import price_voice_leg
 
 
 def _numeric(value: Any) -> bool:
-    """A finite number usable for a token count (True counts as invalid)."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    """A finite, non-negative integer token count (``True`` counts as invalid)."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= 0
+        and (isinstance(value, int) or float(value).is_integer())
+    )
 
 
-def _retell_usage(usage: Any) -> tuple[float, float] | None:
+def _retell_usage(usage: Any) -> tuple[int, int] | None:
     """Read Retell's camelCase token usage (``promptTokens`` /
     ``completionTokens``) as a dict or any object exposing both attributes.
     Returns ``None`` when absent/malformed — both fields must be finite
@@ -99,7 +105,7 @@ def _retell_usage(usage: Any) -> tuple[float, float] | None:
         completion = getattr(usage, "completionTokens", None)
     if not _numeric(prompt) or not _numeric(completion):
         return None
-    return prompt, completion
+    return int(prompt), int(completion)
 
 
 @dataclass(frozen=True)

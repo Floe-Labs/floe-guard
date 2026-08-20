@@ -469,11 +469,11 @@ budget = RetellBudgetGuard(guard, model="gpt-4o-mini")
 # in your custom-LLM WS message handler:
 turn = budget.begin_turn(event)          # reserve before the LLM call
 if not turn.admitted:                    # budget exhausted → wrap up the call
-    await ws.send(budget.response(event["response_id"],
-                                  "I'm out of budget — wrapping up.",
-                                  complete=True, end_call=True))
+    await ws.send(json.dumps(budget.response(event["response_id"],
+                                             "I'm out of budget — wrapping up.",
+                                             complete=True, end_call=True)))
     return
-ws.send(budget.response(event["response_id"], text, complete=True))
+await ws.send(json.dumps(budget.response(event["response_id"], text, complete=True)))
 budget.settle_turn(event["response_id"], {"promptTokens": n, "completionTokens": m})
 ```
 
