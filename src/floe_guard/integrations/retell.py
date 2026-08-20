@@ -68,7 +68,7 @@ the interrupt Retell itself signals (a newer ``response_id``) or an explicit
 
 from __future__ import annotations
 
-import logging
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -78,7 +78,28 @@ from ..gates import retell as retell_gate
 from ..guard import BudgetGuard, ReservationHandle
 from ..voice_pricing import price_voice_leg
 
-logger = logging.getLogger(__name__)
+
+def _numeric(value: Any) -> bool:
+    """A finite number usable for a token count (True counts as invalid)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _retell_usage(usage: Any) -> tuple[float, float] | None:
+    """Read Retell's camelCase token usage (``promptTokens`` /
+    ``completionTokens``) as a dict or any object exposing both attributes.
+    Returns ``None`` when absent/malformed — both fields must be finite
+    numbers, so a partial or non-numeric payload is treated as no usage
+    (fail-closed), never metered at a guessed cost.
+    """
+    if isinstance(usage, Mapping):
+        prompt = usage.get("promptTokens")
+        completion = usage.get("completionTokens")
+    else:
+        prompt = getattr(usage, "promptTokens", None)
+        completion = getattr(usage, "completionTokens", None)
+    if not _numeric(prompt) or not _numeric(completion):
+        return None
+    return prompt, completion
 
 
 @dataclass(frozen=True)
@@ -173,8 +194,20 @@ class RetellBudgetGuard:
         Reserving here is what blocks a turn before its downstream TTS/telephony
         spend piles on. Calling twice with the same still-open ``response_id``
         is idempotent (no double hold).
+
+        Raises:
+            ValueError: the event carries no integer ``response_id`` — a
+                malformed/mismatched interaction. Refused fail-closed rather
+                than mis-keying a turn or releasing a live one.
         """
-        response_id = event["response_id"]
+        response_id = event.get("response_id")
+        if isinstance(response_id, bool) or not isinstance(response_id, (int, float)):
+            raise ValueError(
+                "Retell interaction event must carry an integer response_id; "
+                f"got {response_id!r}. Failing closed rather than mis-keying a "
+                "turn or releasing a live one."
+            )
+        response_id = int(response_id)  # 1.0 from a non-conforming parser == 1
 
         # Idempotent: this turn already holds a reservation.
         existing = self._slots.get(response_id)
@@ -203,8 +236,22 @@ class RetellBudgetGuard:
         ``response_id``; a turn with no open slot (already interrupted, or a
         settle for an id never begun) records the usage against a zero
         reservation instead of stealing another turn's hold. ``usage`` carries
-        Retell's camelCase fields (``promptTokens`` / ``completionTokens``).
+        Retell's camelCase fields (``promptTokens`` / ``completionTokens``),
+        as a dict or any object exposing both.
+
+        Raises:
+            ValueError: ``usage`` lacks a numeric ``promptTokens`` /
+                ``completionTokens`` pair — a malformed payload is refused
+                (fail-closed) rather than settled at a guessed cost.
         """
+        counts = _retell_usage(usage)
+        if counts is None:
+            raise ValueError(
+                "Retell token usage must carry finite numeric promptTokens and "
+                f"completionTokens; got {usage!r}. Failing closed rather than "
+                "settling at a guessed cost."
+            )
+        prompt_tokens, completion_tokens = counts
         reserved: ReservationHandle = 0.0
         slot = self._slots.pop(response_id, None)
         if slot is not None:
@@ -215,8 +262,8 @@ class RetellBudgetGuard:
             self._active_response_id = None
         self._guard.settle(
             self._model,
-            usage["promptTokens"],
-            usage["completionTokens"],
+            prompt_tokens,
+            completion_tokens,
             reserved=reserved,
         )
 

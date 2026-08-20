@@ -237,3 +237,46 @@ def test_response_event_shape() -> None:
     final = budget.response(3, " one moment!", complete=True, end_call=True)
     assert final["content_complete"] is True
     assert final["end_call"] is True
+
+
+# -- fail-closed payloads -------------------------------------------------------
+
+
+def test_begin_turn_requires_an_integer_response_id() -> None:
+    # A malformed event (missing or odd response_id) is refused fail-closed
+    # rather than mis-keying a turn or releasing a live one.
+    guard = _guard()
+    budget = RetellBudgetGuard(guard, model="m")
+
+    with pytest.raises(ValueError, match="response_id"):
+        budget.begin_turn({"interaction_type": "response_required"})  # no response_id
+    with pytest.raises(ValueError, match="response_id"):
+        budget.begin_turn(
+            {"interaction_type": "response_required", "response_id": "1"}
+        )  # not a number
+    assert guard.remaining_usd == pytest.approx(1.0)  # nothing reserved or released
+
+
+def test_settle_turn_refuses_malformed_usage_payload() -> None:
+    guard = _guard()
+    budget = RetellBudgetGuard(guard, model="m")
+
+    with pytest.raises(ValueError, match="promptTokens"):
+        budget.settle_turn(1, {"completionTokens": 5})  # missing promptTokens
+    with pytest.raises(ValueError, match="completionTokens"):
+        budget.settle_turn(1, {"promptTokens": 10, "completionTokens": None})
+    with pytest.raises(ValueError, match="promptTokens"):
+        budget.settle_turn(1, {"promptTokens": "lots", "completionTokens": 5})
+    assert guard.advisory().spent_usd == 0.0  # nothing settled at a guessed cost
+
+
+def test_settle_turn_accepts_attribute_style_usage() -> None:
+    from types import SimpleNamespace
+
+    guard = _guard()
+    budget = RetellBudgetGuard(guard, model="m")
+    budget.begin_turn(response_required(1))
+
+    budget.settle_turn(1, SimpleNamespace(promptTokens=1000, completionTokens=500))
+    assert guard.advisory().spent_usd == pytest.approx(0.002)
+    assert guard.remaining_usd == pytest.approx(1.0 - 0.002)

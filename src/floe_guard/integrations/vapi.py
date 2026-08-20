@@ -153,6 +153,56 @@ def _completion_usage(completion: Any) -> Any:
     return getattr(completion, "usage", None)
 
 
+class _GuardedStream:
+    """Async-iterator wrapper that owns a guarded generator's reservation.
+
+    A generator's ``finally`` cannot run before the generator is started —
+    ``aclose()`` on an unstarted generator raises ``GeneratorExit`` at the
+    function's first byte, not at the ``try`` (so an unconsumed guarded stream
+    would silently leak its reservation). The wrapper closes that gap: closing
+    it before any iteration releases the hold eagerly and deterministically.
+    After the generator starts, behaviour is unchanged — the generator's own
+    ``finally`` settles or releases exactly once on completion, error, or abort.
+    """
+
+    __slots__ = ("_gen", "_release", "_started")
+
+    def __init__(
+        self,
+        gen: AsyncIterable[Any],
+        release: Callable[[], None],
+    ) -> None:
+        self._gen = gen
+        self._release = release
+        self._started = False
+
+    def __aiter__(self) -> _GuardedStream:
+        return self
+
+    async def __anext__(self) -> Any:
+        gen = self._gen
+        if gen is None:
+            raise StopAsyncIteration
+        try:
+            item = await gen.__anext__()
+        except StopAsyncIteration:
+            self._gen = None
+            raise
+        self._started = True
+        return item
+
+    async def aclose(self) -> None:
+        gen, self._gen = self._gen, None
+        if gen is None:
+            return
+        if not self._started:
+            self._release()
+        # Started: delegate so the generator's own finally runs (it settles or
+        # releases). Unstarted: closing the bare generator is a no-op after the
+        # eager release above.
+        await gen.aclose()
+
+
 class VapiBudgetGuard:
     """Enforce a BudgetGuard ceiling on a Vapi custom-LLM endpoint: reserve
     before the model turn, settle on the real OpenAI ``usage``, release on
@@ -300,20 +350,25 @@ class VapiBudgetGuard:
         an aborted turn. The unwinding is triggered by ``aclose()``: an
         explicit ``await stream.aclose()``, a task cancellation raised into
         the consuming generator (what HTTP/WS frameworks do on disconnect),
-        or garbage collection. A bare ``break`` in an ``async for`` drops the
-        reference and finalizes the generator on a later loop iteration —
+        or garbage collection of the wrapper. A bare ``break`` in an ``async
+        for`` drops the reference and finalizes on a later loop iteration —
         close it explicitly when the hold must clear immediately.
 
         The returned iterable holds the reservation until it is consumed to
-        completion, or closed/aborted — pipe it straight to the response so
-        the hold cannot leak.
+        completion (settled), or closed/aborted (released). Closing it before
+        it is ever consumed also releases the hold — a generator's ``finally``
+        cannot run before its first pull, so the returned wrapper (not the raw
+        generator) owns that path — pipe it straight to the response.
         """
         resolved = self._resolve_model(model)
         # Eager reserve (outside the generator) so a block raises synchronously
         # here, not lazily on first pull — the handler refuses the turn before
         # streaming.
         reserved = self._guard.reserve(estimated_cost)
-        return self._iterate_stream(run, resolved, reserved)
+        return _GuardedStream(
+            self._iterate_stream(run, resolved, reserved),
+            release=lambda: self._guard.release(reserved),
+        )
 
     async def _iterate_stream(
         self,

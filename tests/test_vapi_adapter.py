@@ -331,3 +331,49 @@ async def test_malformed_usage_is_treated_as_missing() -> None:
     with pytest.raises(VapiUsageMissingError):
         await budget.guard_completion(lambda: {"usage": {"prompt_tokens": "lots"}})
     assert guard.remaining_usd == pytest.approx(after_turn1)
+
+
+@pytest.mark.asyncio
+async def test_no_double_release_when_completion_settle_throws() -> None:
+    # Same invariant as the streaming variant: guard.settle releases the
+    # reservation on its own unpriceable-model failure path, and guard_completion
+    # has no finally of its own - the hold is released exactly once.
+    guard = BudgetGuard(limit_usd=1.00)  # fail_closed default; "mystery-model" unpriceable
+    guard.record_tool("prior", 0.1)  # non-zero next-call estimate -> the reserve holds 0.10
+    before = guard.remaining_usd  # 0.90
+    budget = VapiBudgetGuard(guard, model="mystery-model")
+
+    with pytest.warns(UnpriceableModelWarning), pytest.raises(UnpriceableModelError):
+        await budget.guard_completion(lambda: completion(100, 50), model="mystery-model")
+    assert guard.remaining_usd == pytest.approx(before)  # released exactly once
+
+
+@pytest.mark.asyncio
+async def test_releases_hold_when_stream_closed_before_consumption() -> None:
+    # A generator's finally cannot run before it is started, so closing a never-
+    # consumed guarded stream would leak its hold. The returned wrapper closes
+    # that gap deterministically on aclose().
+    guard = _guard()
+    budget = VapiBudgetGuard(guard, model="m")
+    after_turn1 = await _prime_estimate(guard, budget)  # next-call estimate 0.002
+
+    stream = budget.guard_stream(lambda: sse_stream(5), model="m")
+    assert guard.remaining_usd == pytest.approx(after_turn1 - 0.002)  # held
+
+    await stream.aclose()  # never consumed - released eagerly
+    assert guard.remaining_usd == pytest.approx(after_turn1)
+
+
+@pytest.mark.asyncio
+async def test_closing_a_finished_stream_does_not_double_release() -> None:
+    guard = _guard()
+    budget = VapiBudgetGuard(guard, model="m")
+
+    stream = budget.guard_stream(
+        lambda: sse_stream(2, {"prompt_tokens": 1000, "completion_tokens": 500}), model="m"
+    )
+    await drain_stream(stream)  # consumed to completion -> settled
+    assert guard.remaining_usd == pytest.approx(1.0 - 0.002)
+
+    await stream.aclose()  # already finished - must not release the settled hold
+    assert guard.remaining_usd == pytest.approx(1.0 - 0.002)
