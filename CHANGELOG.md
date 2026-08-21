@@ -8,7 +8,11 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.20.1 / js 0.15.0
+## Unreleased — py 0.20.1 / js 0.15.1
+
+### Added (js)
+
+- **`estimateCall` method on `BudgetGuard`**. Prices the actual incoming request (given model, prompt tokens, and optional max completion tokens) offline using the cost map. Returns `undefined` if the model is unpriceable. Enables TypeScript users to pre-flight check or reserve request-sized budgets to protect against oversized first runs.
 
 ### Documentation (py)
 
