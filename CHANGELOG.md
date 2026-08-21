@@ -8,6 +8,35 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.21.0 / js 0.15.1
+
+### Added (py)
+
+- **Vapi and Retell custom-LLM adapters — the in-call voice guards, now in
+  Python.** `floe_guard.integrations.vapi.VapiBudgetGuard` guards the
+  `/chat/completions` turn (`guard_completion` for JSON, `guard_stream` for SSE
+  — both reserve before the upstream call, settle on the real OpenAI `usage`
+  after, and release the hold on error/abort; a stream with no `include_usage`
+  chunk fails loudly via `VapiUsageMissingError` rather than metering $0),
+  answers Vapi's `assistant-request` webhook from the remaining budget
+  (`assistant_request`, delegating to `gates.vapi`), and meters the STT/TTS/
+  telephony legs the proxy never sees (`meter_stt` / `meter_tts` /
+  `meter_telephony`). `floe_guard.integrations.retell.RetellBudgetGuard` does
+  the same over Retell's custom-LLM WebSocket: reserve on `response_required`
+  (`begin_turn`, idempotent), settle real token usage after `content_complete`
+  (`settle_turn`), release the hold when a newer `response_id` interrupts or on
+  `close()`, plus `admit_call` (delegating to `gates.retell`), a `response`
+  event builder, and the same voice-leg meters. Both adapters are
+  **framework-free** — they speak Vapi's OpenAI-format JSON/SSE and Retell's
+  plain WS dicts, so a Python voice stack (FastAPI custom-LLM proxy, WS server)
+  can enforce per-turn budgets with nothing new to install (`floe-guard[vapi]` /
+  `floe-guard[retell]` extras exist for discoverability). They mirror the TS
+  adapters (`js/src/adapters/{vapi,retell}.ts`), and ship with no-key, no-network
+  examples (`examples/voice_call_cost_vapi.py`,
+  `examples/voice_call_cost_retell.py`) that print a pre-call admission decision
+  and a per-leg call-cost receipt; the README adapter matrix marks Vapi/Retell
+  ✅/✅.
+
 ## Unreleased — py 0.20.1 / js 0.15.1
 
 ### Added (js)
