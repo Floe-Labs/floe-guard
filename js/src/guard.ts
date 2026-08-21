@@ -467,41 +467,6 @@ export class BudgetGuard {
   }
 
   /**
-   * Price the ACTUAL incoming request, for a request-sized {@link reserve} / {@link check}.
-   *
-   * {@link check} and {@link reserve} default to predicting the next call
-   * from the LAST call's cost — which is blind on the first call and wrong
-   * for a call much larger than the previous one. Feed this the request you
-   * are about to send (its real prompt size and output cap) and pass the
-   * result straight through:
-   *
-   *     const est = guard.estimateCall("gpt-4o", promptTokens, maxCompletionTokens);
-   *     const handle = guard.reserve(est);   // blocks NOW if this call alone would cross
-   *
-   * The estimate is worst-case on output (the model may stop well short of
-   * `maxCompletionTokens`); the hold is corrected to actual cost at
-   * {@link settle}. Returns `undefined` when the model is unpriceable — and
-   * `reserve(undefined)` / `check(undefined)` fall back to the last-cost
-   * prediction, so the wiring degrades gracefully instead of failing.
-   */
-  estimateCall(
-    model: string,
-    promptTokens: number,
-    maxCompletionTokens = 0,
-    options: { price?: ManualPrice } = {},
-  ): number | undefined {
-    let overrides = this.priceOverrides;
-    if (options.price !== undefined) {
-      overrides = { ...(overrides ?? {}), [model]: options.price };
-    }
-    const priced = resolvePrice(model, overrides);
-    if (priced === null) {
-      return undefined;
-    }
-    return priceTokens(priced, promptTokens, maxCompletionTokens);
-  }
-
-  /**
    * Atomically check the ceiling AND hold a tool call's cost in flight.
    *
    * The tool-spend counterpart of {@link BudgetGuard.reserve} — and STRONGER

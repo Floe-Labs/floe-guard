@@ -64,24 +64,6 @@ const adv = guard.advisory();
 const model = adv.nearLimit ? openai("gpt-4o-mini") : openai("gpt-4o");
 ```
 
-## Request-sized estimates
-
-To ensure the ceiling is enforced on the first run or for a call much larger than the previous one, you can price the actual incoming request using `estimateCall()` and pass the estimate to `reserve()` or `check()`:
-
-```ts
-const est = guard.estimateCall("gpt-4o", 12_000, 4_096);
-const handle = guard.reserve(est); // throws BudgetExceeded NOW if this call alone would cross
-try {
-  const response = await callYourLlm({ model: "gpt-4o", ... });
-  guard.settle("gpt-4o", response.usage.promptTokens, response.usage.completionTokens, { reserved: handle });
-} catch (err) {
-  guard.release(handle);
-  throw err;
-}
-```
-
-If the model is unpriceable, `estimateCall()` returns `undefined` and `reserve(undefined)` / `check(undefined)` fall back gracefully to the last-cost prediction.
-
 ## Tool spend under the same ceiling
 
 Paid tool calls (Apollo, Exa, scrapers) burn the same budget as tokens. The

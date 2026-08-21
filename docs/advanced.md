@@ -164,20 +164,6 @@ except Exception:
     raise
 ```
 
-In TypeScript, `estimateCall()` uses the same offline pricing and options schema:
-
-```ts
-const est = guard.estimateCall("gpt-4o", 12_000, 4_096);
-const handle = guard.reserve(est);   // raises BudgetExceeded NOW if this call can't fit
-try {
-    const response = await callYourLlm({ model: "gpt-4o", ... });
-    guard.settle("gpt-4o", response.usage.promptTokens, response.usage.completionTokens, { reserved: handle });
-} catch (err) {
-    guard.release(handle);      // free the reservation if the call fails
-    throw err;
-}
-```
-
 The LiteLLM adapter does this automatically (prompt tokens via
 `litellm.token_counter`, output cap from `max_tokens`), and the LangChain
 handler sizes its pre-call `check()` the same way. Unpriceable or unsized
