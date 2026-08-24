@@ -73,6 +73,35 @@ const GROQ_KEY_MAP = new Map([
 // adapter detects them via `client.vertexai`.
 const PREFIX_STRIPPED_PROVIDERS = new Set(["gemini"]);
 
+// ── Pinned must-keep models ──────────────────────────────────────────────
+// Models we always ship even if LiteLLM stops listing them at their real
+// provider. Upstream dropped the claude-3-5 family from `litellm_provider:
+// "anthropic"` (refresh 2026-08-24), which nulled them out of the map and broke
+// pricing for the many users still on those models. Seeded into the LiteLLM
+// data below so they flow through the same isUsable filter, dedup, and sort as
+// everything else; a live upstream entry still wins (the seed only fills a gap).
+// Prices are Anthropic public list rates.
+const PINNED_MODELS = {
+  "claude-3-5-sonnet-20241022": {
+    input_cost_per_token: 0.000003,
+    output_cost_per_token: 0.000015,
+    litellm_provider: "anthropic",
+    mode: "chat",
+  },
+  "claude-3-5-sonnet-20240620": {
+    input_cost_per_token: 0.000003,
+    output_cost_per_token: 0.000015,
+    litellm_provider: "anthropic",
+    mode: "chat",
+  },
+  "claude-3-5-haiku-20241022": {
+    input_cost_per_token: 0.0000008,
+    output_cost_per_token: 0.000004,
+    litellm_provider: "anthropic",
+    mode: "chat",
+  },
+};
+
 // ── Voice rates (STT / TTS / telephony) ─────────────────────────────────────
 //
 // The token map above is fetched from LiteLLM; the voice map is NOT — LiteLLM
@@ -267,6 +296,12 @@ if (!res.ok) {
   throw new Error(`Failed to fetch LiteLLM cost map: HTTP ${res.status}`);
 }
 const raw = await res.json();
+
+// Seed pinned must-keep models when upstream has dropped them; a live upstream
+// entry wins. They then flow through isUsable/dedup/sort like any other model.
+for (const [k, v] of Object.entries(PINNED_MODELS)) {
+  if (!(k in raw)) raw[k] = v;
+}
 
 const entries = Object.entries(raw)
   .filter(([k, v]) => isUsable(k, v))
