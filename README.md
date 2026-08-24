@@ -31,7 +31,7 @@ can't stop a call already made).
 
 ## Works best with the Floe skill
 
-`floe-guard` is a local ceiling — it stops paid work before your budget blows, standalone, no account needed. To govern your agent's **whole** vendor bill (LLM, voice, telephony, data) on one key with server-side spend controls, add the **Floe agent skill** — it teaches Claude Code / Cursor the same govern-your-spend workflow `floe-guard` enforces locally:
+`floe-guard` is a local ceiling — it stops paid work before your budget blows, standalone, no account needed. Hosted Floe is the system of record on top: it costs every call the moment it ends across every vendor (LLM, voice, telephony, data) on one ledger, shows your margin per client, and lets you invoice your own customers off the actuals — with spend controls enforced server-side. Add the **Floe agent skill** to teach Claude Code / Cursor the same govern-your-spend workflow `floe-guard` enforces locally:
 
 ```bash
 npx skills add floe-labs/agent-skills
@@ -806,14 +806,16 @@ on it raises, with zero network) — the [no-telemetry](#no-telemetry) default h
 ## When you outgrow local guardrails
 
 `floe-guard` stops overspend **per process, locally** — no account, no network.
-When the ceiling needs to hold across your whole fleet, hosted Floe moves
-enforcement server-side.
+When the ceiling needs to hold across your whole fleet, hosted Floe becomes the
+system of record: it costs every call across every vendor on one ledger, shows your
+margin per client, and lets you invoice your own customers off the actuals — with
+enforcement moved server-side.
 
 | | floe-guard (this repo) | Hosted Floe |
 |---|---|---|
 | Runs | Locally, in your process | Server-side |
 | Scope | One process | Every vendor and agent |
-| Control | Hard stop at your cap | Kill switch + one unified ledger |
+| Control | Hard stop at your cap | Kill switch + one ledger: cost, margin, rebilling |
 
 Already on hosted Floe? The package's only network call is the opt-in hosted
 budget read: set `FLOE_API_KEY` (agent key `floe_…`) and `hosted_remaining_usd()`
