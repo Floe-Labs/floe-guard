@@ -24,9 +24,15 @@ from floe_guard.integrations.openai import (
 
 
 @dataclass
+class _PromptTokensDetails:
+    cached_tokens: int | None = None
+
+
+@dataclass
 class _Usage:
     prompt_tokens: int
     completion_tokens: int
+    prompt_tokens_details: _PromptTokensDetails | None = None
 
 
 @dataclass
@@ -76,8 +82,30 @@ def _async_client(response: _Response) -> _Client:
 
 
 def test_usage_from_object_and_dict() -> None:
-    assert _usage_from(_Response("gpt-4o", _Usage(5, 7))) == (5, 7)
-    assert _usage_from({"usage": {"prompt_tokens": 5, "completion_tokens": 7}}) == (5, 7)
+    assert _usage_from(_Response("gpt-4o", _Usage(5, 7))) == (5, 7, 0)
+    assert _usage_from({"usage": {"prompt_tokens": 5, "completion_tokens": 7}}) == (5, 7, 0)
+
+
+def test_cached_tokens_are_carved_out_of_the_prompt_not_added() -> None:
+    # prompt_tokens INCLUDES the cached share, so it is subtracted and re-priced
+    # at the cheaper cache-read rate. Charging both would bill it twice.
+    usage = _Usage(1_000, 40, _PromptTokensDetails(cached_tokens=800))
+    assert _usage_from(_Response("gpt-4o", usage)) == (200, 40, 800)
+    assert _usage_from(
+        {
+            "usage": {
+                "prompt_tokens": 1_000,
+                "completion_tokens": 40,
+                "prompt_tokens_details": {"cached_tokens": 800},
+            }
+        }
+    ) == (200, 40, 800)
+
+
+def test_missing_or_null_cached_tokens_read_as_zero() -> None:
+    # No cache hit leaves the block unset, and some providers report a null count.
+    assert _usage_from(_Response("gpt-4o", _Usage(10, 5, None))) == (10, 5, 0)
+    assert _usage_from(_Response("gpt-4o", _Usage(10, 5, _PromptTokensDetails()))) == (10, 5, 0)
 
 
 def test_model_from_prefers_response_then_kwargs() -> None:
@@ -109,6 +137,26 @@ def test_record_response_accrues() -> None:
     resp = _Response("gpt-4o", _Usage(1_000, 1_000))
     _record_response(guard, {}, resp)
     assert guard.spent_usd == pytest.approx(0.0125)
+
+
+def test_cached_tokens_are_priced_at_the_cache_read_rate() -> None:
+    guard = BudgetGuard(limit_usd=1.0)
+    usage = _Usage(1_000, 0, _PromptTokensDetails(cached_tokens=800))
+    _record_response(guard, {}, _Response("gpt-4o", usage))
+    # 200 fresh input at 2.5e-6, plus 800 cached at gpt-4o's published 1.25e-6
+    # cache-read rate — NOT 1000 at the full input rate.
+    assert guard.spent_usd == pytest.approx(200 * 2.5e-06 + 800 * 1.25e-06)
+
+
+def test_fully_cached_prompt_still_settles_rather_than_releasing() -> None:
+    # A cache hit that leaves zero fresh input and no completion is real spend,
+    # so it must settle the hold instead of taking the usage-less release path.
+    guard = BudgetGuard(limit_usd=1.0)
+    handle = guard.reserve(0.5)
+    usage = _Usage(800, 0, _PromptTokensDetails(cached_tokens=800))
+    _record_response(guard, {}, _Response("gpt-4o", usage), reserved=handle)
+    assert guard.spent_usd == pytest.approx(800 * 1.25e-06)
+    assert len(guard.spend_log) == 1
 
 
 def test_guarded_completion_records_and_calls_client() -> None:
