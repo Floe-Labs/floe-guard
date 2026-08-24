@@ -12,7 +12,9 @@ next turn before it crosses your USD ceiling** — a runaway loop dies at $0.10
 instead of $4,000. Runs **in your process**: no account, no signup, no network,
 **no telemetry**. It also guards **any** LLM agent (OpenAI, Anthropic, CrewAI,
 LangChain, …) via plain `check()` / `record()` or an adapter. Python (`pip`) +
-TypeScript (`npm`). MIT. Built by [Floe](https://floelabs.xyz) — cost controls for Voice AI.
+TypeScript (`npm`). MIT. Built by [Floe](https://floelabs.xyz) — know what every AI call
+really costs: cost per call across every vendor, margin per client, and rebilling your own
+customers off the actuals.
 
 ## Add it to an agent — unattended steps
 
