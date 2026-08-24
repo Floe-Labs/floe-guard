@@ -8,6 +8,29 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.21.1
+
+### Fixed (py)
+
+- **OpenAI and LiteLLM adapters: cached prompt tokens are priced at the
+  cache-read rate, not the full input rate.** Both adapters read only
+  `usage.prompt_tokens` / `usage.completion_tokens`, but `prompt_tokens`
+  *includes* the share served from the provider's prompt cache
+  (`usage.prompt_tokens_details.cached_tokens`) — so every cached token was
+  metered at the full input rate. This is the same systematic overcharge
+  `turn_cost(prompt_cached_tokens=…)` fixed for the receipt in py 0.20.0, and
+  that the Gemini adapter already avoids by carving
+  `cached_content_token_count` out of the prompt count. Both adapters now do
+  the same and pass the cached share to `settle(…,
+  cache_read_input_tokens=…)`, so it prices at the model's published cache-read
+  rate. OpenAI enables prompt caching automatically for prompts ≥1024 tokens,
+  so any agent loop with a stable system prompt was affected: a 10k-token
+  prompt that is 90% cached metered ~3.3x its real cost, hard-stopping the
+  agent well before its ceiling was actually reached. A response with no cache
+  hit (the block absent, or `cached_tokens` null) is unchanged, and a fully
+  cached prompt with no completion now settles its reservation instead of
+  taking the usage-less release path.
+
 ## Unreleased — py 0.21.0 / js 0.15.1
 
 ### Added (py)

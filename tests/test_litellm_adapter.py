@@ -16,9 +16,15 @@ from floe_guard.integrations.litellm import _model_from, _record_response, _usag
 
 
 @dataclass
+class _PromptTokensDetails:
+    cached_tokens: int | None = None
+
+
+@dataclass
 class _Usage:
     prompt_tokens: int
     completion_tokens: int
+    prompt_tokens_details: _PromptTokensDetails | None = None
 
 
 @dataclass
@@ -44,8 +50,46 @@ def test_model_from_prefers_kwargs() -> None:
 
 
 def test_usage_from_dict_and_object() -> None:
-    assert _usage_from({"usage": {"prompt_tokens": 5, "completion_tokens": 7}}) == (5, 7)
-    assert _usage_from(_ObjResponse("gpt-4o", _Usage(5, 7))) == (5, 7)
+    assert _usage_from({"usage": {"prompt_tokens": 5, "completion_tokens": 7}}) == (5, 7, 0)
+    assert _usage_from(_ObjResponse("gpt-4o", _Usage(5, 7))) == (5, 7, 0)
+
+
+def test_cached_tokens_are_carved_out_of_the_prompt_not_added() -> None:
+    # prompt_tokens INCLUDES the cached share, so it is subtracted and re-priced
+    # at the cheaper cache-read rate. Charging both would bill it twice.
+    usage = _Usage(1_000, 40, _PromptTokensDetails(cached_tokens=800))
+    assert _usage_from(_ObjResponse("gpt-4o", usage)) == (200, 40, 800)
+    assert _usage_from(
+        {
+            "usage": {
+                "prompt_tokens": 1_000,
+                "completion_tokens": 40,
+                "prompt_tokens_details": {"cached_tokens": 800},
+            }
+        }
+    ) == (200, 40, 800)
+
+
+def test_missing_or_null_cached_tokens_read_as_zero() -> None:
+    # A provider with no cache hit omits the block, or carries it with no count.
+    assert _usage_from(_ObjResponse("gpt-4o", _Usage(10, 5, None))) == (10, 5, 0)
+    assert _usage_from(_ObjResponse("gpt-4o", _Usage(10, 5, _PromptTokensDetails()))) == (10, 5, 0)
+
+
+def test_cached_tokens_are_priced_at_the_cache_read_rate() -> None:
+    guard = BudgetGuard(limit_usd=1.0)
+    resp = {
+        "model": "gpt-4o",
+        "usage": {
+            "prompt_tokens": 1_000,
+            "completion_tokens": 0,
+            "prompt_tokens_details": {"cached_tokens": 800},
+        },
+    }
+    _record_response(guard, {}, resp)
+    # 200 fresh input at 2.5e-6, plus 800 cached at gpt-4o's published 1.25e-6
+    # cache-read rate — NOT 1000 at the full input rate.
+    assert guard.spent_usd == pytest.approx(200 * 2.5e-06 + 800 * 1.25e-06)
 
 
 def test_record_response_accrues_dict_response() -> None:
