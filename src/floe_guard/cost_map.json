@@ -1,7 +1,14 @@
 {
   "__meta__": {
-    "generated_at": "2026-08-17",
+    "generated_at": "2026-08-24",
     "source": "LiteLLM public model prices (bundled snapshot); voice rates verified from vendor list pages"
+  },
+  "chat-latest": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.00003,
+    "litellm_provider": "openai",
+    "mode": "chat",
+    "cache_read_input_token_cost": 5e-7
   },
   "chatgpt-4o-latest": {
     "input_cost_per_token": 0.000005,
@@ -217,6 +224,22 @@
     "cache_read_input_token_cost": 2e-7,
     "cache_creation_input_token_cost": 0.0000025
   },
+  "daybreak-blue-latest": {
+    "input_cost_per_token": 0.000004,
+    "output_cost_per_token": 0.00002,
+    "litellm_provider": "openai",
+    "mode": "chat",
+    "cache_read_input_token_cost": 4e-7,
+    "cache_creation_input_token_cost": 0.000005
+  },
+  "daybreak-red-latest": {
+    "input_cost_per_token": 0.0000125,
+    "output_cost_per_token": 0.000075,
+    "litellm_provider": "openai",
+    "mode": "chat",
+    "cache_read_input_token_cost": 0.00000125,
+    "cache_creation_input_token_cost": 0.000015625
+  },
   "ft:gpt-3.5-turbo": {
     "input_cost_per_token": 0.000003,
     "output_cost_per_token": 0.000006,
@@ -308,7 +331,7 @@
     "output_cost_per_token": 4e-7,
     "litellm_provider": "gemini",
     "mode": "chat",
-    "cache_read_input_token_cost": 3.75e-8
+    "cache_read_input_token_cost": 2.5e-8
   },
   "gemini-2.0-flash-lite": {
     "input_cost_per_token": 7.5e-8,
@@ -459,12 +482,18 @@
     "mode": "chat",
     "cache_read_input_token_cost": 3e-8
   },
+  "gemini-3.5-live-translate-preview": {
+    "input_cost_per_token": 0.0000035,
+    "output_cost_per_token": 0.000021,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
   "gemini-3.6-flash": {
-    "input_cost_per_token": 0.0000015,
-    "output_cost_per_token": 0.0000075,
+    "input_cost_per_token": 7.5e-7,
+    "output_cost_per_token": 0.00000375,
     "litellm_provider": "gemini",
     "mode": "chat",
-    "cache_read_input_token_cost": 1.5e-7
+    "cache_read_input_token_cost": 7.5e-8
   },
   "gemini-3.7-flash": {
     "input_cost_per_token": 7.5e-7,
@@ -951,12 +980,20 @@
     "cache_read_input_token_cost": 5e-7
   },
   "gpt-5.6": {
-    "input_cost_per_token": 0.000005,
-    "output_cost_per_token": 0.00003,
+    "input_cost_per_token": 0.000004,
+    "output_cost_per_token": 0.00002,
     "litellm_provider": "openai",
     "mode": "chat",
-    "cache_read_input_token_cost": 5e-7,
-    "cache_creation_input_token_cost": 0.00000625
+    "cache_read_input_token_cost": 4e-7,
+    "cache_creation_input_token_cost": 0.000005
+  },
+  "gpt-5.6-cyber": {
+    "input_cost_per_token": 0.0000125,
+    "output_cost_per_token": 0.000075,
+    "litellm_provider": "openai",
+    "mode": "chat",
+    "cache_read_input_token_cost": 0.00000125,
+    "cache_creation_input_token_cost": 0.000015625
   },
   "gpt-5.6-luna": {
     "input_cost_per_token": 2e-7,
@@ -967,12 +1004,12 @@
     "cache_creation_input_token_cost": 2.5e-7
   },
   "gpt-5.6-sol": {
-    "input_cost_per_token": 0.000005,
-    "output_cost_per_token": 0.00003,
+    "input_cost_per_token": 0.000004,
+    "output_cost_per_token": 0.00002,
     "litellm_provider": "openai",
     "mode": "chat",
-    "cache_read_input_token_cost": 5e-7,
-    "cache_creation_input_token_cost": 0.00000625
+    "cache_read_input_token_cost": 4e-7,
+    "cache_creation_input_token_cost": 0.000005
   },
   "gpt-5.6-terra": {
     "input_cost_per_token": 0.000002,
@@ -1222,23 +1259,5 @@
       "rate": 0.004,
       "provider": "twilio"
     }
-  },
-  "claude-3-5-sonnet-20241022": {
-    "input_cost_per_token": 3e-06,
-    "output_cost_per_token": 1.5e-05,
-    "litellm_provider": "anthropic",
-    "mode": "chat"
-  },
-  "claude-3-5-sonnet-20240620": {
-    "input_cost_per_token": 3e-06,
-    "output_cost_per_token": 1.5e-05,
-    "litellm_provider": "anthropic",
-    "mode": "chat"
-  },
-  "claude-3-5-haiku-20241022": {
-    "input_cost_per_token": 8e-07,
-    "output_cost_per_token": 4e-06,
-    "litellm_provider": "anthropic",
-    "mode": "chat"
   }
 }
