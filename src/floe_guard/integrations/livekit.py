@@ -35,6 +35,16 @@ since LiveKit emits no telephony metric. A leg with neither a vendor nor an
 override is left un-metered (the token-only contract); a vendor the voice map
 cannot price fails closed (:class:`~floe_guard.errors.UnpriceableVoiceError`).
 
+**Avatars and arbitrary paid tools.** Anything else a turn pays for — an avatar
+vendor's per-minute video (Tavus, HeyGen, Simli, Beyond Presence), or a paid
+API/tool the agent calls — lands on the same ledger via :meth:`record_tool`,
+which you call once with the leg's name and USD cost. LiveKit emits no metric
+for these, and their price shape varies by vendor (per-minute, per-session,
+per-frame), so you compute the cost and record it — there is no map to guess
+from. Like STT/TTS/telephony these flow through the guard's ``record_tool`` into
+the spend log, so ``guard.export_log()`` / ``guard.sync()`` reconciles EVERY
+paid leg (LLM, STT, TTS, telephony, avatars, tools) onto Floe's ledger.
+
 **Mid-call component swaps.** ``Agent.update_options()`` and
 ``AgentSession.update_agent()`` can replace the live LLM/STT/TTS objects mid-call.
 ``livekit-agents`` (verified against 1.6.6) emits **no swap-specific event** — the
@@ -373,6 +383,25 @@ class LiveKitBudgetGuard:
         if cost is not None:
             self._guard.record_tool("livekit-telephony", cost)
         return cost
+
+    def record_tool(self, tool: str, cost_usd: float, *, label: str | None = None) -> float:
+        """Record an arbitrary paid leg — an avatar frame or any paid tool/API call.
+
+        The catch-all for spend LiveKit emits no metric for: avatar vendors
+        (Tavus, HeyGen, Simli, Beyond Presence — usually per-minute video) and
+        paid tools/APIs the agent calls mid-turn. You supply the USD ``cost_usd``
+        directly (compute it from your vendor's rate — no voice-map lookup, since
+        their price shapes vary), and the leg accrues against the same ceiling and
+        lands in the spend log exactly like the STT/TTS/telephony legs — so
+        :meth:`~floe_guard.BudgetGuard.export_log` /
+        :meth:`~floe_guard.BudgetGuard.sync` reconciles it onto Floe's ledger.
+
+        A thin pass-through to :meth:`~floe_guard.BudgetGuard.record_tool`: name
+        the leg (e.g. ``"livekit-avatar-tavus"``), tag it with an optional
+        ``label`` (a task/customer id — synced as the row's task attribution).
+        Returns ``cost_usd``.
+        """
+        return self._guard.record_tool(tool, cost_usd, label=label)
 
     def _on_close(self, ev) -> None:
         # Session torn down with a turn still reserved — release it. Drop any

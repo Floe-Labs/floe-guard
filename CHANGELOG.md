@@ -8,9 +8,21 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.21.0 / js 0.15.1
+## Unreleased — py 0.22.0 / js 0.15.1
 
 ### Added (py)
+
+- **LiveKit adapter now reconciles avatar and arbitrary-tool legs, not just
+  LLM/STT/TTS/telephony.** `LiveKitBudgetGuard.record_tool(tool, cost_usd,
+  label=…)` lands any paid leg LiveKit emits no metric for — avatar vendors
+  (Tavus, HeyGen, Simli, Beyond Presence) and paid tools/APIs the agent calls —
+  on the same ceiling and spend log as the existing voice legs. You supply the
+  USD cost (their price shapes vary by vendor, so there is no map to guess
+  from), and the leg flows through `guard.export_log()` / `guard.sync()` onto
+  Floe's ledger like every other leg, so a self-hosted LiveKit agent can
+  reconcile its WHOLE bill (LLM, STT, TTS, telephony, avatars, tools) with the
+  local-first / no-network-by-default invariant intact — the ledger leaves the
+  process only when you call `sync()`.
 
 - **Vapi and Retell custom-LLM adapters — the in-call voice guards, now in
   Python.** `floe_guard.integrations.vapi.VapiBudgetGuard` guards the
