@@ -54,9 +54,12 @@ def _usage_from(response: Any) -> tuple[int, int, int]:
     prompt = int(get("prompt_tokens", 0) or 0)
     completion = int(get("completion_tokens", 0) or 0)
     cached = _cached_tokens(get("prompt_tokens_details", None))
-    # max(0, …): the cached share is documented as part of prompt_tokens, but
-    # clamp so a malformed pair can never produce a negative input count.
-    return max(0, prompt - cached), completion, cached
+    # Cap cached to prompt_tokens: the cached share is documented as part of
+    # prompt_tokens, so clamp a malformed pair (cached > prompt) — otherwise we
+    # price more input than the provider reported (overstating spend and
+    # blocking later calls early), and a negative fresh count could slip through.
+    cached = min(max(cached, 0), prompt)
+    return prompt - cached, completion, cached
 
 
 def _cached_tokens(details: Any) -> int:

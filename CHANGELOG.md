@@ -25,7 +25,7 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   cache_read_input_tokens=…)`, so it prices at the model's published cache-read
   rate. OpenAI enables prompt caching automatically for prompts ≥1024 tokens,
   so any agent loop with a stable system prompt was affected: a 10k-token
-  prompt that is 90% cached metered ~3.3x its real cost, hard-stopping the
+  prompt that is 90% cached metered ~1.8x its real cost, hard-stopping the
   agent well before its ceiling was actually reached. A response with no cache
   hit (the block absent, or `cached_tokens` null) is unchanged, and a fully
   cached prompt with no completion now settles its reservation instead of

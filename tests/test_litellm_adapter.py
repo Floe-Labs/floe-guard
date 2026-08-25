@@ -76,6 +76,22 @@ def test_missing_or_null_cached_tokens_read_as_zero() -> None:
     assert _usage_from(_ObjResponse("gpt-4o", _Usage(10, 5, _PromptTokensDetails()))) == (10, 5, 0)
 
 
+def test_cached_tokens_capped_at_prompt_tokens() -> None:
+    # cached_tokens exceeding prompt_tokens must be capped at prompt, so we never
+    # price more input than the provider reported (zero fresh, cached == prompt).
+    usage = _Usage(1_000, 5, _PromptTokensDetails(cached_tokens=1_200))
+    assert _usage_from(_ObjResponse("gpt-4o", usage)) == (0, 5, 1_000)
+    assert _usage_from(
+        {
+            "usage": {
+                "prompt_tokens": 1_000,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 1_200},
+            }
+        }
+    ) == (0, 5, 1_000)
+
+
 def test_cached_tokens_are_priced_at_the_cache_read_rate() -> None:
     guard = BudgetGuard(limit_usd=1.0)
     resp = {

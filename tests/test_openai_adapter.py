@@ -108,6 +108,22 @@ def test_missing_or_null_cached_tokens_read_as_zero() -> None:
     assert _usage_from(_Response("gpt-4o", _Usage(10, 5, _PromptTokensDetails()))) == (10, 5, 0)
 
 
+def test_cached_tokens_capped_at_prompt_tokens() -> None:
+    # A malformed usage where cached_tokens exceeds prompt_tokens must not price
+    # more input than reported: cap cached at prompt, leaving zero fresh input.
+    usage = _Usage(1_000, 5, _PromptTokensDetails(cached_tokens=1_200))
+    assert _usage_from(_Response("gpt-4o", usage)) == (0, 5, 1_000)
+    assert _usage_from(
+        {
+            "usage": {
+                "prompt_tokens": 1_000,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 1_200},
+            }
+        }
+    ) == (0, 5, 1_000)
+
+
 def test_model_from_prefers_response_then_kwargs() -> None:
     # The response's served model wins over the requested alias; the kwarg is
     # only a fallback when the response omits the model.
