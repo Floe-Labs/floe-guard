@@ -12,6 +12,7 @@ room/runner isn't needed.
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 
 import pytest
@@ -403,6 +404,91 @@ async def test_telephony_unconfigured_is_noop():
     budget, _, _ = _attached(guard)
     assert budget.meter_telephony(3.0) is None
     assert guard.advisory().spent_usd == 0.0
+
+
+# -- record_tool: avatar / arbitrary paid-tool legs ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_tool_accrues_avatar_leg_into_spend_log():
+    # An avatar vendor emits no LiveKit metric; the caller records the leg's cost
+    # and it lands on the ceiling and in the spend log like every other leg.
+    guard = BudgetGuard(limit_usd=100.00)
+    budget, _, _ = _attached(guard)
+
+    returned = budget.record_tool("livekit-avatar-tavus", 0.42)
+
+    assert returned == pytest.approx(0.42)
+    assert guard.advisory().spent_usd == pytest.approx(0.42)
+    assert guard.tool_costs["livekit-avatar-tavus"] == pytest.approx(0.42)
+    legs = {e.model_or_tool: e.cost_usd for e in guard.spend_log}
+    assert legs == {"livekit-avatar-tavus": pytest.approx(0.42)}
+
+
+@pytest.mark.asyncio
+async def test_record_tool_label_tags_the_ledger_event():
+    # The label is the row's task/customer attribution once synced to Reconcile.
+    guard = BudgetGuard(limit_usd=100.00)
+    budget, _, _ = _attached(guard)
+
+    budget.record_tool("apollo.people_lookup", 0.02, label="cust-acme")
+
+    (event,) = guard.spend_log
+    assert event.kind == "tool"
+    assert event.label == "cust-acme"
+
+
+@pytest.mark.asyncio
+async def test_record_tool_leg_flows_through_export_log():
+    # export_log() is exactly what push_ledger sends to /v1/agents/ledger/sync —
+    # a recorded tool leg must appear there as a kind="tool" line.
+    guard = BudgetGuard(limit_usd=100.00)
+    budget, _, _ = _attached(guard)
+
+    budget.record_tool("livekit-avatar-heygen", 0.15)
+
+    lines = [json.loads(line) for line in guard.export_log().splitlines()]
+    assert len(lines) == 1
+    assert lines[0]["kind"] == "tool"
+    assert lines[0]["model_or_tool"] == "livekit-avatar-heygen"
+    assert lines[0]["cost_usd"] == pytest.approx(0.15)
+
+
+@pytest.mark.asyncio
+async def test_record_tool_counts_toward_full_call_total():
+    # AC: LLM + STT + TTS + telephony + avatar all sum to the call total.
+    guard = BudgetGuard(limit_usd=100.00)
+    budget, agent, session = _attached(
+        guard,
+        stt_model="deepgram-nova-3",
+        tts_model="elevenlabs-flash-v2.5",
+        telephony="twilio-us-inbound-local",
+    )
+    await _drive_turn(agent)
+    session.llm.emit("metrics_collected", _llm_metrics(500, 200))
+    session.stt.emit("metrics_collected", _stt_metric(30.0))
+    session.tts.emit("metrics_collected", _tts_metric(1200))
+    budget.meter_telephony(1.0)
+    budget.record_tool("livekit-avatar-tavus", 0.30)
+
+    legs = {e.model_or_tool: e.cost_usd for e in guard.spend_log}
+    assert set(legs) == {
+        "gpt-4o",
+        "livekit-stt",
+        "livekit-tts",
+        "livekit-telephony",
+        "livekit-avatar-tavus",
+    }
+    assert sum(legs.values()) == pytest.approx(guard.advisory().spent_usd)
+
+
+@pytest.mark.asyncio
+async def test_record_tool_rejects_negative_cost():
+    # Mirrors guard.record_tool's contract — a negative cost is a bug, not $0.
+    guard = BudgetGuard(limit_usd=100.00)
+    budget, _, _ = _attached(guard)
+    with pytest.raises(ValueError):
+        budget.record_tool("livekit-avatar-tavus", -0.01)
 
 
 @pytest.mark.asyncio
