@@ -62,15 +62,43 @@ def _model_from(kwargs: dict[str, Any], response: Any) -> str:
     return str(model or "")
 
 
-def _usage_from(response: Any) -> tuple[int, int]:
-    """Pull (prompt_tokens, completion_tokens) from a LiteLLM/OpenAI response."""
+def _usage_from(response: Any) -> tuple[int, int, int]:
+    """Map a LiteLLM/OpenAI response's usage onto ``(prompt, completion, cache_read)``.
+
+    LiteLLM normalises every provider onto the OpenAI usage shape, including
+    ``usage.prompt_tokens_details.cached_tokens`` for the share of the prompt
+    served from the provider's prompt cache. ``prompt_tokens`` *includes* that
+    share, so it is subtracted out and returned separately to be re-priced at
+    the cheaper cache-read rate rather than at the full input rate.
+    """
     usage = getattr(response, "usage", None)
     if usage is None and isinstance(response, dict):
         usage = response.get("usage")
     if usage is None:
-        return 0, 0
+        return 0, 0, 0
     get = usage.get if isinstance(usage, dict) else lambda k, d=0: getattr(usage, k, d)
-    return int(get("prompt_tokens", 0) or 0), int(get("completion_tokens", 0) or 0)
+    prompt = int(get("prompt_tokens", 0) or 0)
+    completion = int(get("completion_tokens", 0) or 0)
+    cached = _cached_tokens(get("prompt_tokens_details", None))
+    # Cap cached to prompt_tokens: the cached share is documented as part of
+    # prompt_tokens, so clamp a malformed pair (cached > prompt) — otherwise we
+    # price more input than the provider reported (overstating spend and
+    # blocking later calls early), and a negative fresh count could slip through.
+    cached = min(max(cached, 0), prompt)
+    return prompt - cached, completion, cached
+
+
+def _cached_tokens(details: Any) -> int:
+    """``prompt_tokens_details.cached_tokens``, as a dict or object; 0 when absent.
+
+    LiteLLM omits the block for a provider that reports no cache hit, and leaves
+    ``cached_tokens`` as ``None`` on providers that carry the field but not the
+    count, so both read as zero.
+    """
+    if details is None:
+        return 0
+    get = details.get if isinstance(details, dict) else lambda k, d=0: getattr(details, k, d)
+    return max(0, int(get("cached_tokens", 0) or 0))
 
 
 def _estimate_request(litellm: Any, guard: BudgetGuard, kwargs: Any) -> float | None:
@@ -116,8 +144,8 @@ def _record_response(
     if not isinstance(kwargs, dict):
         kwargs = {}
     model = _model_from(kwargs, response)
-    prompt_tokens, completion_tokens = _usage_from(response)
-    if prompt_tokens <= 0 and completion_tokens <= 0:
+    prompt_tokens, completion_tokens, cache_read = _usage_from(response)
+    if prompt_tokens <= 0 and completion_tokens <= 0 and cache_read <= 0:
         # No tokens were spent (e.g. a usage-less event) — nothing to meter, so
         # free any reservation we were holding for this call.
         guard.release(reserved)
@@ -126,7 +154,13 @@ def _record_response(
     # model id is missing, so the guard's configured policy applies (fail-closed
     # → warn + raise; fail-open → warn + skip). Silently skipping here would let
     # a real, completed call go unmetered and skew the next check().
-    guard.settle(model, prompt_tokens, completion_tokens, reserved=reserved)
+    guard.settle(
+        model,
+        prompt_tokens,
+        completion_tokens,
+        reserved=reserved,
+        cache_read_input_tokens=cache_read,
+    )
 
 
 def guarded_completion(guard: BudgetGuard, **kwargs: Any) -> Any:
