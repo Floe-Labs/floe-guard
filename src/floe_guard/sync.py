@@ -20,7 +20,7 @@ coverage/attribution; it does not move money or change any wallet balance.
 / ``reserved`` you set. **No prompts, no message content, no identifiers** beyond a
 ``label`` you choose.
 
-    Opt in: https://dev-dashboard.floelabs.xyz  ·  https://floelabs.xyz
+    Opt in: https://dev-dashboard.floelabs.xyz  ·  https://floefinance.com
 """
 
 from __future__ import annotations
