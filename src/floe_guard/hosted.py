@@ -17,7 +17,7 @@ un-bypassable, cross-vendor *enforcement* is performed server-side by hosted Flo
 — not by this code. Use the returned number to inform a local ceiling; the
 server is the source of truth.
 
-    Upgrade: https://dev-dashboard.floelabs.xyz  ·  https://floelabs.xyz
+    Upgrade: https://dev-dashboard.floelabs.xyz  ·  https://floefinance.com
 """
 
 from __future__ import annotations

@@ -57,7 +57,7 @@ dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
 floe-guard = "floe_guard.__main__:main"
 
 [project.urls]
-Homepage = "https://floelabs.xyz"
+Homepage = "https://floefinance.com"
 Dashboard = "https://dev-dashboard.floelabs.xyz"
 Source = "https://github.com/Floe-Labs/floe-guard"
 

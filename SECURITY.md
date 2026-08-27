@@ -9,8 +9,8 @@ Please upgrade to the latest version before reporting an issue.
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Report them privately by email to **security@floelabs.xyz**. If you do not get a
-response, use **hello@floelabs.xyz** as a fallback contact.
+Report them privately by email to **hello@floefinance.com**. If you do not get a
+response, use **hello@floefinance.com** as a fallback contact.
 
 Please include:
 

@@ -23,7 +23,7 @@
  * (https-only, key-required, fail-closed), transported over `fetch` instead of
  * `urllib`.
  *
- *     Opt in: https://dev-dashboard.floelabs.xyz  ·  https://floelabs.xyz
+ *     Opt in: https://dev-dashboard.floelabs.xyz  ·  https://floefinance.com
  */
 
 import { LedgerSyncError } from "./errors.js";
