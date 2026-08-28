@@ -86,6 +86,31 @@ the loop" demo. Cloned the repo? The same demo is
 [`examples/runaway_loop.py`](examples/runaway_loop.py) (a thin wrapper around
 `floe_guard.demo.run_demo`).
 
+## Price a workload before you run it
+
+Straight from the install — no repository checkout, no API key, no network:
+
+```bash
+floe-guard estimate gpt-4o --calls 1000 --tokens-in 800 --tokens-out 300
+```
+
+```text
+Estimating 1,000 call(s) to gpt-4o (800 in / 300 out per call)
+
+  per call:     $0.005000
+  total:        $5.000000
+  price source: cost_map (snapshot 2026-08-24) — offline, no network
+
+Guard this exact workload with a ceiling at the run total:
+
+  from floe_guard import BudgetGuard
+  guard = BudgetGuard(limit_usd=5.000000)   # covers 1,000 call(s)
+```
+
+Priced from the same bundled cost map the guard enforces against — so the
+ceiling you set is the cost you just saw. Unpriceable models fail closed with a
+clean error, never a $0.00 guess.
+
 ## What did that call cost?
 
 The other demo — one voice call, every leg priced from the bundled map, no

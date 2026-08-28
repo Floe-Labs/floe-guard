@@ -1,10 +1,12 @@
 """floe-guard CLI.
 
-Two commands:
+Three commands:
 
 - ``floe-guard demo`` — run the no-key "stop a loop" demo (stub LLM, no account,
   no network) straight from the installed package. ``--limit-usd`` sets the
   ceiling (default $0.10).
+- ``floe-guard estimate`` — price an agent workload offline from the bundled
+  cost map and print the ``BudgetGuard`` ceiling that covers it.
 - ``floe-guard push`` — the **opt-in** ledger sync. It reads an
   :meth:`~floe_guard.BudgetGuard.export_log` JSONL ledger (from a file or stdin)
   and POSTs it to Floe's Reconcile Mode so your **Coverage Score** can count spend
@@ -22,6 +24,7 @@ from collections.abc import Sequence
 
 from .demo import run_demo
 from .errors import LedgerSyncError
+from .estimate import run_estimate
 from .sync import push_ledger
 
 
@@ -72,6 +75,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Spend ceiling for the demo, in USD (default: 0.10).",
     )
 
+    estimate = sub.add_parser(
+        "estimate",
+        help="Price a workload offline and print the BudgetGuard ceiling that covers it.",
+        description=(
+            "Price an agent workload (model, calls, tokens per call) from the "
+            "bundled cost map — no API key, no account, no network — and print "
+            "the BudgetGuard(limit_usd=...) ceiling that covers the run."
+        ),
+    )
+    estimate.add_argument("model", help="Model id as priced by the bundled cost map (e.g. gpt-4o).")
+    estimate.add_argument("--calls", type=int, default=1, help="Number of calls in the run (default: 1).")
+    estimate.add_argument(
+        "--tokens-in", type=int, default=1_000, help="Prompt tokens per call (default: 1000)."
+    )
+    estimate.add_argument(
+        "--tokens-out", type=int, default=1_000, help="Completion tokens per call (default: 1000)."
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "demo":
@@ -79,6 +100,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_demo(limit_usd=args.limit_usd)
         except ValueError as exc:
             # e.g. a negative/non-finite --limit-usd; surface a clean CLI error
+            # (exit 2) instead of a Python traceback.
+            parser.error(str(exc))
+        return 0
+
+    if args.command == "estimate":
+        try:
+            run_estimate(args.model, calls=args.calls, tokens_in=args.tokens_in, tokens_out=args.tokens_out)
+        except ValueError as exc:
+            # e.g. an unpriceable model or --calls 0; surface a clean CLI error
             # (exit 2) instead of a Python traceback.
             parser.error(str(exc))
         return 0
