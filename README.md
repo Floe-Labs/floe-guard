@@ -93,7 +93,7 @@ manual rates, no API key, no network:
 
 ```bash
 pip install "floe-guard[livekit]"     # the demo imports livekit-agents
-python examples/voice_call_cost_livekit.py
+python examples/voice_call_cost_livekit.py   # needs a repo checkout — examples/ aren't in the wheel
 ```
 
 ```text
