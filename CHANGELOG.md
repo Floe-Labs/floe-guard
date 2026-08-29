@@ -8,6 +8,26 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.23.1 / js 0.15.2
+
+### Fixed (py, js)
+
+- **Missing-key sync error now points to key creation.** The `LedgerSyncError`
+  raised when `push`/`sync` has no API key said a key was required but not where
+  to get one — a dead end on the OSS→hosted handoff. Both packages now point to
+  `dev-dashboard.floelabs.xyz/keys` (sign-in is free). Message-only; still raised
+  before any network, so the no-network-by-default invariant is unchanged.
+
+## Unreleased — py 0.23.0
+
+### Added (py)
+
+- **`floe-guard estimate` — offline workload cost estimator.** Price a planned
+  run (`estimate MODEL --calls N --tokens-in … --tokens-out …`) from the bundled
+  cost map — no key, no account, no network — and get a copy-pasteable
+  `BudgetGuard(limit_usd=…)` ceiling, rounded **up** so it always covers the run
+  it prints. Fail-closed on unpriceable models; oversized inputs exit cleanly.
+
 ## Unreleased — py 0.22.0 / js 0.15.1
 
 ### Added (py)
