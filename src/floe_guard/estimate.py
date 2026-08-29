@@ -52,7 +52,10 @@ def run_estimate(
     if not math.isfinite(total):
         raise ValueError("non-finite total — workload is too large to estimate")
 
-    print(f"Estimating {calls:,} call(s) to {model} ({tokens_in:,} in / {tokens_out:,} out per call)\n")
+    print(
+        f"Estimating {calls:,} call(s) to {model} "
+        f"({tokens_in:,} in / {tokens_out:,} out per call)\n"
+    )
     print(f"  per call:     ${per_call:.6f}")
     print(f"  total:        ${total:.6f}")
     source_line = f"  price source: {priced.source}"
@@ -71,5 +74,8 @@ def run_estimate(
     print("Guard this exact workload with a ceiling at (or above) the run total:\n")
     print("  from floe_guard import BudgetGuard")
     print(f"  guard = BudgetGuard(limit_usd={ceiling:.6f})   # covers {calls:,} call(s)")
-    print("  # guard.check() before each call; guard.record('MODEL_ID', prompt_tokens, completion_tokens) after")
+    print(
+        "  # guard.check() before each call; "
+        "guard.record('MODEL_ID', prompt_tokens, completion_tokens) after"
+    )
     print("\nAdd headroom for retries — the guard hard-stops AT the ceiling, not near it.")

@@ -85,7 +85,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     estimate.add_argument("model", help="Model id as priced by the bundled cost map (e.g. gpt-4o).")
-    estimate.add_argument("--calls", type=int, default=1, help="Number of calls in the run (default: 1).")
+    estimate.add_argument(
+        "--calls", type=int, default=1, help="Number of calls in the run (default: 1)."
+    )
     estimate.add_argument(
         "--tokens-in", type=int, default=1_000, help="Prompt tokens per call (default: 1000)."
     )
@@ -106,7 +108,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "estimate":
         try:
-            run_estimate(args.model, calls=args.calls, tokens_in=args.tokens_in, tokens_out=args.tokens_out)
+            run_estimate(
+                args.model, calls=args.calls, tokens_in=args.tokens_in, tokens_out=args.tokens_out
+            )
         except ValueError as exc:
             # e.g. an unpriceable model or --calls 0; surface a clean CLI error
             # (exit 2) instead of a Python traceback.
