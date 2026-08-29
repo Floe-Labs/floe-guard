@@ -10,6 +10,7 @@ cost?* and *what ceiling should I set?* — then shows the three lines that put 
 from __future__ import annotations
 
 import math
+from decimal import ROUND_CEILING, Decimal
 
 from .pricing import cost_map_generated_at, price_tokens, resolve_price
 
@@ -40,8 +41,14 @@ def run_estimate(
             "pass BudgetGuard(price_overrides=...) for models the map doesn't list"
         )
 
-    per_call = price_tokens(priced, tokens_in, tokens_out)
-    total = per_call * calls
+    try:
+        per_call = price_tokens(priced, tokens_in, tokens_out)
+        total = per_call * calls
+    except OverflowError as exc:
+        # A pathological --calls/--tokens-in overflows float math before the
+        # finite check below; surface it as the same clean CLI error (exit 2),
+        # not a traceback.
+        raise ValueError("workload is too large to estimate") from exc
     if not math.isfinite(total):
         raise ValueError("non-finite total — workload is too large to estimate")
 
@@ -55,8 +62,14 @@ def run_estimate(
     source_line += " — offline, no network"
     print(source_line + "\n")
 
-    print(f"Guard this exact workload with a ceiling at the run total:\n")
+    # Round the printed ceiling UP to 6 dp: a half-even round of the raw total
+    # can land a hair BELOW it, and the guard blocks at `projected > limit +
+    # 1e-12`, so a rounded-down ceiling would not actually cover the run it
+    # prints. Decimal(str(total)) rounds the shown value, not the float noise a
+    # plain ceil(total * 1e6) would bump on an already-exact total.
+    ceiling = float(Decimal(str(total)).quantize(Decimal("0.000001"), rounding=ROUND_CEILING))
+    print("Guard this exact workload with a ceiling at (or above) the run total:\n")
     print("  from floe_guard import BudgetGuard")
-    print(f"  guard = BudgetGuard(limit_usd={total:.6f})   # covers {calls:,} call(s)")
-    print("  # guard.check() before each call; guard.record(model, in, out) after")
+    print(f"  guard = BudgetGuard(limit_usd={ceiling:.6f})   # covers {calls:,} call(s)")
+    print("  # guard.check() before each call; guard.record('MODEL_ID', prompt_tokens, completion_tokens) after")
     print("\nAdd headroom for retries — the guard hard-stops AT the ceiling, not near it.")

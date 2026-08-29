@@ -99,9 +99,9 @@ Estimating 1,000 call(s) to gpt-4o (800 in / 300 out per call)
 
   per call:     $0.005000
   total:        $5.000000
-  price source: cost_map (snapshot 2026-08-24) — offline, no network
+  price source: cost_map (snapshot YYYY-MM-DD) — offline, no network
 
-Guard this exact workload with a ceiling at the run total:
+Guard this exact workload with a ceiling at (or above) the run total:
 
   from floe_guard import BudgetGuard
   guard = BudgetGuard(limit_usd=5.000000)   # covers 1,000 call(s)
