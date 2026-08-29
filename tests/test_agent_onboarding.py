@@ -25,3 +25,10 @@ def test_agent_verify_step_uses_packaged_demo() -> None:
             f"{path.name}: pip-install verify must use `floe-guard demo` "
             "(examples/runaway_loop.py is checkout-only)"
         )
+        # ...and the checkout-only command must be GONE, not merely accompanied:
+        # the wheel does not ship `examples/`, so a pip-only install cannot run
+        # it. Passing on presence alone would let both survive.
+        assert "examples/runaway_loop.py" not in text, (
+            f"{path.name}: drop the checkout-only `examples/runaway_loop.py` — "
+            "the wheel ships no `examples/`, so a pip-only install can't run it"
+        )
