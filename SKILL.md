@@ -37,7 +37,7 @@ resp = call_your_llm(...)
 guard.record("gpt-4o", resp.usage.prompt_tokens, resp.usage.completion_tokens)
 ```
 
-Verify offline (no key, no network): `python examples/runaway_loop.py`.
+Verify offline (no key, no network): `floe-guard demo`.
 
 ## Skip the manual wiring — adapters
 
