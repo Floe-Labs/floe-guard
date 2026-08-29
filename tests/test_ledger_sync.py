@@ -189,6 +189,58 @@ def test_cli_push_no_key_returns_1_no_network(tmp_path, monkeypatch: pytest.Monk
     urlopen.assert_not_called()
 
 
+def test_cli_push_success_points_to_dashboard(tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
+    # The first-sync → hosted handoff: a successful push must point the user at
+    # the dashboard, not just "Synced N events."
+    from floe_guard.__main__ import main
+
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(
+        '{"timestamp":1.0,"kind":"tool","model_or_tool":"api",'
+        '"prompt_tokens":null,"completion_tokens":null,"cost_usd":0.05}\n'
+    )
+    with mock.patch("floe_guard.sync._OPENER.open", return_value=_ok({"synced": 3})):
+        rc = main(["push", str(ledger), "--key", "floe_abc"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Synced 3" in out
+    assert "dev-dashboard.floelabs.xyz" in out
+
+
+def test_cli_push_all_duplicates_still_points_to_dashboard(tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
+    # synced=0 on a NON-empty ledger means every event was already ingested —
+    # hosted coverage exists, so the pointer still applies. (An idempotent
+    # re-push must not dead-end the user who already synced successfully.)
+    from floe_guard.__main__ import main
+
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(
+        '{"timestamp":1.0,"kind":"tool","model_or_tool":"api",'
+        '"prompt_tokens":null,"completion_tokens":null,"cost_usd":0.05}\n'
+    )
+    with mock.patch("floe_guard.sync._OPENER.open", return_value=_ok({"synced": 0})):
+        rc = main(["push", str(ledger), "--key", "floe_abc"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "all duplicates" in out
+    assert "dev-dashboard.floelabs.xyz" in out
+
+
+def test_cli_push_empty_ledger_no_dashboard_pointer(tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
+    # A truly empty ledger never touches the network — nothing was ever pushed,
+    # so there is no hosted coverage to point at.
+    from floe_guard.__main__ import main
+
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text("")
+    with mock.patch("floe_guard.sync._OPENER.open") as urlopen:
+        rc = main(["push", str(ledger), "--key", "floe_abc"])
+    assert rc == 0
+    urlopen.assert_not_called()
+    out = capsys.readouterr().out
+    assert "dev-dashboard" not in out
+
+
 # ── privacy contract enforced: validate every record before upload ────────────
 
 

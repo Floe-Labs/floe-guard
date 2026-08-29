@@ -39,6 +39,7 @@ FLOE_API_BASE_URL_ENV = "FLOE_API_BASE_URL"
 DEFAULT_BASE_URL = "https://credit-api.floelabs.xyz"
 LEDGER_SYNC_PATH = "/v1/agents/ledger/sync"
 KEYS_URL = "https://dev-dashboard.floelabs.xyz/keys"
+DASHBOARD_URL = "https://dev-dashboard.floelabs.xyz"
 
 # The ONLY keys allowed to leave the process — the export_log() schema. Enforced
 # (not just documented) below: a line carrying anything else is rejected, so a
