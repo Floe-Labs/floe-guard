@@ -1,10 +1,11 @@
 # floe-guard
 
-> The spend meter and budget gate for AI voice agents. It meters STT + TTS + LLM +
-> telephony per call (Pipecat, LiveKit — Python & TypeScript) and hard-stops the next
-> turn *before* it crosses a USD ceiling, so a runaway loop dies at $0.10 instead of
-> $4,000. Runs in your process: no account, no signup, no network, no telemetry. It
-> also guards any LLM/tool call the same way. Built by Floe — cost controls for Voice AI.
+> Know what every AI call really costs. floe-guard meters STT + TTS + LLM + telephony per
+> call (Pipecat, LiveKit — Python & TypeScript) and keeps a live ledger of your agent's real
+> spend. Connect free (one key) for your Coverage Score and 7-day history. It also hard-stops
+> the next turn *before* it crosses a USD ceiling, so a runaway loop dies at $0.10 instead of
+> $4,000. Runs in your process: no account, no signup, no network, no telemetry. Guards any
+> LLM/tool call the same way. Built by Floe — know what every AI call really costs.
 
 Install `pip install floe-guard` (Python) or `npm i floe-guard` (TypeScript). Drop in a
 voice adapter (Pipecat / LiveKit) for per-turn STT+TTS+LLM+telephony enforcement, or wire

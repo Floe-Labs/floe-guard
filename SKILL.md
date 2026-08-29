@@ -1,17 +1,18 @@
 ---
 name: floe-guard
-description: The spend meter and budget gate for AI voice agents — meters STT + TTS + LLM + telephony per call (Pipecat, LiveKit — Python & TypeScript) and hard-stops the next turn before it crosses a USD ceiling. Use when an agent's spend must be capped in-process with no account or telemetry; also guards any LLM agent and paid tool calls.
+description: Know what every AI call really costs — floe-guard meters STT + TTS + LLM + telephony per call (Pipecat, LiveKit — Python & TypeScript), keeps a live ledger of real spend, and hard-stops the next turn before it crosses a USD ceiling. Free Coverage Score + 7-day history on connect. Use when an agent's spend must be seen and capped in-process with no account or telemetry; also guards any LLM agent and paid tool calls.
 license: MIT
 homepage: https://github.com/Floe-Labs/floe-guard
 ---
 
-# floe-guard — local budget guardrail
+# floe-guard — know what every AI call costs
 
-The spend meter and budget gate for AI **voice** agents: it meters STT + TTS + LLM +
+floe-guard meters STT + TTS + LLM +
 telephony **per call** ([Pipecat](https://github.com/Floe-Labs/floe-guard#pipecat-voice),
 [LiveKit](https://github.com/Floe-Labs/floe-guard#livekit-voice) — Python & TypeScript)
-and hard-stops the next turn *before* it crosses a USD ceiling. In-process, no account,
-no telemetry. It also guards **any** LLM/tool call the same way. Budget, not balance —
+and keeps a **live ledger** of your agent's real spend. Connect free for your **Coverage
+Score** and **7-day history**. It also hard-stops the next turn *before* it crosses a USD
+ceiling. In-process, no account, no telemetry. Guards **any** LLM/tool call the same way. Budget, not balance —
 it caps spend, holds no money, needs no account.
 
 > This is the **library** skill. For the whole govern-your-spend workflow (spend

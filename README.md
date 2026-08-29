@@ -7,9 +7,14 @@
 [![CI](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/Floe-Labs/floe-guard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**The spend meter and budget gate for AI agents.** Hard-stops the next LLM call,
-voice turn, or tool invocation *before* it crosses your USD ceiling — a runaway loop
-dies at $0.10 instead of $4,000. In-process, no account, no signup, **no telemetry by default**.
+**Know what every AI call really costs.** Your agent spends across a dozen vendors on
+every call — carrier, speech-to-text, model, voice, tools. floe-guard costs each call the
+moment it ends and keeps a **live ledger** of your agent's real spend. In-process, no
+account, no signup, **no telemetry by default**.
+
+Connect free (one key) for your **Coverage Score** and **7-day history** — the audit-grade
+picture of where every dollar went, up to $2K/month tracked, no card. And it *hard-stops* a
+runaway loop before it crosses your ceiling: $0.10 instead of $4,000.
 
 **Python** (`pip install floe-guard`): plain `check()` / `record()` or adapters for
 [OpenAI](#openai) · [Anthropic](docs/adapters.md#anthropic) · [Gemini](docs/adapters.md#google-gemini) · [CrewAI](docs/adapters.md#crewai) ·
@@ -29,9 +34,9 @@ tools, [`reserve_tool()` / `settle_tool()`](docs/advanced.md#tool-spend-under-th
 block *before* the call runs (`record_tool()` alone meters after the fact — it
 can't stop a call already made).
 
-## Works best with the Floe skill
+## Connect free for your Coverage Score + 7-day history
 
-`floe-guard` is a local ceiling — it stops paid work before your budget blows, standalone, no account needed. Hosted Floe is the system of record on top: it costs every call the moment it ends across every vendor (LLM, voice, telephony, data) on one ledger, shows your margin per client, and lets you invoice your own customers off the actuals — with spend controls enforced server-side. Add the **Floe agent skill** to teach Claude Code / Cursor the same govern-your-spend workflow `floe-guard` enforces locally:
+`floe-guard` keeps the live ledger locally — every call's real cost, in your process, no account. Connect it to hosted Floe (free, one key) and that ledger becomes your **Coverage Score** and **7-day history**: the audit-grade picture of where every dollar went, up to $2K/month tracked, no card. Hosted is the system of record on top — it costs every call the moment it ends across every vendor on one ledger, ties spend to client and campaign, shows your margin per client, and lets you invoice your own customers off the actuals, with spend controls enforced server-side. Add the **Floe agent skill** to teach Claude Code / Cursor the same govern-your-spend workflow:
 
 ```bash
 npx skills add floe-labs/agent-skills
