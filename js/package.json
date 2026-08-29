@@ -1,6 +1,6 @@
 {
   "name": "floe-guard",
-  "version": "0.15.1",
+  "version": "0.15.2",
   "description": "A local budget guardrail for AI agents — hard-stops your agent before its next LLM call crosses a USD ceiling. Vercel AI SDK middleware + LiveKit / Vapi / Retell voice adapters.",
   "type": "module",
   "license": "MIT",

@@ -226,6 +226,12 @@ describe("pushLedger fail-closed", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("missing key error points to key creation (the OSS→hosted handoff)", async () => {
+    await expect(pushLedger(ONE_EVENT)).rejects.toThrow(
+      /dev-dashboard\.floelabs\.xyz\/keys/,
+    );
+  });
+
   it("an empty/whitespace ledger is a no-op with no network", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     await expect(pushLedger("   ")).resolves.toBe(0);

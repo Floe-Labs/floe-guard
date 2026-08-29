@@ -31,6 +31,7 @@ import { LedgerSyncError } from "./errors.js";
 const FLOE_API_KEY_ENV = "FLOE_API_KEY";
 const FLOE_API_BASE_URL_ENV = "FLOE_API_BASE_URL";
 const DEFAULT_BASE_URL = "https://credit-api.floelabs.xyz";
+const KEYS_URL = "https://dev-dashboard.floelabs.xyz/keys";
 const LEDGER_SYNC_PATH = "/v1/agents/ledger/sync";
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -175,7 +176,8 @@ export async function pushLedger(
   const key = ((apiKey ?? "") || envVar(FLOE_API_KEY_ENV)).trim();
   if (!key) {
     throw new LedgerSyncError(
-      `No Floe API key: pass apiKey or set ${FLOE_API_KEY_ENV}. ` +
+      `No Floe API key: pass apiKey or set ${FLOE_API_KEY_ENV} ` +
+        `(mint one at ${KEYS_URL} — sign-in is free). ` +
         "Sync is opt-in and needs your key.",
     );
   }

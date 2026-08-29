@@ -119,6 +119,15 @@ def test_push_ledger_missing_key_raises(monkeypatch: pytest.MonkeyPatch) -> None
     urlopen.assert_not_called()
 
 
+def test_push_ledger_missing_key_points_to_key_creation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The missing-key error is the OSS→hosted handoff — it must say where keys come from.
+    monkeypatch.delenv("FLOE_API_KEY", raising=False)
+    with pytest.raises(LedgerSyncError, match=r"dev-dashboard\.floelabs\.xyz/keys"):
+        push_ledger(_ONE_EVENT)
+
+
 def test_push_ledger_empty_is_noop_no_network() -> None:
     with mock.patch("floe_guard.sync._OPENER.open") as urlopen:
         assert push_ledger("   ") == 0
