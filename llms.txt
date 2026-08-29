@@ -15,7 +15,7 @@ it caps spend, holds no money, needs no account.
 
 - [README](https://github.com/Floe-Labs/floe-guard/blob/main/README.md): the full guide — quickstart, adapters, voice, gates, hosted, ledger sync.
 - [AGENTS.md](https://github.com/Floe-Labs/floe-guard/blob/main/AGENTS.md): step-by-step integration for a coding agent (install → wire → verify).
-- [Stop a loop (offline demo)](https://github.com/Floe-Labs/floe-guard#see-it-stop-a-loop-no-api-key-needed): `python examples/runaway_loop.py` — no key, no network.
+- [Stop a loop (offline demo)](https://github.com/Floe-Labs/floe-guard#see-it-stop-a-loop-no-api-key-needed): `floe-guard demo` — no key, no network.
 - [How it works](https://github.com/Floe-Labs/floe-guard#how-it-works): `check()` before, `record()` after; enforcement lives in the call path.
 
 ## Integrations

@@ -38,8 +38,9 @@ customers off the actuals.
    - **Voice** (per-turn): Python `floe_guard.integrations.pipecat` / `.livekit`;
      TS `floe-guard/adapters/{livekit,vapi,retell}` — reserve-before-turn.
    - **Paid tools**: `reserve_tool()` / `settle_tool()` block *before* the tool runs.
-3. **Verify offline** (no key, no network): `python examples/runaway_loop.py` — the
-   guard halts a stubbed loop after a few iterations.
+3. **Verify offline** (no key, no network): `floe-guard demo` — the
+   guard halts a stubbed loop after a few iterations. No repo checkout
+   (the wheel does not ship `examples/`).
 
 ## Rules — get these right
 

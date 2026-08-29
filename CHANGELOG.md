@@ -17,6 +17,11 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   to get one — a dead end on the OSS→hosted handoff. Both packages now point to
   `dev-dashboard.floelabs.xyz/keys` (sign-in is free). Message-only; still raised
   before any network, so the no-network-by-default invariant is unchanged.
+- **Agent onboarding verify step uses `floe-guard demo`.** `AGENTS.md`,
+  `SKILL.md`, and `llms.txt` told a pip-only install to run
+  `python examples/runaway_loop.py`, which 404s because the wheel does not
+  ship `examples/`. The packaged command is the same demo README already
+  leads with.
 
 ## Unreleased — py 0.23.0
 
