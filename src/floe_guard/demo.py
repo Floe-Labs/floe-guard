@@ -53,7 +53,9 @@ def run_demo(limit_usd: float = 0.10) -> None:
             # account (the demo's promise holds). ``push`` below is the explicit
             # opt-in step that actually sends it.
             ledger_path = "./floe-ledger.jsonl"
-            with open(ledger_path, "w", encoding="utf-8") as fh:
+            # newline="\n": export_log() is \n-terminated; force LF so Windows text
+            # mode doesn't rewrite it to \r\n and desync byte-for-byte concat/diff.
+            with open(ledger_path, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(guard.export_log())
             print(f"\nWrote spend ledger to {ledger_path}", flush=True)
             print(
