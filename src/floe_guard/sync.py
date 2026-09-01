@@ -224,11 +224,14 @@ def push_ledger(
     if not isinstance(payload, dict):
         raise LedgerSyncError(f"Unexpected response shape from Floe at {url}.")
     # "synced" is the count the server accepted (new rows); "duplicates" (already
-    # ingested, idempotent) are not counted here. Absent → 0; present must be a real
-    # non-negative int (reject bool/float/negative/garbage rather than coerce).
+    # ingested, idempotent) are reported separately by the server. A conformant 2xx
+    # ALWAYS includes "synced" (POST /v1/agents/ledger/sync returns it as a real
+    # count), so an absent count is a malformed response — reject it rather than
+    # coerce to 0, which would let a degenerate {} be misread by the CLI as "all
+    # duplicates". Present must be a real non-negative int (reject bool/float/garbage).
     synced = payload.get("synced")
     if synced is None:
-        return 0
+        raise LedgerSyncError(f"Malformed response from Floe at {url}: missing 'synced' count.")
     if isinstance(synced, bool) or not isinstance(synced, int) or synced < 0:
         raise LedgerSyncError(f"Invalid 'synced' count from Floe at {url}: {synced!r}.")
     return synced

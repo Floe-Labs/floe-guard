@@ -294,11 +294,15 @@ def test_invalid_synced_count_raises(bad_synced: object) -> None:
             guard.sync()
 
 
-def test_synced_absent_returns_zero() -> None:
+def test_synced_absent_raises() -> None:
+    # A conformant server ALWAYS includes "synced" on a 2xx; an absent count is a
+    # malformed response, not "0 accepted" — reject it so the CLI cannot misread a
+    # degenerate {} as "all duplicates" (see push CLI messaging).
     guard = _guard_with_spend()
     guard.enable_sync(api_key="floe_abc")
     with mock.patch("floe_guard.sync._OPENER.open", return_value=_ok({"duplicates": 1})):
-        assert guard.sync() == 0
+        with pytest.raises(LedgerSyncError, match="missing 'synced'"):
+            guard.sync()
 
 
 # ── concurrency: sync uses the snapshotted key, not an env fallback ───────────
