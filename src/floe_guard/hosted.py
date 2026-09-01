@@ -34,6 +34,7 @@ FLOE_API_KEY_ENV = "FLOE_API_KEY"
 FLOE_API_BASE_URL_ENV = "FLOE_API_BASE_URL"
 DEFAULT_BASE_URL = "https://credit-api.floelabs.xyz"
 CREDIT_REMAINING_PATH = "/v1/agents/credit-remaining"
+KEYS_URL = "https://dev-dashboard.floelabs.xyz/keys"
 
 # USDC has 6 implied decimals; raw integer strings divide by this to get USD.
 _USDC_DECIMALS = 1_000_000
@@ -76,7 +77,8 @@ def hosted_remaining_usd(
     key = (api_key or os.environ.get(FLOE_API_KEY_ENV, "")).strip()
     if not key:
         raise HostedEnforcementError(
-            f"No Floe API key: pass api_key= or set {FLOE_API_KEY_ENV}."
+            f"No Floe API key: pass api_key= or set {FLOE_API_KEY_ENV} "
+            f"(mint one at {KEYS_URL} — sign-in is free)."
         )
 
     env_base = os.environ.get(FLOE_API_BASE_URL_ENV, "").strip()
