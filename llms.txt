@@ -1,10 +1,11 @@
 # floe-guard
 
-> The spend meter and budget gate for AI voice agents. It meters STT + TTS + LLM +
-> telephony per call (Pipecat, LiveKit — Python & TypeScript) and hard-stops the next
-> turn *before* it crosses a USD ceiling, so a runaway loop dies at $0.10 instead of
-> $4,000. Runs in your process: no account, no signup, no network, no telemetry. It
-> also guards any LLM/tool call the same way. Built by Floe — cost controls for Voice AI.
+> Know what every AI call really costs. floe-guard meters STT + TTS + LLM + telephony per
+> call (Pipecat, LiveKit — Python & TypeScript) and keeps a live ledger of your agent's real
+> spend. Connect free (one key) for your Coverage Score and 7-day history. It also hard-stops
+> the next turn *before* it crosses a USD ceiling, so a runaway loop dies at $0.10 instead of
+> $4,000. Runs in your process: no account, no signup, no network, no telemetry. Guards any
+> LLM/tool call the same way. Built by Floe — know what every AI call really costs.
 
 Install `pip install floe-guard` (Python) or `npm i floe-guard` (TypeScript). Drop in a
 voice adapter (Pipecat / LiveKit) for per-turn STT+TTS+LLM+telephony enforcement, or wire
@@ -15,7 +16,7 @@ it caps spend, holds no money, needs no account.
 
 - [README](https://github.com/Floe-Labs/floe-guard/blob/main/README.md): the full guide — quickstart, adapters, voice, gates, hosted, ledger sync.
 - [AGENTS.md](https://github.com/Floe-Labs/floe-guard/blob/main/AGENTS.md): step-by-step integration for a coding agent (install → wire → verify).
-- [Stop a loop (offline demo)](https://github.com/Floe-Labs/floe-guard#see-it-stop-a-loop-no-api-key-needed): `python examples/runaway_loop.py` — no key, no network.
+- [Stop a loop (offline demo)](https://github.com/Floe-Labs/floe-guard#see-it-stop-a-loop-no-api-key-needed): `floe-guard demo` — no key, no network.
 - [How it works](https://github.com/Floe-Labs/floe-guard#how-it-works): `check()` before, `record()` after; enforcement lives in the call path.
 
 ## Integrations

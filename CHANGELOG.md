@@ -8,6 +8,19 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.23.2 / js 0.15.3
+
+### Changed (docs)
+
+- **Repositioned around the value, not the mechanism.** The README, package
+  one-liners (PyPI/npm), `AGENTS.md`, `SKILL.md`, and `llms.txt` now lead with
+  *"Know what every AI call really costs"* — the **live ledger** floe-guard keeps
+  locally, and the free **Coverage Score** + **7-day history** you get on connect
+  (matching floefinance.com's free tier) — with the budget hard-stop demoted to a
+  feature. No API change; the guard behaves exactly as before. Claims stay on the
+  right side of the line: the live ledger is local/OSS (`export_log()`), while
+  Coverage Score and 7-day history are the free hosted tier the ledger feeds.
+
 ## Unreleased — py 0.23.1 / js 0.15.2
 
 ### Fixed (py, js)
@@ -17,6 +30,11 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   to get one — a dead end on the OSS→hosted handoff. Both packages now point to
   `dev-dashboard.floelabs.xyz/keys` (sign-in is free). Message-only; still raised
   before any network, so the no-network-by-default invariant is unchanged.
+- **Agent onboarding verify step uses `floe-guard demo`.** `AGENTS.md`,
+  `SKILL.md`, and `llms.txt` told a pip-only install to run
+  `python examples/runaway_loop.py`, which 404s because the wheel does not
+  ship `examples/`. The packaged command is the same demo README already
+  leads with.
 
 ## Unreleased — py 0.23.0
 

@@ -11,8 +11,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "floe-guard"
-version = "0.23.2"
-description = "Local budget guardrail for AI agents — hard-stops a runaway loop before its next LLM call crosses a spend ceiling. No account, no network."
+version = "0.23.3"
+description = "Know what every AI call really costs — a live ledger of your agent's real spend (LLM, voice, telephony, tools), plus a hard-stop before runaway spend crosses your ceiling. Local, no account, no telemetry."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }

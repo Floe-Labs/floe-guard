@@ -5,12 +5,13 @@ an agent** (below); the last section covers **working on this repo**.
 
 ## What floe-guard is
 
-**The spend meter and budget gate for AI voice agents.** It meters
+**It tells you what every AI call really costs.** It meters
 STT + TTS + LLM + telephony **per call**, out of the box ([Pipecat](README.md#pipecat-voice)
-and [LiveKit](README.md#livekit-voice), Python & TypeScript), and **hard-stops the
-next turn before it crosses your USD ceiling** — a runaway loop dies at $0.10
-instead of $4,000. Runs **in your process**: no account, no signup, no network,
-**no telemetry**. It also guards **any** LLM agent (OpenAI, Anthropic, CrewAI,
+and [LiveKit](README.md#livekit-voice), Python & TypeScript), and keeps a **live ledger** of
+your agent's real spend. Connect free (one key) for your **Coverage Score** and **7-day
+history**. It also **hard-stops the next turn before it crosses your USD ceiling** — a
+runaway loop dies at $0.10 instead of $4,000. Runs **in your process**: no account, no
+signup, no network, **no telemetry**. It also guards **any** LLM agent (OpenAI, Anthropic, CrewAI,
 LangChain, …) via plain `check()` / `record()` or an adapter. Python (`pip`) +
 TypeScript (`npm`). MIT. Built by [Floe](https://floefinance.com) — know what every AI call
 really costs: cost per call across every vendor, margin per client, and rebilling your own
@@ -38,8 +39,9 @@ customers off the actuals.
    - **Voice** (per-turn): Python `floe_guard.integrations.pipecat` / `.livekit`;
      TS `floe-guard/adapters/{livekit,vapi,retell}` — reserve-before-turn.
    - **Paid tools**: `reserve_tool()` / `settle_tool()` block *before* the tool runs.
-3. **Verify offline** (no key, no network): `python examples/runaway_loop.py` — the
-   guard halts a stubbed loop after a few iterations.
+3. **Verify offline** (no key, no network): `floe-guard demo` — the
+   guard halts a stubbed loop after a few iterations. No repo checkout
+   (the wheel does not ship `examples/`).
 
 ## Rules — get these right
 
