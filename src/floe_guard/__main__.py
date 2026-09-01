@@ -25,7 +25,7 @@ from collections.abc import Sequence
 from .demo import run_demo
 from .errors import LedgerSyncError
 from .estimate import run_estimate
-from .sync import push_ledger
+from .sync import DASHBOARD_URL, push_ledger
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -132,7 +132,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         except LedgerSyncError as exc:
             print(f"floe-guard push failed: {exc}", file=sys.stderr)
             return 1
-        print(f"Synced {n} spend event(s) to Floe Reconcile Mode.")
+        if n > 0:
+            print(f"Synced {n} spend event(s) to Floe Reconcile Mode.")
+            print(f"View hosted coverage at {DASHBOARD_URL}")
+        elif jsonl.strip():
+            # Non-empty ledger, all events already ingested (idempotent re-sync) —
+            # hosted coverage exists, so still point at it. A truly empty ledger
+            # made no network call at all; there is nothing hosted to point at.
+            print(
+                f"No new events to sync (all duplicates). "
+                f"View hosted coverage at {DASHBOARD_URL}"
+            )
+        else:
+            print("No new events to sync (ledger empty).")
         return 0
 
     return 2  # unreachable: subparser is required

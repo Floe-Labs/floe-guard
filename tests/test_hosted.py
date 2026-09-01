@@ -137,6 +137,14 @@ def test_missing_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         hosted_remaining_usd()
 
 
+def test_missing_key_points_to_key_creation(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Parity with the sync path (#111): the hosted budget-read path's missing-key
+    # error must also say where to mint a key — same OSS→hosted handoff.
+    monkeypatch.delenv("FLOE_API_KEY", raising=False)
+    with pytest.raises(HostedEnforcementError, match=r"dev-dashboard\.floelabs\.xyz/keys"):
+        hosted_remaining_usd()
+
+
 @pytest.mark.parametrize(
     ("code", "needle"),
     [
