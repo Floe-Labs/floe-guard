@@ -1,6 +1,6 @@
 {
   "__meta__": {
-    "generated_at": "2026-08-24",
+    "generated_at": "2026-08-31",
     "source": "LiteLLM public model prices (bundled snapshot); voice rates verified from vendor list pages"
   },
   "chat-latest": {
@@ -390,7 +390,7 @@
     "output_cost_per_token": 4e-7,
     "litellm_provider": "gemini",
     "mode": "chat",
-    "cache_read_input_token_cost": 2.5e-8
+    "cache_read_input_token_cost": 1e-8
   },
   "gemini-2.5-flash-lite-preview-09-2025": {
     "input_cost_per_token": 1e-7,
@@ -400,20 +400,20 @@
     "cache_read_input_token_cost": 1e-8
   },
   "gemini-2.5-flash-native-audio-latest": {
-    "input_cost_per_token": 3e-7,
-    "output_cost_per_token": 0.0000025,
+    "input_cost_per_token": 5e-7,
+    "output_cost_per_token": 0.000002,
     "litellm_provider": "gemini",
     "mode": "chat"
   },
   "gemini-2.5-flash-native-audio-preview-09-2025": {
-    "input_cost_per_token": 3e-7,
-    "output_cost_per_token": 0.0000025,
+    "input_cost_per_token": 5e-7,
+    "output_cost_per_token": 0.000002,
     "litellm_provider": "gemini",
     "mode": "chat"
   },
   "gemini-2.5-flash-native-audio-preview-12-2025": {
-    "input_cost_per_token": 3e-7,
-    "output_cost_per_token": 0.0000025,
+    "input_cost_per_token": 5e-7,
+    "output_cost_per_token": 0.000002,
     "litellm_provider": "gemini",
     "mode": "chat"
   },
@@ -422,7 +422,7 @@
     "output_cost_per_token": 0.0000025,
     "litellm_provider": "gemini",
     "mode": "chat",
-    "cache_read_input_token_cost": 7.5e-8
+    "cache_read_input_token_cost": 3e-8
   },
   "gemini-2.5-pro": {
     "input_cost_per_token": 0.00000125,
@@ -432,8 +432,8 @@
     "cache_read_input_token_cost": 1.25e-7
   },
   "gemini-2.5-pro-preview-tts": {
-    "input_cost_per_token": 0.00000125,
-    "output_cost_per_token": 0.00001,
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.00002,
     "litellm_provider": "gemini",
     "mode": "chat",
     "cache_read_input_token_cost": 1.25e-7
@@ -550,14 +550,14 @@
     "output_cost_per_token": 0.0000025,
     "litellm_provider": "gemini",
     "mode": "chat",
-    "cache_read_input_token_cost": 7.5e-8
+    "cache_read_input_token_cost": 3e-8
   },
   "gemini-flash-lite-latest": {
     "input_cost_per_token": 1e-7,
     "output_cost_per_token": 4e-7,
     "litellm_provider": "gemini",
     "mode": "chat",
-    "cache_read_input_token_cost": 2.5e-8
+    "cache_read_input_token_cost": 1e-8
   },
   "gemini-gemma-2-27b-it": {
     "input_cost_per_token": 3.5e-7,
@@ -568,6 +568,12 @@
   "gemini-gemma-2-9b-it": {
     "input_cost_per_token": 3.5e-7,
     "output_cost_per_token": 0.00000105,
+    "litellm_provider": "gemini",
+    "mode": "chat"
+  },
+  "gemini-omni-1.1-flash": {
+    "input_cost_per_token": 0.0000015,
+    "output_cost_per_token": 0.000009,
     "litellm_provider": "gemini",
     "mode": "chat"
   },
