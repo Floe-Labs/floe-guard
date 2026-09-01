@@ -49,6 +49,18 @@ def run_demo(limit_usd: float = 0.10) -> None:
                 f"\nLoop stopped at call #{call}. The agent never got to spend past the budget.",
                 flush=True,
             )
+            # Write the recorded spend ledger to a LOCAL file — no network, no
+            # account (the demo's promise holds). ``push`` below is the explicit
+            # opt-in step that actually sends it.
+            ledger_path = "./floe-ledger.jsonl"
+            with open(ledger_path, "w", encoding="utf-8") as fh:
+                fh.write(guard.export_log())
+            print(f"\nWrote spend ledger to {ledger_path}", flush=True)
+            print(
+                f"Opt-in next step (priced spend events only — no prompts, no content):\n"
+                f"  floe-guard push {ledger_path}",
+                flush=True,
+            )
             break
 
         response = _stub_llm()
