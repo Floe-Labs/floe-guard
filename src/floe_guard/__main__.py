@@ -104,6 +104,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             # e.g. a negative/non-finite --limit-usd; surface a clean CLI error
             # (exit 2) instead of a Python traceback.
             parser.error(str(exc))
+        except OSError as exc:
+            # The demo itself ran; only the ledger write failed (read-only CWD,
+            # full disk). Report it cleanly instead of dumping a traceback.
+            print(f"floe-guard demo: could not write the spend ledger: {exc}", file=sys.stderr)
+            return 1
         return 0
 
     if args.command == "estimate":
