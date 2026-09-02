@@ -8,6 +8,19 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.23.6 / js 0.15.4
+
+### Fixed (py)
+
+- **LiteLLM `stream=True` is rejected before the call.** A streamed LiteLLM
+  response has no final `usage` to settle, so `guarded_completion` /
+  `guarded_acompletion` and the callback's `log_pre_api_call` were fail-open:
+  the call ran unmetered (and CrewAI via the callback settled `$0`). Matches
+  the OpenAI/Anthropic adapters: `stream=True` raises `ValueError` before
+  reserve or the provider call. The callback also latches `tripped` so
+  `budget_guarded_llm` re-raises on the next step after LiteLLM swallows the
+  hook exception.
+
 ## Unreleased — py 0.23.2 / js 0.15.3
 
 ### Changed (docs)

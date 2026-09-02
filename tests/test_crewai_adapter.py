@@ -122,6 +122,28 @@ def test_ceiling_hard_stops_next_call_despite_swallowed_pre_call_block() -> None
         llm.call("next step")
 
 
+def test_streaming_hard_stops_next_call_despite_swallowed_pre_call() -> None:
+    # stream=True has no usage to settle. LiteLLM swallows the callback's
+    # ValueError, so without latching tripped the crew would keep running
+    # unmetered. The wrapper must re-raise on the next call.
+    guard = BudgetGuard(limit_usd=1.0)
+    llm = budget_guarded_llm(guard, "gpt-4o")
+    (cb,) = [cb for cb in litellm.callbacks if getattr(cb, "guard", None) is guard]
+
+    _swallow(
+        cb.log_pre_api_call,
+        "gpt-4o",
+        [],
+        {"litellm_call_id": "c-stream", "model": "gpt-4o", "stream": True},
+    )
+    assert isinstance(cb.tripped, ValueError)
+    assert guard.spent_usd == 0.0
+    assert guard._reserved == pytest.approx(0.0, abs=1e-9)
+
+    with pytest.raises(ValueError, match="stream"):
+        llm.call("next step")
+
+
 def test_wrapper_passes_through_while_under_budget() -> None:
     guard = BudgetGuard(limit_usd=1.0)
     llm = budget_guarded_llm(guard, "gpt-4o")

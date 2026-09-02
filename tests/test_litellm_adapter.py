@@ -7,12 +7,19 @@ even in CI without the optional extra.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 import pytest
 
 from floe_guard import BudgetGuard, UnpriceableModelError, UnpriceableModelWarning
-from floe_guard.integrations.litellm import _model_from, _record_response, _usage_from
+from floe_guard.integrations.litellm import (
+    _model_from,
+    _record_response,
+    _usage_from,
+    guarded_acompletion,
+    guarded_completion,
+)
 
 
 @dataclass
@@ -164,3 +171,62 @@ def test_record_response_tolerates_non_dict_kwargs() -> None:
     resp = {"model": "gpt-4o", "usage": {"prompt_tokens": 1_000, "completion_tokens": 1_000}}
     _record_response(guard, None, resp)  # type: ignore[arg-type]
     assert guard.spent_usd > 0
+
+
+def test_streaming_is_rejected_before_the_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A streamed response has no final usage to settle, so it would go unmetered.
+    # Reject it up front, before reserving or calling LiteLLM.
+    called = {"n": 0}
+
+    class _LiteLLM:
+        @staticmethod
+        def completion(**kwargs: object) -> object:
+            called["n"] += 1
+            return {"model": "gpt-4o", "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+        @staticmethod
+        def token_counter(**kwargs: object) -> int:
+            return 1
+
+    monkeypatch.setattr("floe_guard.integrations.litellm._require_litellm", lambda: _LiteLLM)
+    guard = BudgetGuard(limit_usd=1.0)
+    with pytest.raises(ValueError, match="stream"):
+        guarded_completion(guard, model="gpt-4o", messages=[], stream=True)
+    assert called["n"] == 0
+    assert guard.spent_usd == 0.0
+
+
+def test_streaming_is_rejected_before_the_async_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = {"n": 0}
+
+    class _LiteLLM:
+        @staticmethod
+        async def acompletion(**kwargs: object) -> object:
+            called["n"] += 1
+            return {"model": "gpt-4o", "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+        @staticmethod
+        def token_counter(**kwargs: object) -> int:
+            return 1
+
+    monkeypatch.setattr("floe_guard.integrations.litellm._require_litellm", lambda: _LiteLLM)
+    guard = BudgetGuard(limit_usd=1.0)
+    with pytest.raises(ValueError, match="stream"):
+        asyncio.run(guarded_acompletion(guard, model="gpt-4o", messages=[], stream=True))
+    assert called["n"] == 0
+    assert guard.spent_usd == 0.0
+
+
+def test_callback_rejects_streaming_before_reserve() -> None:
+    # CrewAI and other callback users never wrap litellm.completion themselves.
+    # stream=True through the callback would reserve, then settle $0 on a
+    # usageless stream — fail-open. Reject before the hold.
+    pytest.importorskip("litellm")
+    from floe_guard.integrations.litellm import budget_guard_callback
+
+    guard = BudgetGuard(limit_usd=1.0)
+    cb = budget_guard_callback(guard)
+    with pytest.raises(ValueError, match="stream"):
+        cb.log_pre_api_call("gpt-4o", [], {"model": "gpt-4o", "stream": True})
+    assert guard.spent_usd == 0.0
+    assert guard._reserved == pytest.approx(0.0, abs=1e-9)
