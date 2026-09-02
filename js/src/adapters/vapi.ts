@@ -87,6 +87,7 @@ import { priceVoiceLeg } from "../voice-pricing.js";
 export interface OpenAiUsageLike {
   readonly prompt_tokens: number;
   readonly completion_tokens: number;
+  readonly prompt_tokens_details?: { readonly cached_tokens?: number };
 }
 
 /** A non-streaming OpenAI `ChatCompletion` — we read its `usage`. */
@@ -241,7 +242,10 @@ export class VapiBudgetGuard {
       this.guard.release(reserved);
       throw new VapiUsageMissingError(model);
     }
-    this.guard.settle(model, usage.prompt, usage.completion, { reserved });
+    this.guard.settle(model, usage.prompt, usage.completion, {
+      reserved,
+      cacheReadInputTokens: usage.cacheRead,
+    });
     return completion;
   }
 
@@ -279,7 +283,7 @@ export class VapiBudgetGuard {
     model: string,
     reserved: ReservationHandle,
   ): AsyncIterableIterator<C> {
-    let usage: { prompt: number; completion: number } | null = null;
+    let usage: { prompt: number; completion: number; cacheRead: number } | null = null;
     let settled = false;
     try {
       const stream = await run();
@@ -296,7 +300,10 @@ export class VapiBudgetGuard {
       // second time (a double release drives `reserved` negative and weakens the
       // ceiling for other in-flight turns).
       settled = true;
-      this.guard.settle(model, usage.prompt, usage.completion, { reserved });
+      this.guard.settle(model, usage.prompt, usage.completion, {
+        reserved,
+        cacheReadInputTokens: usage.cacheRead,
+      });
     } finally {
       // Any exit before settle — error mid-stream, missing usage, or an early
       // consumer abort (for-await break -> generator.return()) — frees the hold.
@@ -373,11 +380,15 @@ export { BudgetExceeded };
  */
 function readUsage(
   usage: OpenAiUsageLike | null | undefined,
-): { prompt: number; completion: number } | null {
+): { prompt: number; completion: number; cacheRead: number } | null {
   if (usage === null || usage === undefined) return null;
   const prompt = usage.prompt_tokens;
   const completion = usage.completion_tokens;
   if (typeof prompt !== "number" || !Number.isFinite(prompt)) return null;
   if (typeof completion !== "number" || !Number.isFinite(completion)) return null;
-  return { prompt, completion };
+  const cachedRaw = usage.prompt_tokens_details?.cached_tokens;
+  const cached =
+    typeof cachedRaw === "number" && Number.isFinite(cachedRaw) ? Math.max(0, cachedRaw) : 0;
+  const cacheRead = Math.min(cached, prompt);
+  return { prompt: prompt - cacheRead, completion, cacheRead };
 }
