@@ -49,8 +49,16 @@ def _stub_crewai(monkeypatch: pytest.MonkeyPatch) -> None:
             # CrewAI stores constructor `stream` on the instance and later
             # passes it to litellm.completion; the wrapper must see it here.
             self.stream = kwargs.get("stream", False)
+            self._stream_override = None
             self.calls = 0
             self.acalls = 0
+
+        def _effective_stream(self) -> bool:
+            # Mirrors CrewAI BaseLLM: stream_events() sets a call-scoped
+            # override, then call() with no stream kwarg.
+            if self._stream_override is not None:
+                return self._stream_override
+            return bool(self.stream)
 
         def call(self, *args: Any, **kwargs: Any) -> str:
             self.calls += 1
@@ -177,6 +185,17 @@ def test_streaming_is_rejected_before_this_crewai_acall() -> None:
     with pytest.raises(ValueError, match="stream"):
         asyncio.run(llm.acall("this step"))
     assert llm.acalls == 0
+
+
+def test_call_scoped_stream_override_is_rejected_before_dispatch() -> None:
+    # CrewAI stream_events() sets a context-local override then calls
+    # self.call() with no stream kwarg. Instance.stream stays False.
+    guard = BudgetGuard(limit_usd=1.0)
+    llm = budget_guarded_llm(guard, "gpt-4o")
+    llm._stream_override = True
+    with pytest.raises(ValueError, match="stream"):
+        llm.call("this step")
+    assert llm.calls == 0
 
 
 def test_wrapper_passes_through_while_under_budget() -> None:

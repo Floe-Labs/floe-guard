@@ -112,6 +112,10 @@ def budget_guarded_llm(guard: BudgetGuard, model: str, **kwargs: Any) -> Any:
     def _reject_stream(llm: Any, call_kwargs: dict[str, Any]) -> None:
         stream = call_kwargs.get("stream")
         if stream is None:
+            effective = getattr(llm, "_effective_stream", None)
+            if callable(effective):
+                stream = effective()
+        if stream is None:
             stream = getattr(llm, "stream", None)
         if stream is None:
             stored = getattr(llm, "kwargs", None)
