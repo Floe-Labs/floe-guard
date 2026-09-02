@@ -62,13 +62,14 @@ export interface BudgetGuardMiddleware {
 function usageTokens(
   modelId: string,
   usage: unknown,
-): { promptTokens: number; completionTokens: number } {
+): { promptTokens: number; completionTokens: number; cacheReadInputTokens: number } {
   const u = usage as
     | {
         promptTokens?: unknown;
         completionTokens?: unknown;
         inputTokens?: unknown;
         outputTokens?: unknown;
+        cachedInputTokens?: unknown;
       }
     | null
     | undefined;
@@ -81,7 +82,15 @@ function usageTokens(
         `treated as free.`,
     );
   }
-  return { promptTokens, completionTokens };
+  const cachedRaw = u?.cachedInputTokens;
+  const cached =
+    typeof cachedRaw === "number" && Number.isFinite(cachedRaw) ? Math.max(0, cachedRaw) : 0;
+  const cacheReadInputTokens = Math.min(cached, promptTokens);
+  return {
+    promptTokens: promptTokens - cacheReadInputTokens,
+    completionTokens,
+    cacheReadInputTokens,
+  };
 }
 
 /**
@@ -116,12 +125,15 @@ export function budgetGuardMiddleware(guard: BudgetGuard): BudgetGuardMiddleware
       // again would double-subtract and clear a concurrent call's in-flight hold.
       let handled = false;
       try {
-        const { promptTokens, completionTokens } = usageTokens(
+        const { promptTokens, completionTokens, cacheReadInputTokens } = usageTokens(
           model.modelId,
           result?.usage,
         );
         handled = true;
-        guard.settle(model.modelId, promptTokens, completionTokens, { reserved });
+        guard.settle(model.modelId, promptTokens, completionTokens, {
+          reserved,
+          cacheReadInputTokens,
+        });
         return result;
       } catch (err) {
         if (!handled) guard.release(reserved); // failed reading usage, before settle()
@@ -153,12 +165,15 @@ export function budgetGuardMiddleware(guard: BudgetGuard): BudgetGuardMiddleware
           transform(chunk, controller) {
             if (chunk?.type === "finish" && !handled) {
               try {
-                const { promptTokens, completionTokens } = usageTokens(
+                const { promptTokens, completionTokens, cacheReadInputTokens } = usageTokens(
                   model.modelId,
                   chunk.usage,
                 );
                 handled = true;
-                guard.settle(model.modelId, promptTokens, completionTokens, { reserved });
+                guard.settle(model.modelId, promptTokens, completionTokens, {
+                  reserved,
+                  cacheReadInputTokens,
+                });
               } catch (err) {
                 // Release only if we never reached settle() (e.g. usage missing).
                 // If settle() itself threw, it already released its own hold.
