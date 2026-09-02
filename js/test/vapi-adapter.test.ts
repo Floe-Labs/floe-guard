@@ -15,7 +15,9 @@ import {
   BudgetGuard,
   UnpriceableModelError,
   UnpriceableVoiceError,
+  priceTokens,
   priceVoiceLeg,
+  resolvePrice,
 } from "../src/index.js";
 import {
   VapiBudgetGuard,
@@ -105,6 +107,26 @@ describe("VapiBudgetGuard — settle on real usage", () => {
     expect(guard.remainingUsd).toBeCloseTo(1.0 - 0.002, 12); // reservation consumed, not leaked
     expect(guard.spendLog).toHaveLength(1);
     expect(guard.spendLog[0]!.modelOrTool).toBe("m");
+  });
+
+  it("prices OpenAI prompt_tokens_details.cached_tokens at the cache-read rate", async () => {
+    const guard = new BudgetGuard(1.0);
+    const budget = new VapiBudgetGuard(guard, { model: "gpt-4o" });
+    const cachedCompletion = {
+      id: "chatcmpl-x",
+      choices: [{ message: { role: "assistant", content: "hi" } }],
+      usage: {
+        prompt_tokens: 10_000,
+        completion_tokens: 0,
+        prompt_tokens_details: { cached_tokens: 9_000 },
+      },
+    };
+    await budget.guardCompletion(() => cachedCompletion);
+    const priced = resolvePrice("gpt-4o")!;
+    expect(guard.spentUsd).toBeCloseTo(
+      priceTokens(priced, 1_000, 0, { cacheReadInputTokens: 9_000 }),
+      12,
+    );
   });
 
   it("settles a streaming turn on the final chunk's usage and passes chunks through", async () => {

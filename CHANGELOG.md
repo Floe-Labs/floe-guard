@@ -8,6 +8,20 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.23.6 / js 0.15.5
+
+### Fixed (js)
+
+- **Cache-aware token pricing, wired through the guard.** `priceTokens` /
+  `resolvePrice` now consume the cost map's `cache_read_input_token_cost` /
+  `cache_creation_input_token_cost` (the JS map already carried them; pricing
+  ignored them). `record` / `settle` accept `cacheReadInputTokens` (and
+  creation buckets). `promptTokens` is the fresh/uncached count — cache buckets
+  are additive, not a subset. Middleware and the Vapi adapter subtract cached
+  tokens from provider `prompt_tokens` before settle, matching Python. gpt-4o
+  with a 90% cache hit now bills ~0.55× the uncached prompt instead of
+  ~1.8× Python.
+
 ## Unreleased — py 0.23.6 / js 0.15.4
 
 ### Fixed (py)

@@ -23,11 +23,17 @@ export interface PricedModel {
   inputCostPerToken: number;
   outputCostPerToken: number;
   source: "override" | "cost_map";
+  /** Published cache-read rate, or omitted when the map/override has none. */
+  cacheReadCostPerToken?: number;
+  /** Published cache-creation (5m) rate, or omitted when the map/override has none. */
+  cacheCreationCostPerToken?: number;
 }
 
 interface CostMapEntry {
   input_cost_per_token?: unknown;
   output_cost_per_token?: unknown;
+  cache_read_input_token_cost?: unknown;
+  cache_creation_input_token_cost?: unknown;
 }
 
 // Reserved dunder keys (__voice__, __meta__) are NOT models — exclude them so the
@@ -121,6 +127,16 @@ function bothFinite(a: unknown, b: unknown): boolean {
   );
 }
 
+function finiteOrNone(x: unknown): number | undefined {
+  return typeof x === "number" && Number.isFinite(x) ? x : undefined;
+}
+
+// Anthropic prompt-cache pricing multipliers when the map has no published rate.
+// Creation (5m) is 1.25x base input, creation (1h) is 2.0x, read is 0.1x.
+const CACHE_CREATION_MULTIPLIER = 1.25;
+const CACHE_CREATION_1H_MULTIPLIER = 2.0;
+const CACHE_READ_MULTIPLIER = 0.1;
+
 /**
  * Resolve a model to its per-token price, or `null` if it cannot be priced.
  *
@@ -167,10 +183,18 @@ export function resolvePrice(
         inputCostPerToken: input as number,
         outputCostPerToken: output as number,
         source: "cost_map",
+        cacheReadCostPerToken: finiteOrNone(entry.cache_read_input_token_cost),
+        cacheCreationCostPerToken: finiteOrNone(entry.cache_creation_input_token_cost),
       };
     }
   }
   return null;
+}
+
+export interface TokenCacheUsage {
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens1h?: number;
 }
 
 /** USD cost for token usage. Negative counts are clamped to zero. */
@@ -178,10 +202,25 @@ export function priceTokens(
   priced: PricedModel,
   promptTokens: number,
   completionTokens: number,
+  cache: TokenCacheUsage = {},
 ): number {
   const p = Math.max(0, promptTokens);
   const c = Math.max(0, completionTokens);
-  const cost = p * priced.inputCostPerToken + c * priced.outputCostPerToken;
+  const cc = Math.max(0, cache.cacheCreationInputTokens ?? 0);
+  const cc1h = Math.max(0, cache.cacheCreationInputTokens1h ?? 0);
+  const cr = Math.max(0, cache.cacheReadInputTokens ?? 0);
+
+  const cacheCreationRate =
+    priced.cacheCreationCostPerToken ?? priced.inputCostPerToken * CACHE_CREATION_MULTIPLIER;
+  const cacheReadRate =
+    priced.cacheReadCostPerToken ?? priced.inputCostPerToken * CACHE_READ_MULTIPLIER;
+
+  const cost =
+    p * priced.inputCostPerToken +
+    c * priced.outputCostPerToken +
+    cc * cacheCreationRate +
+    cc1h * priced.inputCostPerToken * CACHE_CREATION_1H_MULTIPLIER +
+    cr * cacheReadRate;
   if (!Number.isFinite(cost)) {
     // Defense-in-depth: resolvePrice already guarantees finite rates.
     throw new Error("Non-finite LLM cost — pricing entry is invalid");
