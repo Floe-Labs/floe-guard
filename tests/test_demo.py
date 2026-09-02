@@ -25,6 +25,25 @@ def test_demo_blocks_the_first_call_when_ceiling_is_below_one_call(capsys):
     assert not re.search(r"call #1: \+\$", out)
 
 
+def test_cli_demo_ledger_write_failure_returns_nonzero(capsys, monkeypatch):
+    """A failed ledger write (read-only CWD / full disk) must exit non-zero with a
+    clean message — not an unhandled OSError traceback. The demo already ran; only
+    the convenience ledger write failed."""
+    from floe_guard.__main__ import main
+
+    real_open = open
+
+    def failing_open(path, *args, **kwargs):
+        if str(path).endswith("floe-ledger.jsonl"):
+            raise OSError("read-only file system")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", failing_open)
+    rc = main(["demo"])
+    assert rc == 1
+    assert "could not write the spend ledger" in capsys.readouterr().err
+
+
 def test_demo_never_records_spend_above_the_ceiling(capsys):
     """For a ceiling that is NOT an exact multiple of the per-call cost, the last
     recorded running total must stay at or below the ceiling."""

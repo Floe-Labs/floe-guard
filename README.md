@@ -62,6 +62,10 @@ response = call_your_llm(...)         # your existing call
 guard.record("gpt-4o", response.usage.prompt_tokens, response.usage.completion_tokens)
 ```
 
+Ready to land that spend on your **Coverage Score**? Save the ledger with
+`guard.export_log()` to a JSONL file, then run `floe-guard push <file>` — opt-in,
+priced spend events only, no prompts or content leave your process.
+
 When the next call would cross the ceiling, the guard raises `BudgetExceeded` and
 prints:
 
