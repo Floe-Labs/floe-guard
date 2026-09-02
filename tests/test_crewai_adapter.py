@@ -46,11 +46,26 @@ def _stub_crewai(monkeypatch: pytest.MonkeyPatch) -> None:
         def __init__(self, model: str, **kwargs: Any) -> None:
             self.model = model
             self.kwargs = kwargs
+            # CrewAI stores constructor `stream` on the instance and later
+            # passes it to litellm.completion; the wrapper must see it here.
+            self.stream = kwargs.get("stream", False)
+            self._stream_override = None
+            self.calls = 0
+            self.acalls = 0
+
+        def _effective_stream(self) -> bool:
+            # Mirrors CrewAI BaseLLM: stream_events() sets a call-scoped
+            # override, then call() with no stream kwarg.
+            if self._stream_override is not None:
+                return self._stream_override
+            return bool(self.stream)
 
         def call(self, *args: Any, **kwargs: Any) -> str:
+            self.calls += 1
             return "stub-response"
 
         async def acall(self, *args: Any, **kwargs: Any) -> str:
+            self.acalls += 1
             return "stub-async-response"
 
     stub = types.ModuleType("crewai")
@@ -120,6 +135,67 @@ def test_ceiling_hard_stops_next_call_despite_swallowed_pre_call_block() -> None
 
     with pytest.raises(BudgetExceeded):
         llm.call("next step")
+
+
+def test_streaming_hard_stops_next_call_despite_swallowed_pre_call() -> None:
+    # stream=True has no usage to settle. LiteLLM swallows the callback's
+    # ValueError, so without latching tripped the crew would keep running
+    # unmetered. The wrapper must re-raise on the next call.
+    guard = BudgetGuard(limit_usd=1.0)
+    llm = budget_guarded_llm(guard, "gpt-4o")
+    (cb,) = [cb for cb in litellm.callbacks if getattr(cb, "guard", None) is guard]
+
+    _swallow(
+        cb.log_pre_api_call,
+        "gpt-4o",
+        [],
+        {"litellm_call_id": "c-stream", "model": "gpt-4o", "stream": True},
+    )
+    assert isinstance(cb.tripped, ValueError)
+    assert guard.spent_usd == 0.0
+    assert guard._reserved == pytest.approx(0.0, abs=1e-9)
+
+    with pytest.raises(ValueError, match="stream"):
+        llm.call("next step")
+
+
+def test_streaming_is_rejected_before_this_crewai_call() -> None:
+    # LiteLLM swallows the callback raise, so the wrapper must refuse stream
+    # on THIS call — before super().call() — not only latch for the next step.
+    guard = BudgetGuard(limit_usd=1.0)
+    llm = budget_guarded_llm(guard, "gpt-4o", stream=True)
+    with pytest.raises(ValueError, match="stream"):
+        llm.call("this step")
+    assert llm.calls == 0
+
+
+def test_streaming_kwarg_on_call_is_rejected_before_dispatch() -> None:
+    guard = BudgetGuard(limit_usd=1.0)
+    llm = budget_guarded_llm(guard, "gpt-4o")
+    with pytest.raises(ValueError, match="stream"):
+        llm.call("this step", stream=True)
+    assert llm.calls == 0
+
+
+def test_streaming_is_rejected_before_this_crewai_acall() -> None:
+    import asyncio
+
+    guard = BudgetGuard(limit_usd=1.0)
+    llm = budget_guarded_llm(guard, "gpt-4o", stream=True)
+    with pytest.raises(ValueError, match="stream"):
+        asyncio.run(llm.acall("this step"))
+    assert llm.acalls == 0
+
+
+def test_call_scoped_stream_override_is_rejected_before_dispatch() -> None:
+    # CrewAI stream_events() sets a context-local override then calls
+    # self.call() with no stream kwarg. Instance.stream stays False.
+    guard = BudgetGuard(limit_usd=1.0)
+    llm = budget_guarded_llm(guard, "gpt-4o")
+    llm._stream_override = True
+    with pytest.raises(ValueError, match="stream"):
+        llm.call("this step")
+    assert llm.calls == 0
 
 
 def test_wrapper_passes_through_while_under_budget() -> None:
