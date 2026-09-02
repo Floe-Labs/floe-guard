@@ -46,11 +46,18 @@ def _stub_crewai(monkeypatch: pytest.MonkeyPatch) -> None:
         def __init__(self, model: str, **kwargs: Any) -> None:
             self.model = model
             self.kwargs = kwargs
+            # CrewAI stores constructor `stream` on the instance and later
+            # passes it to litellm.completion; the wrapper must see it here.
+            self.stream = kwargs.get("stream", False)
+            self.calls = 0
+            self.acalls = 0
 
         def call(self, *args: Any, **kwargs: Any) -> str:
+            self.calls += 1
             return "stub-response"
 
         async def acall(self, *args: Any, **kwargs: Any) -> str:
+            self.acalls += 1
             return "stub-async-response"
 
     stub = types.ModuleType("crewai")
@@ -142,6 +149,34 @@ def test_streaming_hard_stops_next_call_despite_swallowed_pre_call() -> None:
 
     with pytest.raises(ValueError, match="stream"):
         llm.call("next step")
+
+
+def test_streaming_is_rejected_before_this_crewai_call() -> None:
+    # LiteLLM swallows the callback raise, so the wrapper must refuse stream
+    # on THIS call — before super().call() — not only latch for the next step.
+    guard = BudgetGuard(limit_usd=1.0)
+    llm = budget_guarded_llm(guard, "gpt-4o", stream=True)
+    with pytest.raises(ValueError, match="stream"):
+        llm.call("this step")
+    assert llm.calls == 0
+
+
+def test_streaming_kwarg_on_call_is_rejected_before_dispatch() -> None:
+    guard = BudgetGuard(limit_usd=1.0)
+    llm = budget_guarded_llm(guard, "gpt-4o")
+    with pytest.raises(ValueError, match="stream"):
+        llm.call("this step", stream=True)
+    assert llm.calls == 0
+
+
+def test_streaming_is_rejected_before_this_crewai_acall() -> None:
+    import asyncio
+
+    guard = BudgetGuard(limit_usd=1.0)
+    llm = budget_guarded_llm(guard, "gpt-4o", stream=True)
+    with pytest.raises(ValueError, match="stream"):
+        asyncio.run(llm.acall("this step"))
+    assert llm.acalls == 0
 
 
 def test_wrapper_passes_through_while_under_budget() -> None:

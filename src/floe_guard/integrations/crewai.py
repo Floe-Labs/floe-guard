@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..guard import BudgetGuard
-from .litellm import budget_guard_callback
+from .litellm import _reject_streaming, budget_guard_callback
 
 
 def _require_crewai() -> Any:
@@ -86,6 +86,9 @@ def budget_guarded_llm(guard: BudgetGuard, model: str, **kwargs: Any) -> Any:
     callback recorded (``tripped``) and runs ``guard.check()``. A crew whose
     spend crosses the ceiling — or that hits an unpriceable model with
     ``fail_closed=True`` — stops at the next call instead of running unmetered.
+    ``stream=True`` (constructor or per-call kwarg) is refused on *this* call,
+    before ``super().call()`` / ``acall()``, because a stream has no usage to
+    settle and LiteLLM would otherwise dispatch it after swallowing the hook.
 
     A recorded violation latches: it persists for the life of the callback
     (which :func:`guard_crew` reuses per guard) even if you later add a price
@@ -106,16 +109,28 @@ def budget_guarded_llm(guard: BudgetGuard, model: str, **kwargs: Any) -> Any:
             raise tripped.with_traceback(None)
         guard.check()
 
+    def _reject_stream(llm: Any, call_kwargs: dict[str, Any]) -> None:
+        stream = call_kwargs.get("stream")
+        if stream is None:
+            stream = getattr(llm, "stream", None)
+        if stream is None:
+            stored = getattr(llm, "kwargs", None)
+            if isinstance(stored, dict):
+                stream = stored.get("stream")
+        _reject_streaming({"stream": stream})
+
     class BudgetGuardedLLM(LLM):  # type: ignore[misc]
         """``crewai.LLM`` that enforces the budget outside LiteLLM's callbacks."""
 
         def call(self, *args: Any, **call_kwargs: Any) -> Any:
+            _reject_stream(self, call_kwargs)
             _enforce()
             return super().call(*args, **call_kwargs)
 
         async def acall(self, *args: Any, **call_kwargs: Any) -> Any:
             # CrewAI 1.x async crews await acall(); without this override they
             # would bypass enforcement entirely. Harmless on 0.x (never invoked).
+            _reject_stream(self, call_kwargs)
             _enforce()
             return await super().acall(*args, **call_kwargs)
 
