@@ -163,6 +163,16 @@ def _record_response(
     )
 
 
+def _reject_streaming(kwargs: dict[str, Any]) -> None:
+    if kwargs.get("stream"):
+        raise ValueError(
+            "floe-guard's LiteLLM adapter does not support stream=True: a streamed "
+            "response has no final usage to meter, so the call would go unaccounted. "
+            "Use a non-streaming call, or meter the stream yourself with "
+            "guard.reserve()/guard.settle()."
+        )
+
+
 def guarded_completion(guard: BudgetGuard, **kwargs: Any) -> Any:
     """``litellm.completion`` with a pre-call budget reservation and post-call accrual.
 
@@ -170,7 +180,12 @@ def guarded_completion(guard: BudgetGuard, **kwargs: Any) -> Any:
     would be crossed — the request never reaches LiteLLM. The reservation is
     sized to the actual request (prompt tokens + ``max_tokens`` cap) when it
     can be, so even a FIRST call that alone would cross the cap is blocked.
+
+    Streaming is not supported: a streamed response has no final ``usage`` to
+    settle from, so the call would silently go unmetered. Passing ``stream=True``
+    raises ``ValueError``.
     """
+    _reject_streaming(kwargs)
     litellm = _require_litellm()
     reserved = guard.reserve(_estimate_request(litellm, guard, kwargs))
     try:
@@ -183,7 +198,12 @@ def guarded_completion(guard: BudgetGuard, **kwargs: Any) -> Any:
 
 
 async def guarded_acompletion(guard: BudgetGuard, **kwargs: Any) -> Any:
-    """Async counterpart of :func:`guarded_completion`."""
+    """Async counterpart of :func:`guarded_completion`.
+
+    Streaming is not supported (see :func:`guarded_completion`); ``stream=True``
+    raises ``ValueError``.
+    """
+    _reject_streaming(kwargs)
     litellm = _require_litellm()
     reserved = guard.reserve(_estimate_request(litellm, guard, kwargs))
     try:
@@ -204,7 +224,8 @@ def budget_guard_callback(guard: BudgetGuard) -> Any:
         litellm.callbacks = [budget_guard_callback(guard)]
 
     ``log_pre_api_call`` reserves the call's budget (raising
-    :class:`~floe_guard.BudgetExceeded` to abort), ``log_success_event`` settles
+    :class:`~floe_guard.BudgetExceeded` to abort, or ``ValueError`` for
+    ``stream=True``), ``log_success_event`` settles
     the response's actual token cost, and ``log_failure_event`` releases the
     reservation. Reservations are keyed per call, so parallel crew calls each
     hold their own slice of the ceiling instead of racing one shared total.
@@ -223,11 +244,11 @@ def budget_guard_callback(guard: BudgetGuard) -> Any:
         def __init__(self) -> None:
             super().__init__()
             self.guard = guard
-            # The first enforcement violation (BudgetExceeded or fail-closed
-            # UnpriceableModelError). Survives LiteLLM swallowing the raise, so a
-            # call-path owner can re-raise it outside the callback machinery.
-            # Latches until reset() — a config change on the guard alone does
-            # not clear it.
+            # The first enforcement violation (BudgetExceeded, fail-closed
+            # UnpriceableModelError, or stream=True). Survives LiteLLM swallowing
+            # the raise, so a call-path owner can re-raise it outside the callback
+            # machinery. Latches until reset() — a config change on the guard
+            # alone does not clear it.
             self.tripped: Exception | None = None
             self._reservations: dict[Any, float] = {}
             self._rlock = threading.Lock()
@@ -260,6 +281,12 @@ def budget_guard_callback(guard: BudgetGuard) -> Any:
                 self.tripped = None
 
         def _hold(self, kwargs: Any) -> None:
+            if isinstance(kwargs, dict):
+                try:
+                    _reject_streaming(kwargs)
+                except ValueError as exc:
+                    self._trip(exc)
+                    raise
             try:
                 # Request-sized when possible (see _estimate_request); raises
                 # BudgetExceeded -> aborts the call.
