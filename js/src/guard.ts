@@ -372,6 +372,13 @@ export class BudgetGuard {
    * {@link BudgetGuard.spendLog} (`label` tags it, e.g. with an agent/task name);
    * the warn-and-skip path accrues nothing and logs nothing, so the ledger stays
    * in lockstep with `spentUsd`.
+   *
+   * `promptTokens` is the **fresh / uncached** prompt count. Cache buckets on
+   * `options` (`cacheReadInputTokens`, creation) are additive and priced at the
+   * cache rate — they are not a subset of `promptTokens`. OpenAI-style
+   * `usage.prompt_tokens` *includes* cached tokens; subtract that share first
+   * (middleware and the Vapi adapter already do). Same contract as Python
+   * `BudgetGuard.settle`.
    */
   settle(
     model: string,
@@ -467,6 +474,9 @@ export class BudgetGuard {
    * Returns the USD cost of this call. If the model is unpriceable and no `price`
    * is given, behaviour depends on `failClosed`: warn + throw (default), or
    * warn + skip accrual.
+   *
+   * Same prompt/cache split as {@link BudgetGuard.settle}: `promptTokens` is
+   * fresh/uncached; `cacheReadInputTokens` is extra, not carved out of prompt.
    */
   record(
     model: string,

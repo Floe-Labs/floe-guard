@@ -191,13 +191,14 @@ export function resolvePrice(
   return null;
 }
 
+/** Cache-token buckets for {@link priceTokens} / `record` / `settle`. Additive — not a subset of `promptTokens`. */
 export interface TokenCacheUsage {
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
   cacheCreationInputTokens1h?: number;
 }
 
-/** USD cost for token usage. Negative counts are clamped to zero. */
+/** USD cost for token usage. Negative counts are clamped to zero. `promptTokens` is uncached; pass cache buckets separately. */
 export function priceTokens(
   priced: PricedModel,
   promptTokens: number,

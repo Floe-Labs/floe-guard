@@ -17,7 +17,9 @@ describe("BudgetGuard.spendLog", () => {
     expect(total).toBeCloseTo(guard.spentUsd, 12);
   });
 
-  it("record prices cache-read tokens cheaper than full input", () => {
+  it("record treats promptTokens as exclusive of cacheReadInputTokens", () => {
+    // Python settle() contract: prompt is fresh/uncached; cache buckets are extra.
+    // Adapters subtract cached tokens from provider prompt_tokens before record().
     const guard = new BudgetGuard(1.0);
     const uncached = new BudgetGuard(1.0);
     guard.record(MODEL, 1_000, 0, { cacheReadInputTokens: 9_000 });
