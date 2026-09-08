@@ -386,9 +386,11 @@ function readUsage(
   const completion = usage.completion_tokens;
   if (typeof prompt !== "number" || !Number.isFinite(prompt)) return null;
   if (typeof completion !== "number" || !Number.isFinite(completion)) return null;
+  const promptClamped = Math.max(0, prompt);
+  const completionClamped = Math.max(0, completion);
   const cachedRaw = usage.prompt_tokens_details?.cached_tokens;
   const cached =
     typeof cachedRaw === "number" && Number.isFinite(cachedRaw) ? Math.max(0, cachedRaw) : 0;
-  const cacheRead = Math.min(cached, prompt);
-  return { prompt: prompt - cacheRead, completion, cacheRead };
+  const cacheRead = Math.min(cached, promptClamped);
+  return { prompt: promptClamped - cacheRead, completion: completionClamped, cacheRead };
 }

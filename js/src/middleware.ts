@@ -75,20 +75,27 @@ function usageTokens(
     | undefined;
   const promptTokens = u?.promptTokens ?? u?.inputTokens;
   const completionTokens = u?.completionTokens ?? u?.outputTokens;
-  if (typeof promptTokens !== "number" || typeof completionTokens !== "number") {
+  if (
+    typeof promptTokens !== "number" ||
+    typeof completionTokens !== "number" ||
+    !Number.isFinite(promptTokens) ||
+    !Number.isFinite(completionTokens)
+  ) {
     throw new Error(
       `Model '${modelId}' reported no token usage — the budget guard cannot ` +
         `meter spend it cannot see, so this call is rejected rather than ` +
         `treated as free.`,
     );
   }
+  const prompt = Math.max(0, promptTokens);
+  const completion = Math.max(0, completionTokens);
   const cachedRaw = u?.cachedInputTokens;
   const cached =
     typeof cachedRaw === "number" && Number.isFinite(cachedRaw) ? Math.max(0, cachedRaw) : 0;
-  const cacheReadInputTokens = Math.min(cached, promptTokens);
+  const cacheReadInputTokens = Math.min(cached, prompt);
   return {
-    promptTokens: promptTokens - cacheReadInputTokens,
-    completionTokens,
+    promptTokens: prompt - cacheReadInputTokens,
+    completionTokens: completion,
     cacheReadInputTokens,
   };
 }

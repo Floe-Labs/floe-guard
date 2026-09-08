@@ -129,6 +129,22 @@ describe("VapiBudgetGuard — settle on real usage", () => {
     );
   });
 
+  it("clamps negative prompt_tokens before the cache split", async () => {
+    const guard = new BudgetGuard(1.0);
+    const budget = new VapiBudgetGuard(guard, { model: "gpt-4o" });
+    await budget.guardCompletion(() => ({
+      id: "chatcmpl-x",
+      choices: [{ message: { role: "assistant", content: "hi" } }],
+      usage: {
+        prompt_tokens: -10_000,
+        completion_tokens: 0,
+        prompt_tokens_details: { cached_tokens: 9_000 },
+      },
+    }));
+    expect(guard.spentUsd).toBe(0);
+    expect(guard.remainingUsd).toBe(1.0);
+  });
+
   it("settles a streaming turn on the final chunk's usage and passes chunks through", async () => {
     const guard = new BudgetGuard(1.0, { priceOverrides: { m: PRICE } });
     const budget = new VapiBudgetGuard(guard, { model: "m" });
