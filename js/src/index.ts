@@ -36,6 +36,7 @@ export {
 export {
   type ManualPrice,
   type PricedModel,
+  type TokenCacheUsage,
   resolvePrice,
   priceTokens,
   costMapGeneratedAt,

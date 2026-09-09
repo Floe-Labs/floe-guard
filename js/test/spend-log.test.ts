@@ -17,6 +17,16 @@ describe("BudgetGuard.spendLog", () => {
     expect(total).toBeCloseTo(guard.spentUsd, 12);
   });
 
+  it("record treats promptTokens as exclusive of cacheReadInputTokens", () => {
+    // Python settle() contract: prompt is fresh/uncached; cache buckets are extra.
+    // Adapters subtract cached tokens from provider prompt_tokens before record().
+    const guard = new BudgetGuard(1.0);
+    const uncached = new BudgetGuard(1.0);
+    guard.record(MODEL, 1_000, 0, { cacheReadInputTokens: 9_000 });
+    uncached.record(MODEL, 10_000, 0);
+    expect(guard.spentUsd / uncached.spentUsd).toBeCloseTo(0.55, 5);
+  });
+
   it("llm event schema", () => {
     const guard = new BudgetGuard(1.0);
     const cost = guard.record(MODEL, 1_200, 350, { label: "researcher" });

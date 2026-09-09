@@ -8,6 +8,36 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.23.6 / js 0.15.5
+
+### Fixed (js)
+
+- **Cache-aware token pricing, wired through the guard.** `priceTokens` /
+  `resolvePrice` now consume the cost map's `cache_read_input_token_cost` /
+  `cache_creation_input_token_cost` (the JS map already carried them; pricing
+  ignored them). `record` / `settle` accept `cacheReadInputTokens` (and
+  creation buckets). `promptTokens` is the fresh/uncached count — cache buckets
+  are additive, not a subset. Middleware and the Vapi adapter subtract cached
+  tokens from provider `prompt_tokens` before settle, matching Python. gpt-4o
+  with a 90% cache hit now bills ~0.55× the uncached prompt instead of
+  ~1.8× Python.
+
+## Unreleased — py 0.23.6 / js 0.15.4
+
+### Fixed (py)
+
+- **LiteLLM `stream=True` is rejected before the call.** A streamed LiteLLM
+  response has no final `usage` to settle, so `guarded_completion` /
+  `guarded_acompletion` were fail-open: the call ran unmetered. Matches the
+  OpenAI/Anthropic adapters: `stream=True` raises `ValueError` before reserve
+  or the provider call. `budget_guarded_llm` refuses the same config on this
+  `call`/`acall` (constructor `stream=True`, a per-call kwarg, or CrewAI's
+  call-scoped `_effective_stream` used by `stream_events()`) before dispatch,
+  so LiteLLM never sees the request. The callback still cannot stop
+  an in-flight call — LiteLLM swallows hook exceptions — but it latches
+  `tripped` so a later guarded call stops. Callback-only registration
+  (`guard_crew`) remains best-effort.
+
 ## Unreleased — py 0.23.2 / js 0.15.3
 
 ### Changed (docs)
