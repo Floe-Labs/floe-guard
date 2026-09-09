@@ -1,6 +1,6 @@
 {
   "__meta__": {
-    "generated_at": "2026-08-31",
+    "generated_at": "2026-09-07",
     "source": "LiteLLM public model prices (bundled snapshot); voice rates verified from vendor list pages"
   },
   "chat-latest": {
@@ -82,6 +82,14 @@
     "cache_read_input_token_cost": 0.000001,
     "cache_creation_input_token_cost": 0.0000125
   },
+  "claude-fable-5-1": {
+    "input_cost_per_token": 0.00001,
+    "output_cost_per_token": 0.00005,
+    "litellm_provider": "anthropic",
+    "mode": "chat",
+    "cache_read_input_token_cost": 2.5e-7,
+    "cache_creation_input_token_cost": 0.0000125
+  },
   "claude-haiku-4-5": {
     "input_cost_per_token": 0.000001,
     "output_cost_per_token": 0.000005,
@@ -104,6 +112,14 @@
     "litellm_provider": "anthropic",
     "mode": "chat",
     "cache_read_input_token_cost": 0.000001,
+    "cache_creation_input_token_cost": 0.0000125
+  },
+  "claude-mythos-5-1": {
+    "input_cost_per_token": 0.00001,
+    "output_cost_per_token": 0.00005,
+    "litellm_provider": "anthropic",
+    "mode": "chat",
+    "cache_read_input_token_cost": 2.5e-7,
     "cache_creation_input_token_cost": 0.0000125
   },
   "claude-mythos-preview": {
@@ -399,24 +415,6 @@
     "mode": "chat",
     "cache_read_input_token_cost": 1e-8
   },
-  "gemini-2.5-flash-native-audio-latest": {
-    "input_cost_per_token": 5e-7,
-    "output_cost_per_token": 0.000002,
-    "litellm_provider": "gemini",
-    "mode": "chat"
-  },
-  "gemini-2.5-flash-native-audio-preview-09-2025": {
-    "input_cost_per_token": 5e-7,
-    "output_cost_per_token": 0.000002,
-    "litellm_provider": "gemini",
-    "mode": "chat"
-  },
-  "gemini-2.5-flash-native-audio-preview-12-2025": {
-    "input_cost_per_token": 5e-7,
-    "output_cost_per_token": 0.000002,
-    "litellm_provider": "gemini",
-    "mode": "chat"
-  },
   "gemini-2.5-flash-preview-09-2025": {
     "input_cost_per_token": 3e-7,
     "output_cost_per_token": 0.0000025,
@@ -466,12 +464,6 @@
     "mode": "chat",
     "cache_read_input_token_cost": 2.5e-8
   },
-  "gemini-3.1-flash-live-preview": {
-    "input_cost_per_token": 7.5e-7,
-    "output_cost_per_token": 0.0000045,
-    "litellm_provider": "gemini",
-    "mode": "chat"
-  },
   "gemini-3.1-pro-preview": {
     "input_cost_per_token": 0.000002,
     "output_cost_per_token": 0.000012,
@@ -500,12 +492,6 @@
     "mode": "chat",
     "cache_read_input_token_cost": 3e-8
   },
-  "gemini-3.5-live-translate-preview": {
-    "input_cost_per_token": 0.0000035,
-    "output_cost_per_token": 0.000021,
-    "litellm_provider": "gemini",
-    "mode": "chat"
-  },
   "gemini-3.6-flash": {
     "input_cost_per_token": 7.5e-7,
     "output_cost_per_token": 0.00000375,
@@ -514,6 +500,13 @@
     "cache_read_input_token_cost": 7.5e-8
   },
   "gemini-3.7-flash": {
+    "input_cost_per_token": 7.5e-7,
+    "output_cost_per_token": 0.00000375,
+    "litellm_provider": "gemini",
+    "mode": "chat",
+    "cache_read_input_token_cost": 7.5e-8
+  },
+  "gemini-3.8-flash": {
     "input_cost_per_token": 7.5e-7,
     "output_cost_per_token": 0.00000375,
     "litellm_provider": "gemini",
@@ -1042,6 +1035,14 @@
     "mode": "chat",
     "cache_read_input_token_cost": 2e-7,
     "cache_creation_input_token_cost": 0.0000025
+  },
+  "gpt-6-astra": {
+    "input_cost_per_token": 0.00001,
+    "output_cost_per_token": 0.00005,
+    "litellm_provider": "openai",
+    "mode": "chat",
+    "cache_read_input_token_cost": 0.000001,
+    "cache_creation_input_token_cost": 0.0000125
   },
   "gpt-audio": {
     "input_cost_per_token": 0.0000025,
