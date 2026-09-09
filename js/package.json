@@ -77,6 +77,7 @@
   "overrides": {
     "postcss": ">=8.5.18",
     "esbuild": ">=0.28.1",
-    "jsondiffpatch": ">=0.7.2"
+    "jsondiffpatch": ">=0.7.2",
+    "sharp": ">=0.35.4"
   }
 }
