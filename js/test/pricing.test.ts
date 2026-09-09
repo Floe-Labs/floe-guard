@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { costMapGeneratedAt, resolvePrice } from "../src/pricing";
+import { costMapGeneratedAt, priceTokens, resolvePrice } from "../src/pricing";
 
 describe("resolvePrice", () => {
   it("resolves a known model and its provider-prefixed form", () => {
@@ -135,5 +135,58 @@ describe("costMapGeneratedAt / reserved keys", () => {
     expect(resolvePrice("__voice__")).toBeNull();
     // a real model still resolves
     expect(resolvePrice("gpt-4o")).not.toBeNull();
+  });
+});
+
+describe("cache-aware priceTokens", () => {
+  it("falls back to Anthropic-style multipliers when the model has no published cache rate", () => {
+    const priced = resolvePrice("claude-3-5-sonnet-20241022");
+    expect(priced).not.toBeNull();
+    expect(priced!.cacheReadCostPerToken).toBeUndefined();
+    const cost = priceTokens(priced!, 0, 0, {
+      cacheCreationInputTokens: 100,
+      cacheReadInputTokens: 1000,
+      cacheCreationInputTokens1h: 200,
+    });
+    // 5m write 1.25x, 1h write 2.0x, read 0.1x of input
+    const input = priced!.inputCostPerToken;
+    expect(cost).toBeCloseTo(100 * input * 1.25 + 200 * input * 2.0 + 1000 * input * 0.1, 12);
+  });
+
+  it("prices cache-read at the model's published rate, not a one-size multiplier", () => {
+    const anthropic = resolvePrice("claude-3-7-sonnet-20250219");
+    const openai = resolvePrice("gpt-4o");
+    expect(anthropic).not.toBeNull();
+    expect(openai).not.toBeNull();
+    expect(anthropic!.cacheReadCostPerToken).toBeCloseTo(3e-7, 12);
+    expect(openai!.cacheReadCostPerToken).toBeCloseTo(1.25e-6, 12);
+
+    expect(priceTokens(anthropic!, 0, 0, { cacheReadInputTokens: 1000 })).toBeCloseTo(
+      1000 * anthropic!.cacheReadCostPerToken!,
+      12,
+    );
+    expect(priceTokens(openai!, 0, 0, { cacheReadInputTokens: 1000 })).toBeCloseTo(
+      1000 * openai!.cacheReadCostPerToken!,
+      12,
+    );
+  });
+
+  it("does not attach cache rates to override-sourced prices", () => {
+    const ov = resolvePrice("gpt-4o", {
+      "gpt-4o": { inputCostPerToken: 1e-9, outputCostPerToken: 2e-9 },
+    });
+    expect(ov!.source).toBe("override");
+    expect(ov!.cacheReadCostPerToken).toBeUndefined();
+    expect(ov!.cacheCreationCostPerToken).toBeUndefined();
+  });
+
+  it("gpt-4o with a 90% cache hit is ~0.55x the uncached prompt, not 1.0x", () => {
+    // 10_000 prompt tokens, 90% cached, no completion. Python bills fresh at
+    // input and cached at cache-read (0.5x for gpt-4o). JS used to bill all
+    // 10_000 at the full input rate (~1.8x overcharge).
+    const priced = resolvePrice("gpt-4o")!;
+    const uncached = priceTokens(priced, 10_000, 0);
+    const cached = priceTokens(priced, 1_000, 0, { cacheReadInputTokens: 9_000 });
+    expect(cached / uncached).toBeCloseTo(0.55, 5);
   });
 });

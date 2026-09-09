@@ -27,6 +27,7 @@ import { BudgetExceeded, TokenBudgetExceeded, UnpriceableModelError } from "./er
 import { pushLedger } from "./sync.js";
 import {
   type ManualPrice,
+  type TokenCacheUsage,
   priceTokens,
   resolvePrice,
 } from "./pricing.js";
@@ -371,12 +372,23 @@ export class BudgetGuard {
    * {@link BudgetGuard.spendLog} (`label` tags it, e.g. with an agent/task name);
    * the warn-and-skip path accrues nothing and logs nothing, so the ledger stays
    * in lockstep with `spentUsd`.
+   *
+   * `promptTokens` is the **fresh / uncached** prompt count. Cache buckets on
+   * `options` (`cacheReadInputTokens`, creation) are additive and priced at the
+   * cache rate — they are not a subset of `promptTokens`. OpenAI-style
+   * `usage.prompt_tokens` *includes* cached tokens; subtract that share first
+   * (middleware and the Vapi adapter already do). Same contract as Python
+   * `BudgetGuard.settle`.
    */
   settle(
     model: string,
     promptTokens: number,
     completionTokens: number,
-    options: { reserved?: ReservationHandle; price?: ManualPrice; label?: string } = {},
+    options: {
+      reserved?: ReservationHandle;
+      price?: ManualPrice;
+      label?: string;
+    } & TokenCacheUsage = {},
   ): number {
     const reserved = options.reserved ?? 0;
     // A bad reserved handle would corrupt this.reserved and break the ceiling for
@@ -405,9 +417,14 @@ export class BudgetGuard {
       return 0;
     }
 
+    const cache: TokenCacheUsage = {
+      cacheReadInputTokens: options.cacheReadInputTokens,
+      cacheCreationInputTokens: options.cacheCreationInputTokens,
+      cacheCreationInputTokens1h: options.cacheCreationInputTokens1h,
+    };
     let cost: number;
     try {
-      cost = priceTokens(priced, promptTokens, completionTokens);
+      cost = priceTokens(priced, promptTokens, completionTokens, cache);
     } catch (err) {
       // priceTokens can throw (e.g. non-finite costs). Release the in-flight
       // hold before re-throwing so `reserved` doesn't leak and shrink
@@ -418,9 +435,14 @@ export class BudgetGuard {
     if (reserved) {
       this.consumeReservation(reserved);
     }
-    // Tokens accrued match what priceTokens bills (prompt + completion; negative
-    // counts clamp to 0, as in pricing).
-    const accruedTokens = Math.max(0, promptTokens) + Math.max(0, completionTokens);
+    // Tokens accrued match what priceTokens bills (prompt + completion + cache
+    // buckets; negative counts clamp to 0, as in pricing).
+    const accruedTokens =
+      Math.max(0, promptTokens) +
+      Math.max(0, completionTokens) +
+      Math.max(0, options.cacheReadInputTokens ?? 0) +
+      Math.max(0, options.cacheCreationInputTokens ?? 0) +
+      Math.max(0, options.cacheCreationInputTokens1h ?? 0);
     this.spentUsd += cost;
     this.spentTokens += accruedTokens;
     this.accrueStep(cost, accruedTokens);
@@ -452,17 +474,23 @@ export class BudgetGuard {
    * Returns the USD cost of this call. If the model is unpriceable and no `price`
    * is given, behaviour depends on `failClosed`: warn + throw (default), or
    * warn + skip accrual.
+   *
+   * Same prompt/cache split as {@link BudgetGuard.settle}: `promptTokens` is
+   * fresh/uncached; `cacheReadInputTokens` is extra, not carved out of prompt.
    */
   record(
     model: string,
     promptTokens: number,
     completionTokens: number,
-    options: { price?: ManualPrice; label?: string } = {},
+    options: { price?: ManualPrice; label?: string } & TokenCacheUsage = {},
   ): number {
     return this.settle(model, promptTokens, completionTokens, {
       reserved: 0,
       price: options.price,
       label: options.label,
+      cacheReadInputTokens: options.cacheReadInputTokens,
+      cacheCreationInputTokens: options.cacheCreationInputTokens,
+      cacheCreationInputTokens1h: options.cacheCreationInputTokens1h,
     });
   }
 

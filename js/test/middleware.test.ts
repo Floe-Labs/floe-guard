@@ -99,6 +99,63 @@ describe("budgetGuardMiddleware — wrapGenerate (ai@5 usage shape)", () => {
     expect(guard.spentUsd).toBeCloseTo(pricing.priceTokens(priced, 1000, 1000), 12);
   });
 
+  it("prices cachedInputTokens at the cache-read rate, not the full input rate", async () => {
+    const guard = new BudgetGuard(1.0);
+    const mw = budgetGuardMiddleware(guard);
+
+    const doGenerate = vi.fn(async () => ({
+      usage: { inputTokens: 10_000, outputTokens: 0, cachedInputTokens: 9_000 },
+    }));
+
+    await mw.wrapGenerate!({
+      doGenerate: doGenerate as never,
+      doStream: vi.fn() as never,
+      params: fakeParams,
+      model: fakeModel("gpt-4o"),
+    });
+
+    const priced = pricing.resolvePrice("gpt-4o")!;
+    expect(guard.spentUsd).toBeCloseTo(
+      pricing.priceTokens(priced, 1_000, 0, { cacheReadInputTokens: 9_000 }),
+      12,
+    );
+    const uncached = pricing.priceTokens(priced, 10_000, 0);
+    expect(guard.spentUsd / uncached).toBeCloseTo(0.55, 5);
+  });
+
+  it("rejects NaN token counts instead of splitting cache against them", async () => {
+    const guard = new BudgetGuard(1.0);
+    const mw = budgetGuardMiddleware(guard);
+    const doGenerate = vi.fn(async () => ({
+      usage: { inputTokens: Number.NaN, outputTokens: 0, cachedInputTokens: 9_000 },
+    }));
+    await expect(
+      mw.wrapGenerate!({
+        doGenerate: doGenerate as never,
+        doStream: vi.fn() as never,
+        params: fakeParams,
+        model: fakeModel("gpt-4o"),
+      }),
+    ).rejects.toThrow(/no token usage/);
+    expect(guard.spentUsd).toBe(0);
+    expect(guard.remainingUsd).toBe(1.0);
+  });
+
+  it("clamps negative prompt counts before the cache split", async () => {
+    const guard = new BudgetGuard(1.0);
+    const mw = budgetGuardMiddleware(guard);
+    await mw.wrapGenerate!({
+      doGenerate: vi.fn(async () => ({
+        usage: { inputTokens: -10_000, outputTokens: 0, cachedInputTokens: 9_000 },
+      })) as never,
+      doStream: vi.fn() as never,
+      params: fakeParams,
+      model: fakeModel("gpt-4o"),
+    });
+    expect(guard.spentUsd).toBe(0);
+    expect(guard.remainingUsd).toBe(1.0);
+  });
+
   it("rejects a result with no usable token counts instead of metering $0", async () => {
     const guard = new BudgetGuard(1.0);
     const mw = budgetGuardMiddleware(guard);
