@@ -231,6 +231,7 @@ export class BudgetGuard {
   private lastToolCost = 0;
   /** USD held for in-flight calls (reserved, not yet settled). Counts toward the ceiling. */
   private reserved = 0;
+  private readonly streamCosts = new Map<symbol, { accrued: number; held: number }>();
   /** Per-call ledger, oldest first; a ring buffer when maxLogEvents is set. */
   private readonly spendEvents: SpendEvent[] = [];
   private readonly maxLogEvents?: number;
@@ -910,6 +911,44 @@ export class BudgetGuard {
       }
     }
     return null;
+  }
+
+  /** @internal Validate before transferring a reservation to a stream. */
+  _validateStreamReservation(reserved: ReservationHandle): void {
+    this.reservedUsdOf(reserved);
+  }
+
+  /** @internal Register accrued-but-unsettled streaming spend. */
+  _registerStream(reserved: ReservationHandle): symbol {
+    const held = this.reservedUsdOf(reserved);
+    const key = Symbol();
+    this.streamCosts.set(key, { accrued: 0, held });
+    return key;
+  }
+
+  /** @internal Settlement moved this stream's accrual into spentUsd. */
+  _unregisterStream(key: symbol): void {
+    this.streamCosts.delete(key);
+  }
+
+  /** @internal Replace this stream's estimate with its cumulative actual estimate.
+   * Count other streams' overages once, in addition to their existing holds.
+   * Synchronous within one JS isolate, matching Python's locked registry.
+   */
+  _streamWouldCross(key: symbol, cumulative: number): boolean {
+    const own = this.streamCosts.get(key)!;
+    own.accrued = cumulative;
+    let otherOverage = 0;
+    for (const [otherKey, other] of this.streamCosts) {
+      if (otherKey !== key) otherOverage += Math.max(0, other.accrued - other.held);
+    }
+    const others = this.spentUsd + Math.max(0, this.reserved - own.held) + otherOverage;
+    return others + cumulative > this.limitUsd + EPS;
+  }
+
+  /** @internal Notify and throw after a stream has settled its partial spend. */
+  _blockStream(): never {
+    return this.raiseBlock(["usd", "aggregate", this.spentUsd, this.limitUsd]);
   }
 
   /** Notify + throw the right error for a [dimension, scope, spent, limit] block. */

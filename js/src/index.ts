@@ -48,6 +48,13 @@ export {
 } from "./retry.js";
 
 export * as pricing from "./pricing.js";
+export {
+  StreamGuard,
+  guardStream,
+  approxTokens,
+  type StreamGuardOptions,
+  type GuardStreamOptions,
+} from "./stream.js";
 
 export {
   type VoiceMode,
