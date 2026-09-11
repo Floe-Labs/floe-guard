@@ -34,6 +34,79 @@ The middleware sits in the call path: it `check()`s before `doGenerate` /
 `doStream` (throwing `BudgetExceeded` to halt the run) and `record()`s priced
 token usage after — for streaming it reads usage from the `finish` part.
 
+## Mid-stream budget enforcement
+
+`StreamGuard` and `guardStream` port Python's streaming USD guard. They price
+each text delta before it reaches the consumer. When a chunk crosses the
+shared ceiling, its partial spend is recorded in `guard.spendLog` **before**
+`BudgetExceeded` is thrown. Active streams on the same guard share the ceiling.
+
+```ts
+import { BudgetGuard, guardStream } from "floe-guard";
+
+const guard = new BudgetGuard(0.01);
+// textDeltas is your provider's Iterable<string> or AsyncIterable<string>.
+for await (const text of guardStream(guard, "gpt-4o", textDeltas)) {
+  consume(text);
+}
+```
+
+For structured chunks, supply `{ getText: chunk => chunk.delta.text ?? "" }`
+using your provider's actual shape. Without an extractor, non-string chunks
+throw instead of silently recording zero. Synchronous inputs return a
+synchronous iterator; asynchronous inputs return an asynchronous iterator.
+
+Use `StreamGuard` directly when the provider reports final usage:
+
+```ts
+import { StreamGuard } from "floe-guard";
+
+const reserved = guard.reserve(guard.estimateCall("gpt-4o", 100, 200));
+const stream = new StreamGuard(guard, "gpt-4o", { promptTokens: 100, reserved });
+try {
+  for await (const text of textDeltas) {
+    stream.feedText(text); // or feedTokens(n) with known per-chunk counts
+    consume(text);
+  }
+  stream.finish({ promptTokens: reportedPromptTokens, completionTokens: reportedCompletionTokens });
+} finally {
+  stream.close(); // idempotent; settles estimates if finish() was not reached
+}
+```
+
+- Options: `promptTokens`, `reserved`, `price`, `label`, and `countTokens(delta)`.
+  `guardStream` additionally accepts `getText(chunk)`.
+  Configuration is captured at construction; changing the caller's options or
+  manual price object later does not change an existing stream.
+- `approxTokens` defaults to roughly four Unicode characters per token, with
+  a minimum of one for a non-empty delta. A custom tokenizer can replace it.
+  `finish()` reconciles to reported usage; `completionTokens` exposes the running
+  estimate. Mid-stream checks cover the aggregate USD ceiling, matching Python;
+  token reservations are reconciled at settlement.
+- An unpriceable model fails at construction and releases its reservation.
+  With `failClosed: false`, unpriceable streams pass through and settlement
+  warns and skips accounting, matching the existing guard policy.
+- The wrapper settles on exhaustion, source/consumer errors, and early `break`,
+  and closes the source iterator when iteration ends early. Direct users must
+  call `close()` in `finally`. If a wrapper is **never iterated**, its reservation
+  remains the caller's responsibility: call `guard.release(reserved)`.
+- The crossing chunk has already been generated. With accurate counts, the
+  local cutoff can overshoot by that chunk; heuristic error, parallel streams,
+  provider buffering and delayed cancellation can cause additional actual
+  spend. Stopping iteration requests iterator cleanup, not guaranteed remote
+  cancellation. Connect cleanup to your provider's abort mechanism where needed.
+- Existing Vapi, LiveKit and middleware streaming behavior is unchanged; this
+  is the standalone primitive requested in issue #124.
+
+Run the no-key example from a repository checkout:
+
+```bash
+cd js
+npm ci
+npm run build
+node ../examples/streaming_guard.mjs
+```
+
 ## Pricing
 
 Tokens are priced **offline** from a bundled
