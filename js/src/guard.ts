@@ -231,6 +231,7 @@ export class BudgetGuard {
   private lastToolCost = 0;
   /** USD held for in-flight calls (reserved, not yet settled). Counts toward the ceiling. */
   private reserved = 0;
+  private readonly streamCosts = new Map<symbol, { accrued: number; held: number }>();
   /** Per-call ledger, oldest first; a ring buffer when maxLogEvents is set. */
   private readonly spendEvents: SpendEvent[] = [];
   private readonly maxLogEvents?: number;
@@ -641,9 +642,9 @@ export class BudgetGuard {
     this.consumeReservation(reserved);
   }
 
-  /** USD left before the ceiling, net of in-flight reservations (never negative). */
+  /** USD left, net of reservations and unsettled stream overages (never negative). */
   get remainingUsd(): number {
-    return Math.max(0, this.limitUsd - this.spentUsd - this.reserved);
+    return Math.max(0, this.limitUsd - this.spentUsd - this.reserved - this.streamOverage());
   }
 
   /**
@@ -879,7 +880,7 @@ export class BudgetGuard {
     estimateTokens: number,
   ): ["usd" | "tokens", "aggregate" | "step", number, number] | null {
     // Aggregate USD — same comparison the original check/reserve used.
-    const committed = this.spentUsd + this.reserved;
+    const committed = this.spentUsd + this.reserved + this.streamOverage();
     if (committed > this.limitUsd - EPS || committed + estimateUsd > this.limitUsd + EPS) {
       return ["usd", "aggregate", this.spentUsd, this.limitUsd];
     }
@@ -910,6 +911,49 @@ export class BudgetGuard {
       }
     }
     return null;
+  }
+
+  /** Accrued stream costs beyond existing holds, excluding a stream if requested. */
+  private streamOverage(exclude?: symbol): number {
+    let overage = 0;
+    for (const [key, stream] of this.streamCosts) {
+      if (key !== exclude) overage += Math.max(0, stream.accrued - stream.held);
+    }
+    return overage;
+  }
+
+  /** @internal Validate before transferring a reservation to a stream. */
+  _validateStreamReservation(reserved: ReservationHandle): void {
+    this.reservedUsdOf(reserved);
+  }
+
+  /** @internal Register accrued-but-unsettled streaming spend. */
+  _registerStream(reserved: ReservationHandle): symbol {
+    const held = this.reservedUsdOf(reserved);
+    const key = Symbol();
+    this.streamCosts.set(key, { accrued: 0, held });
+    return key;
+  }
+
+  /** @internal Settlement moved this stream's accrual into spentUsd. */
+  _unregisterStream(key: symbol): void {
+    this.streamCosts.delete(key);
+  }
+
+  /** @internal Replace this stream's estimate with its cumulative actual estimate.
+   * Count other streams' overages once, in addition to their existing holds.
+   * Synchronous within one JS isolate, matching Python's locked registry.
+   */
+  _streamWouldCross(key: symbol, cumulative: number): boolean {
+    const own = this.streamCosts.get(key)!;
+    own.accrued = cumulative;
+    const others = this.spentUsd + Math.max(0, this.reserved - own.held) + this.streamOverage(key);
+    return others + cumulative > this.limitUsd + EPS;
+  }
+
+  /** @internal Notify and throw after a stream has settled its partial spend. */
+  _blockStream(): never {
+    return this.raiseBlock(["usd", "aggregate", this.spentUsd, this.limitUsd]);
   }
 
   /** Notify + throw the right error for a [dimension, scope, spent, limit] block. */

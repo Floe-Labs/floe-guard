@@ -8,6 +8,16 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — js 0.16.0
+
+### Added (js)
+
+- `StreamGuard`, `guardStream` and `approxTokens` for chunk-wise streaming USD
+  enforcement (#124), matching Python's accounting semantics. Partial spend is
+  settled before budget interruption; concurrent streams share accrued costs.
+  Sync and async iterators settle on early exit. Includes explicit final-usage
+  reconciliation, Python parity tests and a runnable no-key example.
+
 ## Unreleased — py 0.23.6 / js 0.15.5
 
 ### Fixed (js)
