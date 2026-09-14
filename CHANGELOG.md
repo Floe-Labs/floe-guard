@@ -8,6 +8,14 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.23.9
+
+### Fixed (py)
+
+- In-memory `check()` / `reserve()` admission and `remaining_usd` now include
+  active streams' accrued spend beyond their reservations. Ordinary LLM and
+  paid-tool calls can no longer reuse headroom already consumed by a stream.
+
 ## Unreleased — js 0.16.0
 
 ### Added (js)

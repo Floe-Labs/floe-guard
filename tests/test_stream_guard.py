@@ -23,6 +23,36 @@ from floe_guard.stream import approx_tokens
 MODEL = "gpt-4o"  # $2.5e-6/input token, $1e-5/output token
 
 
+@pytest.mark.parametrize("held", [0.0, 0.002, 0.0095])
+def test_stream_accrual_counts_in_ordinary_admission(held: float) -> None:
+    guard = BudgetGuard(limit_usd=0.01, on_block=lambda *_: None)
+    with StreamGuard(guard, MODEL, reserved=guard.reserve(held)) as stream:
+        stream.feed_tokens(900)  # $0.009 has already been generated.
+        assert guard.remaining_usd == pytest.approx(0.0005 if held == 0.0095 else 0.001)
+        with pytest.raises(BudgetExceeded):
+            guard.check(0.002)
+        with pytest.raises(BudgetExceeded):
+            guard.reserve(0.002)
+        with pytest.raises(BudgetExceeded):
+            guard.reserve_tool(0.002)
+    assert guard.remaining_usd == pytest.approx(0.001)
+    reserved = guard.reserve_tool(0.0005)
+    guard.settle_tool("search", 0.0005, reserved=reserved)
+    assert guard.spent_usd == pytest.approx(0.0095)
+
+
+def test_final_usage_replaces_accrual_without_losing_other_reservations() -> None:
+    guard = BudgetGuard(limit_usd=0.01)
+    other = guard.reserve_tool(0.002)
+    with StreamGuard(guard, MODEL, reserved=guard.reserve(0.003)) as stream:
+        stream.feed_tokens(500)
+        assert guard.remaining_usd == pytest.approx(0.003)
+        stream.finish(completion_tokens=200)
+    assert guard.remaining_usd == pytest.approx(0.006)
+    guard.release(other)
+    assert guard.remaining_usd == pytest.approx(0.008)
+
+
 # ── estimate_call ───────────────────────────────────────────────────────────────
 
 
