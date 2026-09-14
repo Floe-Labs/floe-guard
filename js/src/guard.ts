@@ -642,9 +642,9 @@ export class BudgetGuard {
     this.consumeReservation(reserved);
   }
 
-  /** USD left before the ceiling, net of in-flight reservations (never negative). */
+  /** USD left, net of reservations and unsettled stream overages (never negative). */
   get remainingUsd(): number {
-    return Math.max(0, this.limitUsd - this.spentUsd - this.reserved);
+    return Math.max(0, this.limitUsd - this.spentUsd - this.reserved - this.streamOverage());
   }
 
   /**
@@ -880,7 +880,7 @@ export class BudgetGuard {
     estimateTokens: number,
   ): ["usd" | "tokens", "aggregate" | "step", number, number] | null {
     // Aggregate USD — same comparison the original check/reserve used.
-    const committed = this.spentUsd + this.reserved;
+    const committed = this.spentUsd + this.reserved + this.streamOverage();
     if (committed > this.limitUsd - EPS || committed + estimateUsd > this.limitUsd + EPS) {
       return ["usd", "aggregate", this.spentUsd, this.limitUsd];
     }
@@ -913,6 +913,15 @@ export class BudgetGuard {
     return null;
   }
 
+  /** Accrued stream costs beyond existing holds, excluding a stream if requested. */
+  private streamOverage(exclude?: symbol): number {
+    let overage = 0;
+    for (const [key, stream] of this.streamCosts) {
+      if (key !== exclude) overage += Math.max(0, stream.accrued - stream.held);
+    }
+    return overage;
+  }
+
   /** @internal Validate before transferring a reservation to a stream. */
   _validateStreamReservation(reserved: ReservationHandle): void {
     this.reservedUsdOf(reserved);
@@ -938,11 +947,7 @@ export class BudgetGuard {
   _streamWouldCross(key: symbol, cumulative: number): boolean {
     const own = this.streamCosts.get(key)!;
     own.accrued = cumulative;
-    let otherOverage = 0;
-    for (const [otherKey, other] of this.streamCosts) {
-      if (otherKey !== key) otherOverage += Math.max(0, other.accrued - other.held);
-    }
-    const others = this.spentUsd + Math.max(0, this.reserved - own.held) + otherOverage;
+    const others = this.spentUsd + Math.max(0, this.reserved - own.held) + this.streamOverage(key);
     return others + cumulative > this.limitUsd + EPS;
   }
 

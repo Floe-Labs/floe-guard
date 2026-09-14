@@ -116,7 +116,7 @@ export class StreamGuard {
     try {
       return this.guard.settle(this.model, prompt, completion, {
         reserved: this.reserved,
-        price: this.price,
+        price: this.priced ?? this.price,
         label: this.label,
       });
     } finally {

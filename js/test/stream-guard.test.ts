@@ -8,6 +8,55 @@ const makeGuard = (limit = 0.01) => new BudgetGuard(limit, {
 });
 
 describe("StreamGuard", () => {
+  it("keeps bundled rates when an override is added before settlement", () => {
+    const guard = makeGuard(1);
+    const expected = guard.estimateCall("gpt-4o", 100, 20);
+    if (expected === undefined || !guard.priceOverrides) throw new Error("Expected priced model and overrides");
+    const stream = new StreamGuard(guard, "gpt-4o", { promptTokens: 100 });
+    stream.feedTokens(20);
+    guard.priceOverrides["gpt-4o"] = { inputCostPerToken: 1, outputCostPerToken: 1 };
+    expect(stream.finish()).toBeCloseTo(expected, 12);
+    expect(guard.spentUsd).toBeCloseTo(expected, 12);
+  });
+
+  it("replaces stream estimates with final usage without losing other holds", () => {
+    const guard = makeGuard();
+    const other = guard.reserve(0.002);
+    const stream = new StreamGuard(guard, MODEL, { reserved: guard.reserve(0.003) });
+    stream.feedTokens(500);
+    expect(guard.remainingUsd).toBeCloseTo(0.003, 12);
+    stream.finish({ completionTokens: 200 });
+    expect(guard.remainingUsd).toBeCloseTo(0.006, 12);
+    guard.release(other);
+    expect(guard.remainingUsd).toBeCloseTo(0.008, 12);
+  });
+
+  it.each(["mutate", "delete", "invalidate"])("settles captured override pricing after callers %s it", change => {
+    const guard = makeGuard(1);
+    if (!guard.priceOverrides) throw new Error("Expected overrides");
+    guard.priceOverrides[MODEL] = { ...price };
+    const stream = new StreamGuard(guard, MODEL, { reserved: guard.reserve(0.1) });
+    stream.feedTokens(900);
+    if (change === "delete") delete guard.priceOverrides[MODEL];
+    else guard.priceOverrides[MODEL].outputCostPerToken = change === "mutate" ? 0.001 : NaN;
+    expect(stream.finish()).toBeCloseTo(0.009, 12);
+    expect(guard.remainingUsd).toBeCloseTo(0.991, 12);
+    expect(guard.spendLog).toHaveLength(1);
+  });
+
+  it.each([0, 0.002, 0.0095])("includes active stream accrual in admission with a $%s hold", held => {
+    const guard = makeGuard();
+    const stream = new StreamGuard(guard, MODEL, { reserved: guard.reserve(held) });
+    stream.feedTokens(900);
+    expect(guard.remainingUsd).toBeCloseTo(held === 0.0095 ? 0.0005 : 0.001, 12);
+    expect(() => guard.check(0.002)).toThrow(BudgetExceeded);
+    expect(() => guard.reserve(0.002)).toThrow(BudgetExceeded);
+    stream.close();
+    expect(guard.remainingUsd).toBeCloseTo(0.001, 12);
+    const next = guard.reserve(0.0005);
+    guard.release(next);
+  });
+
   it("meters a primitive string and settles its reservation", () => {
     const guard = makeGuard(1);
     const reserved = guard.reserve(0.1);
@@ -117,7 +166,7 @@ describe("StreamGuard", () => {
     a.feedTokens(500); // $0.005 accrued, including $0.003 beyond its hold
     b.feedTokens(500); // joint $0.010 fits, without double-counting either hold
     expect(() => a.feedTokens(10)).toThrow(BudgetExceeded);
-    expect(guard.remainingUsd).toBeCloseTo(0.0009, 12); // b still holds $0.004
+    expect(guard.remainingUsd).toBe(0); // b's unsettled overage also consumes headroom
     b.close();
     expect(guard.spentUsd).toBeCloseTo(0.0101, 12);
     expect(guard.spendLog).toHaveLength(2);
