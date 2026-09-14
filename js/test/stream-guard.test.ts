@@ -8,6 +8,27 @@ const makeGuard = (limit = 0.01) => new BudgetGuard(limit, {
 });
 
 describe("StreamGuard", () => {
+  it.each(["finish", "close"] as const)("keeps a fail-open stream unmetered at %s after pricing is added", exit => {
+    const overrides: Record<string, typeof price> = {};
+    const guard = new BudgetGuard(1, { failClosed: false, priceOverrides: overrides });
+    const reserved = guard.reserve(0.1, { estimatedTokens: 100 });
+    const stream = new StreamGuard(guard, MODEL, { reserved });
+    stream.feedTokens(10);
+    overrides[MODEL] = { inputCostPerToken: 0, outputCostPerToken: 1 };
+    stream.feedTokens(10); // New pricing must not activate enforcement either.
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      if (exit === "finish") expect(stream.finish({ completionTokens: 30 })).toBe(0);
+      else stream.close();
+      stream.close(); // Cleanup stays idempotent.
+      expect(guard.spentUsd).toBe(0);
+      expect(guard.spendLog).toHaveLength(0);
+      expect(guard.remainingUsd).toBe(1);
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(() => stream.feedTokens(1)).toThrow(/settled/);
+    } finally { warning.mockRestore(); }
+  });
+
   it("keeps bundled rates when an override is added before settlement", () => {
     const guard = makeGuard(1);
     const expected = guard.estimateCall("gpt-4o", 100, 20);

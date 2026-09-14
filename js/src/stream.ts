@@ -114,9 +114,15 @@ export class StreamGuard {
     this.tokens = completion;
     this.closed = true;
     try {
+      if (this.priced === null) {
+        // A stream admitted fail-open stays unmetered even if prices change.
+        this.guard.release(this.reserved);
+        console.warn(`Cannot price model '${this.model}' at stream construction; skipping streaming spend.`);
+        return 0;
+      }
       return this.guard.settle(this.model, prompt, completion, {
         reserved: this.reserved,
-        price: this.priced ?? this.price,
+        price: this.priced,
         label: this.label,
       });
     } finally {
