@@ -8,7 +8,7 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — js 0.16.1
+## Unreleased — js 0.16.0
 
 ### Added (js)
 
