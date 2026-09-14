@@ -20,6 +20,7 @@ assert.equal(guard.remainingUsd, 0.001);
 console.log("PASS: oversized first request blocked before generation; $0 spent.");
 
 let sourceClosed = false;
+/** Simulate a runaway provider and expose whether cancellation closes it. */
 async function* response() {
   try {
     for (;;) yield "a".repeat(40); // ten estimated tokens, $0.0001 per chunk

@@ -8,6 +8,46 @@ const makeGuard = (limit = 0.01) => new BudgetGuard(limit, {
 });
 
 describe("StreamGuard", () => {
+  it("meters a primitive string and settles its reservation", () => {
+    const guard = makeGuard(1);
+    const reserved = guard.reserve(0.1);
+    expect([...guardStream(guard, MODEL, "hello", { reserved })]).toEqual(["h", "e", "l", "l", "o"]);
+    expect(guard.spentUsd).toBeCloseTo(0.00005, 12);
+    expect(guard.remainingUsd).toBeCloseTo(0.99995, 12);
+    expect(guard.spendLog).toHaveLength(1);
+    expect(guard.spendLog[0].completionTokens).toBe(5);
+  });
+
+  it("releases the reservation when a primitive string is empty", () => {
+    const guard = makeGuard(1);
+    expect([...guardStream(guard, MODEL, "", { reserved: guard.reserve(0.1) })]).toEqual([]);
+    expect(guard.spentUsd).toBe(0);
+    expect(guard.remainingUsd).toBe(1);
+  });
+
+  it("settles a primitive string after an early consumer break", () => {
+    const guard = makeGuard(1);
+    for (const chunk of guardStream(guard, MODEL, "hello", { reserved: guard.reserve(0.1) })) {
+      expect(chunk).toBe("h");
+      break;
+    }
+    expect(guard.remainingUsd).toBeCloseTo(0.99999, 12);
+    expect(guard.spendLog).toHaveLength(1);
+    expect(guard.spendLog[0].completionTokens).toBe(1);
+  });
+
+  it("records the crossing character before interrupting a primitive string", () => {
+    const guard = makeGuard(0.00002);
+    const seen: string[] = [];
+    expect(() => {
+      for (const chunk of guardStream(guard, MODEL, "hello", { reserved: guard.reserve(0.00001) })) seen.push(chunk);
+    }).toThrow(BudgetExceeded);
+    expect(seen).toEqual(["h", "e"]);
+    expect(guard.spentUsd).toBeCloseTo(0.00003, 12);
+    expect(guard.spendLog).toHaveLength(1);
+    expect(guard.spendLog[0].completionTokens).toBe(3);
+  });
+
   it("captures price, tokenizer and label when constructed", () => {
     const guard = makeGuard(1);
     const options = {

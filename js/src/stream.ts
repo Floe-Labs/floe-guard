@@ -24,6 +24,7 @@ export function approxTokens(text: string): number {
   return text ? Math.max(1, Math.floor(Array.from(text).length / 4)) : 0;
 }
 
+/** Normalize finite usage counts to nonnegative integers, as in Python. */
 function tokenCount(value: number): number {
   if (!Number.isFinite(value)) throw new RangeError("token count must be finite");
   return Math.max(0, Math.trunc(value));
@@ -45,6 +46,7 @@ export class StreamGuard {
   private readonly label: string | undefined;
   private readonly countTokens: (delta: string) => number;
 
+  /** Capture pricing and release the supplied reservation if validation fails. */
   constructor(
     private readonly guard: BudgetGuard,
     private readonly model: string,
@@ -148,6 +150,7 @@ export function guardStream<C>(
 export function guardStream<C>(
   guard: BudgetGuard, model: string, chunks: Iterable<C> | AsyncIterable<C>, options?: GuardStreamOptions<C>,
 ): IterableIterator<C> | AsyncIterableIterator<C>;
+/** Wrap a sync or async source, settling generated usage when iteration exits. */
 export function guardStream<C>(
   guard: BudgetGuard, model: string, chunks: Iterable<C> | AsyncIterable<C>, options: GuardStreamOptions<C> = {},
 ): IterableIterator<C> | AsyncIterableIterator<C> {
@@ -156,6 +159,7 @@ export function guardStream<C>(
     if (typeof chunk !== "string") throw new TypeError("guardStream needs getText for non-string chunks");
     return chunk;
   });
+  /** Meter synchronous chunks and settle on completion, break or error. */
   function* run(source: Iterable<C>): IterableIterator<C> {
     try {
       for (const chunk of source) {
@@ -166,6 +170,7 @@ export function guardStream<C>(
       stream.close();
     }
   }
+  /** Meter asynchronous chunks and settle on completion, break or error. */
   async function* runAsync(source: AsyncIterable<C>): AsyncIterableIterator<C> {
     try {
       for await (const chunk of source) {
@@ -176,5 +181,7 @@ export function guardStream<C>(
       stream.close();
     }
   }
-  return Symbol.asyncIterator in chunks ? runAsync(chunks) : run(chunks);
+  return Symbol.asyncIterator in Object(chunks)
+    ? runAsync(chunks as AsyncIterable<C>)
+    : run(chunks as Iterable<C>);
 }

@@ -1,6 +1,6 @@
 {
   "__meta__": {
-    "generated_at": "2026-09-07",
+    "generated_at": "2026-09-14",
     "source": "LiteLLM public model prices (bundled snapshot); voice rates verified from vendor list pages"
   },
   "chat-latest": {
@@ -257,6 +257,12 @@
     "mode": "chat",
     "cache_read_input_token_cost": 2e-7,
     "cache_creation_input_token_cost": 0.0000025
+  },
+  "computer-use-preview": {
+    "input_cost_per_token": 0.000003,
+    "output_cost_per_token": 0.000012,
+    "litellm_provider": "openai",
+    "mode": "chat"
   },
   "daybreak-blue-latest": {
     "input_cost_per_token": 0.000004,
