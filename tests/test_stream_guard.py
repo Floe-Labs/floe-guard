@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from threading import Event
 from typing import Any
 
 import pytest
@@ -21,6 +23,51 @@ from floe_guard.integrations.litellm import _estimate_request
 from floe_guard.stream import approx_tokens
 
 MODEL = "gpt-4o"  # $2.5e-6/input token, $1e-5/output token
+
+
+@pytest.mark.parametrize("held", [0.0, 0.002, 0.006])
+def test_admission_during_stream_settlement(held: float) -> None:
+    """A concurrent call must see stream spend once, including during cleanup."""
+    settled, resume, admitting = Event(), Event(), Event()
+
+    class PausedGuard(BudgetGuard):
+        def settle(self, *args: Any, **kwargs: Any) -> float:
+            cost = super().settle(*args, **kwargs)
+            settled.set()
+            assert resume.wait(5)
+            return cost
+
+    guard = PausedGuard(0.01, on_block=lambda *_: None)
+    stream = StreamGuard(guard, MODEL, reserved=guard.reserve(held))
+    stream.feed_tokens(400)  # $0.004, leaving $0.006 after settlement.
+
+    def admit() -> tuple[float, bool]:
+        admitting.set()
+        remaining = guard.remaining_usd
+        try:
+            hold = guard.reserve_tool(0.003)
+        except BudgetExceeded:
+            return remaining, False
+        guard.release(hold)
+        return remaining, True
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        finishing = pool.submit(stream.finish)
+        try:
+            assert settled.wait(5)
+            admission = pool.submit(admit)
+            assert admitting.wait(5)
+            try:
+                admission.result(timeout=0.1)
+            except TimeoutError:
+                pass  # Atomic settlement may hold admission until cleanup completes.
+        finally:
+            resume.set()
+        assert finishing.result(timeout=5) == pytest.approx(0.004)
+        remaining, accepted = admission.result(timeout=5)
+    assert remaining == pytest.approx(0.006)
+    assert accepted
+    assert len(guard.spend_log) == 1
 
 
 @pytest.mark.parametrize("held", [0.0, 0.002, 0.0095])

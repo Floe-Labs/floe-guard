@@ -371,7 +371,7 @@ class BudgetGuard:
         # Per-tool running totals (settle_tool/record_tool) — the tool side of
         # the one shared ceiling, exposed via the tool_costs property.
         self._tool_costs: dict[str, float] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         # Adopt the store's authoritative snapshot for today's window at startup,
         # so a fresh process (cron/serverless) continues where the last left off.
         if self._store is not None:

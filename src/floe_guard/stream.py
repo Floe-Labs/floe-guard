@@ -175,20 +175,20 @@ class StreamGuard:
 
     def _settle(self) -> float:
         self._closed = True
-        try:
-            return self._guard.settle(
-                self._model,
-                self._prompt_tokens,
-                self._completion_tokens,
-                reserved=self._reserved,
-                price=self._price,
-                label=self._label,
-            )
-        finally:
-            # Settle moved the accrual into spent_usd (or skipped it, fail-open)
-            # — either way the registry entry must go, even if settle raised,
-            # or a phantom accrual would throttle every other stream forever.
-            self._guard._stream_unregister(self._key)
+        # Transfer accrual to settled spend atomically; both calls re-enter the lock.
+        with self._guard._lock:
+            try:
+                return self._guard.settle(
+                    self._model,
+                    self._prompt_tokens,
+                    self._completion_tokens,
+                    reserved=self._reserved,
+                    price=self._price,
+                    label=self._label,
+                )
+            finally:
+                # Remove accrual even when settlement raises or skips an unpriced call.
+                self._guard._stream_unregister(self._key)
 
     def __enter__(self) -> StreamGuard:
         return self
