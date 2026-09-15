@@ -25,6 +25,7 @@ MODEL = "gpt-4o"  # $2.5e-6/input token, $1e-5/output token
 
 @pytest.mark.parametrize("held", [0.0, 0.002, 0.0095])
 def test_stream_accrual_counts_in_ordinary_admission(held: float) -> None:
+    """Ordinary calls must not reuse budget already consumed by an active stream."""
     guard = BudgetGuard(limit_usd=0.01, on_block=lambda *_: None)
     with StreamGuard(guard, MODEL, reserved=guard.reserve(held)) as stream:
         stream.feed_tokens(900)  # $0.009 has already been generated.
@@ -42,6 +43,7 @@ def test_stream_accrual_counts_in_ordinary_admission(held: float) -> None:
 
 
 def test_final_usage_replaces_accrual_without_losing_other_reservations() -> None:
+    """Reconciliation frees the stream's headroom while preserving other holds."""
     guard = BudgetGuard(limit_usd=0.01)
     other = guard.reserve_tool(0.002)
     with StreamGuard(guard, MODEL, reserved=guard.reserve(0.003)) as stream:
