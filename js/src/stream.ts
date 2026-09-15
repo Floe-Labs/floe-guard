@@ -106,10 +106,12 @@ export class StreamGuard {
   }
 
   /** Reconcile estimates to provider usage, or settle accumulated estimates. */
-  finish(usage: { promptTokens?: number; completionTokens?: number } = {}): number {
+  finish(usage: { promptTokens?: number; completionTokens?: number; cacheReadInputTokens?: number } = {}): number {
     if (this.closed) throw new Error("stream already settled");
     const prompt = tokenCount(usage.promptTokens ?? this.promptTokens);
     const completion = tokenCount(usage.completionTokens ?? this.tokens);
+    // Cached tokens are additive: promptTokens contains only uncached input.
+    const cacheRead = tokenCount(usage.cacheReadInputTokens ?? 0);
     this.promptTokens = prompt;
     this.tokens = completion;
     this.closed = true;
@@ -123,6 +125,7 @@ export class StreamGuard {
       return this.guard.settle(this.model, prompt, completion, {
         reserved: this.reserved,
         price: this.priced,
+        cacheReadInputTokens: cacheRead,
         label: this.label,
       });
     } finally {
