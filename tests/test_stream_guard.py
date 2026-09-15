@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from threading import Event
 from typing import Any
 
 import pytest
@@ -21,6 +23,83 @@ from floe_guard.integrations.litellm import _estimate_request
 from floe_guard.stream import approx_tokens
 
 MODEL = "gpt-4o"  # $2.5e-6/input token, $1e-5/output token
+
+
+@pytest.mark.parametrize("held", [0.0, 0.002, 0.006])
+def test_admission_during_stream_settlement(held: float) -> None:
+    """A concurrent call must see stream spend once, including during cleanup."""
+    settled, resume, admitting = Event(), Event(), Event()
+
+    class PausedGuard(BudgetGuard):
+        def settle(self, *args: Any, **kwargs: Any) -> float:
+            cost = super().settle(*args, **kwargs)
+            settled.set()
+            assert resume.wait(5)
+            return cost
+
+    guard = PausedGuard(0.01, on_block=lambda *_: None)
+    stream = StreamGuard(guard, MODEL, reserved=guard.reserve(held))
+    stream.feed_tokens(400)  # $0.004, leaving $0.006 after settlement.
+
+    def admit() -> tuple[float, bool]:
+        admitting.set()
+        remaining = guard.remaining_usd
+        try:
+            hold = guard.reserve_tool(0.003)
+        except BudgetExceeded:
+            return remaining, False
+        guard.release(hold)
+        return remaining, True
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        finishing = pool.submit(stream.finish)
+        try:
+            assert settled.wait(5)
+            admission = pool.submit(admit)
+            assert admitting.wait(5)
+            try:
+                admission.result(timeout=0.1)
+            except TimeoutError:
+                pass  # Atomic settlement may hold admission until cleanup completes.
+        finally:
+            resume.set()
+        assert finishing.result(timeout=5) == pytest.approx(0.004)
+        remaining, accepted = admission.result(timeout=5)
+    assert remaining == pytest.approx(0.006)
+    assert accepted
+    assert len(guard.spend_log) == 1
+
+
+@pytest.mark.parametrize("held", [0.0, 0.002, 0.0095])
+def test_stream_accrual_counts_in_ordinary_admission(held: float) -> None:
+    """Ordinary calls must not reuse budget already consumed by an active stream."""
+    guard = BudgetGuard(limit_usd=0.01, on_block=lambda *_: None)
+    with StreamGuard(guard, MODEL, reserved=guard.reserve(held)) as stream:
+        stream.feed_tokens(900)  # $0.009 has already been generated.
+        assert guard.remaining_usd == pytest.approx(0.0005 if held == 0.0095 else 0.001)
+        with pytest.raises(BudgetExceeded):
+            guard.check(0.002)
+        with pytest.raises(BudgetExceeded):
+            guard.reserve(0.002)
+        with pytest.raises(BudgetExceeded):
+            guard.reserve_tool(0.002)
+    assert guard.remaining_usd == pytest.approx(0.001)
+    reserved = guard.reserve_tool(0.0005)
+    guard.settle_tool("search", 0.0005, reserved=reserved)
+    assert guard.spent_usd == pytest.approx(0.0095)
+
+
+def test_final_usage_replaces_accrual_without_losing_other_reservations() -> None:
+    """Reconciliation frees the stream's headroom while preserving other holds."""
+    guard = BudgetGuard(limit_usd=0.01)
+    other = guard.reserve_tool(0.002)
+    with StreamGuard(guard, MODEL, reserved=guard.reserve(0.003)) as stream:
+        stream.feed_tokens(500)
+        assert guard.remaining_usd == pytest.approx(0.003)
+        stream.finish(completion_tokens=200)
+    assert guard.remaining_usd == pytest.approx(0.006)
+    guard.release(other)
+    assert guard.remaining_usd == pytest.approx(0.008)
 
 
 # ── estimate_call ───────────────────────────────────────────────────────────────

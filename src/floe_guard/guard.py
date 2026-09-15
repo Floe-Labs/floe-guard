@@ -371,7 +371,7 @@ class BudgetGuard:
         # Per-tool running totals (settle_tool/record_tool) — the tool side of
         # the one shared ceiling, exposed via the tool_costs property.
         self._tool_costs: dict[str, float] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         # Adopt the store's authoritative snapshot for today's window at startup,
         # so a fresh process (cron/serverless) continues where the last left off.
         if self._store is not None:
@@ -868,11 +868,14 @@ class BudgetGuard:
 
     @property
     def remaining_usd(self) -> float:
-        """USD left before the ceiling, net of in-flight reservations (never negative)."""
+        """USD left, net of reservations and unsettled stream overages (never negative)."""
         with self._lock:
             if self._store is not None:
                 self._refresh_persistent_state_locked()
-            return max(0.0, self.limit_usd - self.spent_usd - self._reserved)
+            return max(
+                0.0,
+                self.limit_usd - self.spent_usd - self._reserved - self._stream_overage_locked(),
+            )
 
     @property
     def tool_costs(self) -> dict[str, float]:
@@ -1316,6 +1319,14 @@ class BudgetGuard:
             step.spent_usd += cost
             step.spent_tokens += tokens
 
+    def _stream_overage_locked(self, exclude: object | None = None) -> float:
+        """Accrued costs beyond stream holds. Caller must hold ``self._lock``."""
+        return sum(
+            max(0.0, accrued - held)
+            for key, (accrued, held) in self._stream_costs.items()
+            if key is not exclude
+        )
+
     def _stream_register(self, reserved: float) -> object:
         """Register an active stream (see :class:`~floe_guard.stream.StreamGuard`)
         and return its registry key. Active streams' accrued-but-unsettled costs
@@ -1343,11 +1354,7 @@ class BudgetGuard:
         with self._lock:
             own_reserved = self._stream_costs.get(key, (0.0, 0.0))[1]
             self._stream_costs[key] = (cumulative_call_cost, own_reserved)
-            other_overage = sum(
-                max(0.0, accrued - held)
-                for k, (accrued, held) in self._stream_costs.items()
-                if k is not key
-            )
+            other_overage = self._stream_overage_locked(exclude=key)
             others = self.spent_usd + max(0.0, self._reserved - own_reserved) + other_overage
             return others + cumulative_call_cost > self.limit_usd + _EPS
 
@@ -1372,7 +1379,7 @@ class BudgetGuard:
         """
         # Aggregate USD — same comparison the original _would_cross used. The
         # message/callback report the accrued total (spent_usd), as _block did.
-        committed = self.spent_usd + self._reserved
+        committed = self.spent_usd + self._reserved + self._stream_overage_locked()
         if committed > self.limit_usd - _EPS or committed + estimate_usd > self.limit_usd + _EPS:
             return ("usd", "aggregate", self.spent_usd, self.limit_usd)
         # Aggregate tokens (integers — no epsilon needed).

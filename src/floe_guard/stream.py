@@ -62,6 +62,10 @@ class StreamGuard:
     Not thread-safe itself (a stream is consumed sequentially); the underlying
     guard accounting stays lock-protected, so parallel streams each wrap their
     own ``StreamGuard`` against the same guard.
+
+    Persistent stores are not supported: active stream accrual is process-local
+    and cannot be enforced atomically across store clients. Construction raises
+    ``ValueError`` after releasing ``reserved`` when a store is configured.
     """
 
     def __init__(
@@ -80,15 +84,17 @@ class StreamGuard:
         # time. Accepts a plain float (USD-only) OR a BudgetReservation from a
         # token/step-aware reserve() — a token-aware handle used to crash here.
         reserved_usd = guard._reserved_usd_of(reserved)
+        if guard._store is not None:
+            guard.release(reserved)
+            raise ValueError(
+                "StreamGuard is not supported with a persistent store: active stream "
+                "accrual cannot be enforced across processes. Use an in-memory BudgetGuard."
+            )
         self._guard = guard
         self._model = model
         self._prompt_tokens = max(0, int(prompt_tokens))
-        # Keep the ORIGINAL handle so settle()/release() drain the token hold too
-        # AND preserve a persistent handle's issuing-window provenance — coercing
-        # to a plain float here would make a stream that crosses midnight settle
-        # against the new UTC day's empty reservation row. Keep the USD amount for
-        # the stream-cost registry (mid-stream enforcement is USD-only; a stream's
-        # token hold is reconciled at settle()).
+        # Keep the original handle so settle()/release() drain the token hold too.
+        # The stream-cost registry tracks USD only; tokens reconcile at settle().
         self._reserved = reserved
         self._reserved_usd = reserved_usd
         self._price = price
@@ -169,20 +175,20 @@ class StreamGuard:
 
     def _settle(self) -> float:
         self._closed = True
-        try:
-            return self._guard.settle(
-                self._model,
-                self._prompt_tokens,
-                self._completion_tokens,
-                reserved=self._reserved,
-                price=self._price,
-                label=self._label,
-            )
-        finally:
-            # Settle moved the accrual into spent_usd (or skipped it, fail-open)
-            # — either way the registry entry must go, even if settle raised,
-            # or a phantom accrual would throttle every other stream forever.
-            self._guard._stream_unregister(self._key)
+        # Transfer accrual to settled spend atomically; both calls re-enter the lock.
+        with self._guard._lock:
+            try:
+                return self._guard.settle(
+                    self._model,
+                    self._prompt_tokens,
+                    self._completion_tokens,
+                    reserved=self._reserved,
+                    price=self._price,
+                    label=self._label,
+                )
+            finally:
+                # Remove accrual even when settlement raises or skips an unpriced call.
+                self._guard._stream_unregister(self._key)
 
     def __enter__(self) -> StreamGuard:
         return self
@@ -224,6 +230,9 @@ def guard_stream(
     time. Once you start iterating, the wrapper owns ``reserved`` and settles
     or releases it on every exit path; a returned-but-never-iterated stream
     leaves the handle with you (release it yourself).
+
+    Persistent stores are rejected eagerly with ``ValueError``, releasing any
+    supplied reservation before consuming chunks, as with :class:`StreamGuard`.
     """
     sg = StreamGuard(
         guard,
