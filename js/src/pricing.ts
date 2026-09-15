@@ -16,6 +16,8 @@ import costMapJson from "./cost_map.json";
 export interface ManualPrice {
   inputCostPerToken: number;
   outputCostPerToken: number;
+  /** Optional cache-read rate; absent rates use the standard multiplier. */
+  cacheReadCostPerToken?: number;
 }
 
 /** A resolved per-token price plus where it came from. */
@@ -162,6 +164,7 @@ export function resolvePrice(
               inputCostPerToken: ov.inputCostPerToken,
               outputCostPerToken: ov.outputCostPerToken,
               source: "override",
+              cacheReadCostPerToken: finiteOrNone(ov.cacheReadCostPerToken),
             };
           }
           return null;

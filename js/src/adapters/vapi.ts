@@ -13,8 +13,9 @@
  *
  *   1. **Guard the model turn** — {@link VapiBudgetGuard.guardCompletion} (JSON)
  *      and {@link VapiBudgetGuard.guardStream} (SSE) reserve the estimated cost
- *      BEFORE the upstream call, meter the **real** `usage` after, and release the
- *      hold on error/abort. Reserving first is what refuses a turn before its spend
+ *      BEFORE the upstream call and meter the **real** `usage` after. Streaming
+ *      also checks generated deltas and records partial spend on error/abort.
+ *      Reserving first is what refuses a turn before its spend
  *      lands: an over-budget turn throws {@link BudgetExceeded} instead of proxying.
  *   2. **Admit the call** — {@link VapiBudgetGuard.assistantRequest} answers Vapi's
  *      `assistant-request` webhook from the remaining budget (exhausted → a spoken
@@ -66,17 +67,18 @@
  * final chunk (empty `choices`) carries the token `usage`. This adapter meters the
  * model turn from that real `usage`; if a stream ends with no usage anywhere,
  * {@link VapiBudgetGuard.guardStream} **fails loudly** ({@link VapiUsageMissingError})
- * and releases the hold rather than silently metering the turn at $0. Set
+ * after recording estimated partial spend and settling the hold. Set
  * `include_usage: true` on your upstream streaming call.
  *
- * Scope is strictly **pre-call admission plus per-turn settlement**. There is no
- * mid-call intervention: an admitted turn runs to completion; nothing here cuts a
- * turn — or a stream — off partway.
+ * Streaming enforces the LLM leg chunk-wise via StreamGuard. Closing the source
+ * iterator requests cancellation; actual provider cancellation depends on the
+ * source. This does not end the Vapi call or stop STT/TTS/telephony billing.
  */
 
 import { BudgetExceeded, FloeGuardError } from "../errors.js";
 import { vapi as vapiGate } from "../gates.js";
 import type { BudgetGuard, ReservationHandle } from "../guard.js";
+import { StreamGuard } from "../stream.js";
 import { priceVoiceLeg } from "../voice-pricing.js";
 
 /**
@@ -102,6 +104,16 @@ export interface ChatCompletionLike {
  */
 export interface ChatCompletionChunkLike {
   readonly usage?: OpenAiUsageLike | null;
+  readonly choices?: ReadonlyArray<{
+    readonly delta?: {
+      readonly content?: string | null;
+      readonly refusal?: string | null;
+      readonly function_call?: { readonly name?: string; readonly arguments?: string };
+      readonly tool_calls?: ReadonlyArray<{
+        readonly function?: { readonly name?: string; readonly arguments?: string };
+      }>;
+    };
+  }>;
 }
 
 /**
@@ -109,7 +121,7 @@ export interface ChatCompletionChunkLike {
  *
  * Almost always the fix is `stream_options: { include_usage: true }` on the
  * upstream streaming request (OpenAI omits `usage` from SSE without it). We refuse
- * rather than meter the turn at $0 — "we cannot cap what we cannot measure". Extends
+ * rather than claim estimated partial spend is authoritative usage. Extends
  * {@link FloeGuardError} so it is caught by the same family as the priced errors;
  * it is adapter-local (not part of the shared `errors.ts` cross-language family).
  */
@@ -121,7 +133,7 @@ export class VapiUsageMissingError extends FloeGuardError {
       `Vapi custom-LLM stream for model '${model}' ended with no token usage to ` +
         `settle against. OpenAI-style SSE only includes usage when the upstream ` +
         `request sets stream_options:{ include_usage: true } — set it, or the guard ` +
-        `cannot meter the turn (it refuses rather than accrue a silent $0).`,
+        `cannot reconcile the turn to provider usage. Streaming records partial estimates.`,
     );
     this.name = "VapiUsageMissingError";
     this.model = model;
@@ -159,7 +171,7 @@ type StreamSource<C> = () => AsyncIterable<C> | Promise<AsyncIterable<C>>;
 
 /**
  * Enforce a {@link BudgetGuard} ceiling on a Vapi custom-LLM endpoint: reserve
- * before the model turn, settle on the real OpenAI `usage`, release on error/abort,
+ * before the model turn, enforce streaming deltas, settle on real OpenAI `usage`,
  * and meter the STT/TTS/telephony legs the proxy never sees.
  */
 export class VapiBudgetGuard {
@@ -250,65 +262,94 @@ export class VapiBudgetGuard {
   }
 
   /**
-   * Guard a **streaming** model turn: reserve, then wrap the SSE chunk stream so it
-   * settles on the final chunk's `usage`, releasing the hold on error or early abort.
+   * Guard a **streaming** model turn: reserve, meter before forwarding each chunk,
+   * then reconcile estimates to the final chunk's `usage` (including cached input).
    *
    * Reserving first throws {@link BudgetExceeded} BEFORE the stream is opened when
    * the turn would cross the ceiling (this method throws synchronously — the handler
-   * learns immediately, before piping anything to Vapi). Chunks pass through
-   * untouched; the returned async iterable is what you forward to the SSE response.
+   * learns immediately, before piping anything to Vapi). Unpriceable models are
+   * also rejected eagerly unless fail-open. A crossing chunk is billed but not
+   * forwarded; BudgetExceeded is raised during iteration after partial settlement.
    *
    * **Usage requirement:** OpenAI SSE only carries `usage` when the upstream request
    * set `stream_options: { include_usage: true }`. A stream that ends with no usage
-   * anywhere fails loudly ({@link VapiUsageMissingError}) and releases the hold — it
-   * is not metered at $0. Breaking out of the consuming loop early (abort/interrupt)
-   * also releases the hold; nothing is metered for an aborted turn.
+   * anywhere fails loudly ({@link VapiUsageMissingError}) after recording estimated
+   * partial spend. Error/early-break paths also settle generated usage. Text and
+   * tool-call fragments use ~4 characters/token by default, overridable with
+   * `countTokens`. Supply `promptTokens` for input accounting before final usage.
    *
    * The returned iterable holds the reservation until it is consumed to completion,
-   * or returned/aborted — pipe it straight to the response so the hold cannot leak.
+   * or explicitly returned/thrown into, including before its first pull. Abandoning
+   * an iterator without closing it still holds its reservation.
    */
   guardStream<C extends ChatCompletionChunkLike>(
     run: StreamSource<C>,
-    options: { model?: string; estimatedCost?: number } = {},
+    options: {
+      model?: string;
+      estimatedCost?: number;
+      /** Input-token estimate for partial accounting; defaults to zero. */
+      promptTokens?: number;
+      /** Tokenizer for visible output deltas; defaults to approxTokens. */
+      countTokens?: (delta: string) => number;
+    } = {},
   ): AsyncIterableIterator<C> {
     const model = this.resolveModel(options.model);
     // Eager reserve (outside the generator) so a block throws synchronously here,
     // not lazily on first pull — the handler refuses the turn before streaming.
     const reserved = this.guard.reserve(options.estimatedCost);
-    return this.iterateStream(run, model, reserved);
+    const meter = new StreamGuard(this.guard, model, {
+      reserved, promptTokens: options.promptTokens, countTokens: options.countTokens,
+    });
+    return this.enforceStream(run, model, reserved, meter);
   }
 
-  private async *iterateStream<C extends ChatCompletionChunkLike>(
-    run: StreamSource<C>,
-    model: string,
-    reserved: ReservationHandle,
+  private enforceStream<C extends ChatCompletionChunkLike>(
+    run: StreamSource<C>, model: string, reserved: ReservationHandle, meter: StreamGuard,
   ): AsyncIterableIterator<C> {
-    let usage: { prompt: number; completion: number; cacheRead: number } | null = null;
-    let settled = false;
-    try {
-      const stream = await run();
-      for await (const chunk of stream) {
-        // Last non-null usage wins — the final (empty-choices) chunk carries it.
-        usage = readUsage(chunk.usage) ?? usage;
-        yield chunk;
+    const guard = this.guard;
+    let started = false;
+    let released = false;
+    async function* iterate(): AsyncIterableIterator<C> {
+      started = true;
+      let opened = false;
+      let settled = false;
+      try {
+        const source = await run();
+        opened = true;
+        for await (const chunk of source) {
+          const usage = readUsage(chunk.usage);
+          if (usage !== null) {
+            // Own cleanup before settlement, which releases even if pricing fails.
+            settled = true;
+            meter.finish({
+              promptTokens: usage.prompt, completionTokens: usage.completion,
+              cacheReadInputTokens: usage.cacheRead,
+            });
+            if (guard.spentUsd > guard.limitUsd + 1e-12) guard._blockStream();
+            yield chunk;
+            // OpenAI's usage-bearing chunk is final. Close the source on resumption.
+            return;
+          }
+          meter.feedText(chunkText(chunk));
+          yield chunk;
+        }
+        throw new VapiUsageMissingError(model);
+      } finally {
+        if (!opened) guard.release(reserved);
+        else if (!settled) meter.close();
       }
-      // Clean end: settle on real usage, or fail loudly if none was ever seen.
-      if (usage === null) throw new VapiUsageMissingError(model);
-      // Mark settled BEFORE the call: guard.settle owns the reservation on every
-      // exit — it releases the hold on its own failure paths (unpriceable model,
-      // priceTokens error) before throwing — so the finally must not release it a
-      // second time (a double release drives `reserved` negative and weakens the
-      // ceiling for other in-flight turns).
-      settled = true;
-      this.guard.settle(model, usage.prompt, usage.completion, {
-        reserved,
-        cacheReadInputTokens: usage.cacheRead,
-      });
-    } finally {
-      // Any exit before settle — error mid-stream, missing usage, or an early
-      // consumer abort (for-await break -> generator.return()) — frees the hold.
-      if (!settled) this.guard.release(reserved);
     }
+    const iterator = iterate();
+    // An async generator's finally does not run for return()/throw() before next().
+    const releaseUnstarted = () => {
+      if (!started && !released) { released = true; guard.release(reserved); }
+    };
+    return {
+      next: () => iterator.next(),
+      return: value => { releaseUnstarted(); return iterator.return!(value); },
+      throw: error => { releaseUnstarted(); return iterator.throw!(error); },
+      [Symbol.asyncIterator]() { return this; },
+    };
   }
 
   /** Accrue STT spend for `seconds` of transcribed audio (per second). See {@link meterTelephony}. */
@@ -393,4 +434,22 @@ function readUsage(
     typeof cachedRaw === "number" && Number.isFinite(cachedRaw) ? Math.max(0, cachedRaw) : 0;
   const cacheRead = Math.min(cached, promptClamped);
   return { prompt: promptClamped - cacheRead, completion: completionClamped, cacheRead };
+}
+
+/** Visible generated text across all choices, including tool-call fragments. */
+function chunkText(chunk: ChatCompletionChunkLike): string {
+  let text = "";
+  for (const choice of chunk.choices ?? []) {
+    const delta = choice.delta;
+    if (!delta) continue;
+    text += delta.content ?? "";
+    text += delta.refusal ?? "";
+    text += delta.function_call?.name ?? "";
+    text += delta.function_call?.arguments ?? "";
+    for (const call of delta.tool_calls ?? []) {
+      text += call.function?.name ?? "";
+      text += call.function?.arguments ?? "";
+    }
+  }
+  return text;
 }
