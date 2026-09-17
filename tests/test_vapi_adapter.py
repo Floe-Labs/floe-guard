@@ -197,15 +197,15 @@ async def test_releases_hold_when_caller_aborts_stream_early() -> None:
         lambda: sse_stream(10, {"prompt_tokens": 1000, "completion_tokens": 500}), model="m"
     )
     # Breaking off the async-for and closing the generator unwinds into its
-    # finally, which releases the still-open hold. (In Python a bare break
+    # finally, which settles partial usage and frees the hold. (In Python a bare break
     # finalizes the generator only on a later loop iteration — close it
     # explicitly so the hold clears deterministically.)
     async for _ in stream:
         break
     await stream.aclose()
 
-    assert guard.remaining_usd == pytest.approx(after_turn1)
-    assert guard.advisory().spent_usd == pytest.approx(0.002)  # aborted turn metered nothing
+    assert guard.remaining_usd == pytest.approx(after_turn1 - PRICE.output_cost_per_token)
+    assert guard.advisory().spent_usd == pytest.approx(0.002 + PRICE.output_cost_per_token)
 
 
 # ── missing usage fails loudly ─────────────────────────────────────────────────
@@ -231,8 +231,8 @@ async def test_missing_usage_stream_fails_loudly() -> None:
     stream = budget.guard_stream(lambda: sse_stream(3), model="m")  # no usage chunk
     with pytest.raises(VapiUsageMissingError):
         await drain_stream(stream)
-    assert guard.advisory().spent_usd == 0.0  # nothing metered
-    assert guard.remaining_usd == pytest.approx(1.0)  # hold released
+    assert guard.advisory().spent_usd == pytest.approx(3 * PRICE.output_cost_per_token)
+    assert guard.remaining_usd == pytest.approx(1.0 - 3 * PRICE.output_cost_per_token)
 
 
 # ── assistant-request admission via gates.vapi ────────────────────────────────
@@ -303,7 +303,7 @@ def test_fails_closed_on_unpriceable_vendor(kwarg: str, mode: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_double_release_when_streaming_settle_throws() -> None:
+async def test_no_double_release_when_stream_construction_throws() -> None:
     guard = BudgetGuard(limit_usd=1.00)  # fail_closed default; "mystery-model" unpriceable
     guard.record_tool("prior", 0.1)  # non-zero next-call estimate → the reserve holds 0.10
     before = guard.remaining_usd  # 0.90
@@ -312,12 +312,9 @@ async def test_no_double_release_when_streaming_settle_throws() -> None:
     async def source():
         yield {"usage": {"prompt_tokens": 100, "completion_tokens": 50}}
 
-    stream = budget.guard_stream(source, model="mystery-model")
-    # Draining triggers settle("mystery-model", …) → UnpriceableModelError, which
-    # releases the reservation ITSELF. The finally must not release it again — a
-    # double release would drive `reserved` negative and inflate remaining_usd.
+    # Eager model validation releases the reservation before raising.
     with pytest.warns(UnpriceableModelWarning), pytest.raises(UnpriceableModelError):
-        await drain_stream(stream)
+        budget.guard_stream(source, model="mystery-model")
     assert guard.remaining_usd == pytest.approx(before)  # released exactly once
 
 
@@ -436,6 +433,7 @@ async def test_garbage_collection_releases_hold_for_unstarted_stream() -> None:
 
     del stream
     import gc
+
     gc.collect()
 
     assert guard.remaining_usd == pytest.approx(after_turn1)

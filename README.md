@@ -450,10 +450,21 @@ The custom-LLM proxy sees only the **model leg**, so `VapiBudgetGuard` guards th
 `/chat/completions` turn and admits the call via the `assistant-request` webhook.
 `guard_completion` (JSON) and `guard_stream` (SSE) reserve the estimated cost
 **before** the upstream call, settle on Vapi's real OpenAI `usage` afterwards,
-and release the hold on error/abort — so an over-budget turn gets a 402 instead
-of reaching your LLM. Set `stream_options={"include_usage": True}` on the
+and release the hold when startup fails. Streaming also enforces each generated
+text/tool-call delta and settles partial spend on interruption.
+Set `stream_options={"include_usage": True}` on the
 upstream streaming request or `guard_stream` fails loudly (the SSE omits `usage`
 without it).
+
+`guard_stream()` uses `StreamGuard` automatically and requires an in-memory guard.
+Supply `estimated_cost` for admission and `prompt_tokens` for partial input
+accounting (default zero); `count_tokens` can replace the ~4 chars/token output
+estimate. Final usage reconciles cached input before its chunk is forwarded.
+Hidden reasoning tokens, buffering, and delayed cancellation can cause additional
+spend; estimates are not a strict billing cap. Handle `BudgetExceeded` during SSE
+iteration, since headers may already be sent. Use `contextlib.aclosing(stream)`
+or `await stream.aclose()` on early exit; a bare async-for break does not guarantee
+cleanup. Closing upstream does not end the Vapi call or stop other voice charges.
 
 ```python
 from floe_guard import BudgetGuard

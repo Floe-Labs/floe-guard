@@ -8,6 +8,16 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.24.0
+
+### Changed (py)
+
+- Vapi `guard_stream()` now enforces generated deltas through `StreamGuard`,
+  settles partial spend on cancellation/errors, and closes async sources.
+  Final usage is reconciled before forwarding; cached input is priced separately
+  for both streaming and non-streaming completions. Persistent streams are rejected.
+- `StreamGuard.finish()` accepts additive `cache_read_input_tokens`.
+
 ## Unreleased — py 0.23.9
 
 ### Fixed (py)

@@ -101,6 +101,7 @@ class StreamGuard:
         self._label = label
         self._count = count_tokens or approx_tokens
         self._completion_tokens = 0
+        self._cache_read_input_tokens = 0
         self._closed = False
         # Intra-package seam: StreamGuard is the streaming face of BudgetGuard,
         # so it shares the guard's private resolution/ceiling internals rather
@@ -109,6 +110,8 @@ class StreamGuard:
         if self._priced is None and guard.fail_closed:
             # Same policy as settle(), applied BEFORE any money moves: refuse to
             # stream spend the guard cannot measure.
+            self._closed = True
+            guard.release(reserved)
             warnings.warn(
                 f"Cannot price model {model!r}: not in the bundled cost map and no "
                 f"manual price given. A stream whose spend cannot be measured "
@@ -117,8 +120,6 @@ class StreamGuard:
                 UnpriceableModelWarning,
                 stacklevel=2,
             )
-            self._closed = True
-            guard.release(reserved)
             raise UnpriceableModelError(model)
         # Registered AFTER the fail-closed raise so a refused stream leaves no
         # entry; _settle() unregisters, so entries live exactly as long as the
@@ -155,10 +156,12 @@ class StreamGuard:
         *,
         prompt_tokens: int | None = None,
         completion_tokens: int | None = None,
+        cache_read_input_tokens: int = 0,
     ) -> float:
         """Settle the stream. Pass the provider-reported usage (many APIs attach
         it to the final chunk) to reconcile the chunk-count heuristic to truth;
-        omitted counts keep the accumulated values. Returns the USD cost.
+        omitted counts keep the accumulated values. Cached input is additive:
+        ``prompt_tokens`` must exclude ``cache_read_input_tokens``. Returns USD cost.
         """
         if self._closed:
             raise RuntimeError("stream already settled")
@@ -166,12 +169,23 @@ class StreamGuard:
             self._prompt_tokens = max(0, int(prompt_tokens))
         if completion_tokens is not None:
             self._completion_tokens = max(0, int(completion_tokens))
+        self._cache_read_input_tokens = max(0, int(cache_read_input_tokens))
         return self._settle()
 
     @property
     def completion_tokens(self) -> int:
         """Completion tokens metered so far (estimate until :meth:`finish`)."""
         return self._completion_tokens
+
+    def _cancel_unstarted(self) -> None:
+        """Release an adapter's unopened stream without charging prompt estimates."""
+        with self._guard._lock:
+            if not self._closed:
+                self._closed = True
+                try:
+                    self._guard.release(self._reserved)
+                finally:
+                    self._guard._stream_unregister(self._key)
 
     def _settle(self) -> float:
         self._closed = True
@@ -185,6 +199,7 @@ class StreamGuard:
                     reserved=self._reserved,
                     price=self._price,
                     label=self._label,
+                    cache_read_input_tokens=self._cache_read_input_tokens,
                 )
             finally:
                 # Remove accrual even when settlement raises or skips an unpriced call.
