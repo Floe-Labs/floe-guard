@@ -25,6 +25,9 @@ export {
   TokenBudgetExceeded,
   DeadlineExceeded,
   UnpriceableModelError,
+  UnpriceableLegError,
+  // Deprecated alias for UnpriceableLegError — the same class, kept exported so
+  // existing `instanceof UnpriceableVoiceError` keeps working.
   UnpriceableVoiceError,
   LedgerSyncError,
 } from "./errors.js";
@@ -57,6 +60,8 @@ export {
 } from "./stream.js";
 
 export {
+  type LegMode,
+  /** Deprecated alias for {@link LegMode}. */
   type VoiceMode,
   type VoiceRate,
   lookupVoiceRate,

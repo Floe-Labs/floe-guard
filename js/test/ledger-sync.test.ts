@@ -11,6 +11,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BudgetGuard, LedgerSyncError, pushLedger } from "../src/index.js";
 
+// P1.10 — read the SHIPPED artifact, not a re-export: this is the same file the
+// validator loads and the same one CI diffs against the Python copy, so a drift
+// in either direction fails here.
+import kindsJson from "../src/kinds.json";
+
+const KINDS: readonly string[] = (kindsJson as { kinds: string[] }).kinds;
+
 // The package compiles with `types: []` (no @types/node), so `process` is not
 // globally typed. Declare the minimal shape the tests touch (real `process` is
 // present at runtime under vitest's node environment).
@@ -188,6 +195,8 @@ describe("pushLedger validates the ledger before sending", () => {
     ["missing model_or_tool", '{"timestamp":1,"kind":"tool","cost_usd":0.05}'],
     ["missing cost_usd", '{"timestamp":1,"kind":"tool","model_or_tool":"api"}'],
     ["bad kind", '{"timestamp":1,"kind":"other","model_or_tool":"api","cost_usd":0.05}'],
+    ["kind is case-sensitive", '{"timestamp":1,"kind":"LLM","model_or_tool":"api","cost_usd":0.05}'],
+    ["plausible but unlisted kind", '{"timestamp":1,"kind":"voice","model_or_tool":"api","cost_usd":0.05}'],
     ["non-string model_or_tool", '{"timestamp":1,"kind":"tool","model_or_tool":123,"cost_usd":0.05}'],
     ["negative cost_usd", '{"timestamp":1,"kind":"tool","model_or_tool":"api","cost_usd":-1}'],
     ["non-number cost_usd", '{"timestamp":1,"kind":"tool","model_or_tool":"api","cost_usd":"x"}'],
@@ -213,6 +222,32 @@ describe("pushLedger validates the ledger before sending", () => {
       '{"timestamp":2,"kind":"llm","model_or_tool":"gpt-4o","prompt_tokens":10,"completion_tokens":5,"cost_usd":0.01,"reserved":0.02}\n';
     vi.spyOn(globalThis, "fetch").mockResolvedValue(ok({ synced: 2 }));
     await expect(pushLedger(valid, "floe_abc")).resolves.toBe(2);
+  });
+
+  // ── P1.10: the widened vocabulary ───────────────────────────────────────
+
+  it("accepts every kind in the vendored vocabulary", async () => {
+    const lines = KINDS.map(
+      (k, i) => `{"timestamp":${i + 1},"kind":"${k}","model_or_tool":"m","cost_usd":0.01}`,
+    ).join("\n");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(ok({ synced: KINDS.length }));
+    await expect(pushLedger(`${lines}\n`, "floe_abc")).resolves.toBe(KINDS.length);
+  });
+
+  it("no longer forces a non-LLM workload to disguise itself as 'tool'", async () => {
+    // The escape hatch this widening replaces: an avatar leg used to be metered
+    // as a tool call, so the declared kind and the real work disagreed.
+    const avatar = '{"timestamp":1,"kind":"avatar","model_or_tool":"livekit-avatar","cost_usd":0.12}\n';
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(ok({ synced: 1 }));
+    await expect(pushLedger(avatar, "floe_abc")).resolves.toBe(1);
+  });
+
+  it("the vocabulary is exactly the nine widened kinds, in order", async () => {
+    // Pins the vendored list itself. The Python copy is byte-identical by CI
+    // (`diff -q`), so asserting it here asserts it for both SDKs.
+    expect(KINDS).toEqual([
+      "llm", "tool", "stt", "tts", "telephony", "avatar", "sms", "ocr", "gpu",
+    ]);
   });
 });
 

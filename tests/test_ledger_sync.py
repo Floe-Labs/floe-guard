@@ -16,6 +16,11 @@ import pytest
 
 from floe_guard import BudgetGuard, LedgerSyncError, push_ledger
 
+# P1.10 — the vendored `kind` vocabulary, read from the module that enforces it
+# rather than re-typed here, so a drift between kinds.json and the validator
+# fails these tests instead of passing against a stale literal.
+from floe_guard.sync import _KINDS
+
 _LEDGER_KEYS = {
     "timestamp",
     "kind",
@@ -261,6 +266,8 @@ def test_push_ledger_rejects_smuggled_field_no_network() -> None:
     [
         '{"kind":"tool","model_or_tool":"api","cost_usd":0.01}',  # missing timestamp
         '{"timestamp":1.0,"kind":"bogus","model_or_tool":"api","cost_usd":0.01}',  # bad kind
+        '{"timestamp":1.0,"kind":"LLM","model_or_tool":"api","cost_usd":0.01}',  # kind is case-sensitive
+        '{"timestamp":1.0,"kind":"voice","model_or_tool":"api","cost_usd":0.01}',  # plausible but unlisted
         '{"timestamp":1.0,"kind":"tool","model_or_tool":"api","cost_usd":-1}',  # negative cost
         '{"timestamp":1.0,"kind":"tool","model_or_tool":"api","cost_usd":"x"}',  # non-numeric cost
         '{"timestamp":1.0,"kind":"tool","model_or_tool":123,"cost_usd":0.01}',  # non-str model
@@ -272,6 +279,38 @@ def test_push_ledger_rejects_bad_schema_no_network(bad_line: str) -> None:
         with pytest.raises(LedgerSyncError):
             push_ledger(bad_line + "\n", api_key="floe_abc")
     opener.assert_not_called()
+
+
+# ── P1.10: the widened kind vocabulary ────────────────────────────────────────
+
+
+def test_push_ledger_accepts_every_vendored_kind() -> None:
+    """Every kind in kinds.json is accepted — the whole point of the widening."""
+    lines = "".join(
+        f'{{"timestamp":{i + 1}.0,"kind":"{k}","model_or_tool":"m","cost_usd":0.01}}\n'
+        for i, k in enumerate(_KINDS)
+    )
+    with mock.patch("floe_guard.sync._OPENER.open", return_value=_ok({"synced": len(_KINDS)})):
+        assert push_ledger(lines, api_key="floe_abc") == len(_KINDS)
+
+
+def test_push_ledger_accepts_a_non_llm_workload_under_its_own_name() -> None:
+    """The escape hatch this widening replaces.
+
+    An avatar leg used to be metered via ``record_tool`` and synced as ``tool``,
+    so the declared kind and the real work disagreed. It now travels as itself.
+    """
+    avatar = '{"timestamp":1.0,"kind":"avatar","model_or_tool":"livekit-avatar","cost_usd":0.12}\n'
+    with mock.patch("floe_guard.sync._OPENER.open", return_value=_ok({"synced": 1})):
+        assert push_ledger(avatar, api_key="floe_abc") == 1
+
+
+def test_kind_vocabulary_is_the_nine_widened_kinds_in_order() -> None:
+    """Pins the vendored list. The JS copy is byte-identical by CI (``diff -q``),
+    so asserting it here asserts it for both SDKs."""
+    assert _KINDS == (
+        "llm", "tool", "stt", "tts", "telephony", "avatar", "sms", "ocr", "gpu",
+    )
 
 
 def test_no_redirect_handler_refuses() -> None:

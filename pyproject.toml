@@ -66,6 +66,7 @@ packages = ["src/floe_guard"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/floe_guard/cost_map.json" = "floe_guard/cost_map.json"
+"src/floe_guard/kinds.json" = "floe_guard/kinds.json"
 
 [tool.ruff]
 line-length = 100

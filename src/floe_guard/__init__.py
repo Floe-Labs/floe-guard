@@ -26,6 +26,7 @@ from .errors import (
     HostedEnforcementError,
     LedgerSyncError,
     TokenBudgetExceeded,
+    UnpriceableLegError,
     UnpriceableModelError,
     UnpriceableModelWarning,
     UnpriceableVoiceError,
@@ -87,8 +88,11 @@ __all__ = [
     "DeadlineExceeded",
     "FloeGuardError",
     "HostedEnforcementError",
+    "UnpriceableLegError",
     "UnpriceableModelError",
     "UnpriceableModelWarning",
+    # Deprecated alias for UnpriceableLegError — same class, kept exported so
+    # existing `except UnpriceableVoiceError` keeps working.
     "UnpriceableVoiceError",
     "ManualPrice",
     "PricedModel",

@@ -27,6 +27,20 @@
  */
 
 import { LedgerSyncError } from "./errors.js";
+import kindsJson from "./kinds.json";
+
+/**
+ * The ledger-sync `kind` vocabulary, from the vendored JSON.
+ *
+ * VENDORED IN TWO PLACES — `js/src/kinds.json` and `src/floe_guard/kinds.json`
+ * must stay byte-identical, and CI enforces it with `diff -q` exactly as it does
+ * for the cost map. Data rather than a literal so the two SDKs cannot drift into
+ * accepting different vocabularies.
+ *
+ * ADDITIVE ONLY: `kind` is part of the server's per-event idempotency digest, so
+ * adding a value is safe while renaming one re-keys every event that used it.
+ */
+const KINDS: readonly string[] = (kindsJson as { kinds: string[] }).kinds;
 
 const FLOE_API_KEY_ENV = "FLOE_API_KEY";
 const FLOE_API_BASE_URL_ENV = "FLOE_API_BASE_URL";
@@ -105,9 +119,10 @@ function validateLedger(jsonl: string): void {
         `Ledger line ${i} is missing required field(s): ${JSON.stringify(missing)}.`,
       );
     }
-    if (ev.kind !== "llm" && ev.kind !== "tool") {
+    if (typeof ev.kind !== "string" || !KINDS.includes(ev.kind)) {
       throw new LedgerSyncError(
-        `Ledger line ${i}: kind must be 'llm' or 'tool', got ${JSON.stringify(ev.kind)}.`,
+        `Ledger line ${i}: kind must be one of ${KINDS.map((k) => `'${k}'`).join(", ")}, ` +
+          `got ${JSON.stringify(ev.kind)}.`,
       );
     }
     if (typeof ev.model_or_tool !== "string") {
