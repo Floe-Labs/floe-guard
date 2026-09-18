@@ -211,6 +211,9 @@ reservation: active stream accrual is not shared across processes.
 Streams also cannot overlap `guard.step()` scopes: creating a stream inside a
 step raises `ValueError` and releases its reservation; opening a step while a
 stream is active raises too. Finish or close streams before entering a step.
+For priced streams, `check()` and `reserve()` count active prompt/completion
+tokens against `token_limit`, net of their existing token holds. Mid-stream
+interruption itself remains USD-based; token limits govern new admissions.
 
 ### Unpriceable models fail closed
 

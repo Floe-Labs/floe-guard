@@ -23,6 +23,14 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   release their supplied reservation; a step can start once streams settle.
 - Closing or discarding an unstarted `guard_stream()` wrapper clears its stream
   registration so later steps remain usable. Its reservation stays caller-owned.
+- Reservation cleanup now drains only its issuing step, preserving unrelated
+  holds when a stream is rejected inside a different step.
+- Settlement charges that same issuing step. Reservation values carry a stable
+  scope identifier so copying or serializing them does not clone mutable step state.
+- Unpriceable calls release reservations before warning, including when warnings
+  are configured as exceptions.
+- Token admission includes active streams' prompt and completion accrual beyond
+  their token reservations, transferred atomically to settled usage.
 
 ## Unreleased — js 0.16.0
 

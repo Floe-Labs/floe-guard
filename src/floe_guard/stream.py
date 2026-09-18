@@ -70,6 +70,9 @@ class StreamGuard:
     Step scopes are also unsupported: stream accrual has no step ownership.
     Construction inside a step releases ``reserved`` and raises ``ValueError``;
     opening a step while a stream is active is rejected too.
+
+    For priced streams, token accrual counts against ordinary admission's token
+    ceiling. Mid-stream interruption itself enforces USD, not token limits.
     """
 
     def __init__(
@@ -98,7 +101,7 @@ class StreamGuard:
         self._model = model
         self._prompt_tokens = max(0, int(prompt_tokens))
         # Keep the original handle so settle()/release() drain the token hold too.
-        # The stream-cost registry tracks USD only; tokens reconcile at settle().
+        # The registry tracks both dimensions for admission while streaming.
         self._reserved = reserved
         self._reserved_usd = reserved_usd
         self._price = price
@@ -113,6 +116,8 @@ class StreamGuard:
         if self._priced is None and guard.fail_closed:
             # Same policy as settle(), applied BEFORE any money moves: refuse to
             # stream spend the guard cannot measure.
+            self._closed = True
+            guard.release(reserved)
             warnings.warn(
                 f"Cannot price model {model!r}: not in the bundled cost map and no "
                 f"manual price given. A stream whose spend cannot be measured "
@@ -121,13 +126,11 @@ class StreamGuard:
                 UnpriceableModelWarning,
                 stacklevel=2,
             )
-            self._closed = True
-            guard.release(reserved)
             raise UnpriceableModelError(model)
         # Registered AFTER the fail-closed raise so a refused stream leaves no
         # entry; _settle() unregisters, so entries live exactly as long as the
         # stream. Parallel streams see each other's accrual through this. The
-        # registry tracks USD only, but needs the full handle if it rejects a step.
+        # registry needs the full handle for token accounting and rejection cleanup.
         self._key = guard._stream_register(reserved)
 
     def feed_text(self, delta: str) -> None:
@@ -147,7 +150,9 @@ class StreamGuard:
         if self._priced is None:
             return  # fail-open + unpriceable: nothing to price chunks with
         cumulative = price_tokens(self._priced, self._prompt_tokens, self._completion_tokens)
-        if self._guard._stream_would_cross(self._key, cumulative):
+        if self._guard._stream_would_cross(
+            self._key, cumulative, self._prompt_tokens + self._completion_tokens
+        ):
             # The tokens in this chunk were already generated (and billed) —
             # settle them before raising so spent_usd reflects reality. The
             # overshoot is at most this one chunk, not the rest of the stream.
