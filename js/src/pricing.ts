@@ -16,7 +16,7 @@ import costMapJson from "./cost_map.json";
 export interface ManualPrice {
   inputCostPerToken: number;
   outputCostPerToken: number;
-  /** Optional cache-read rate; absent rates use the standard multiplier. */
+  /** Finite, non-negative cache-read rate; absent rates use the standard multiplier. */
   cacheReadCostPerToken?: number;
 }
 
@@ -160,11 +160,17 @@ export function resolvePrice(
           : undefined;
         if (ov !== undefined) {
           if (bothFinite(ov.inputCostPerToken, ov.outputCostPerToken)) {
+            if (
+              ov.cacheReadCostPerToken !== undefined &&
+              (typeof ov.cacheReadCostPerToken !== "number" ||
+                !Number.isFinite(ov.cacheReadCostPerToken) ||
+                ov.cacheReadCostPerToken < 0)
+            ) return null;
             return {
               inputCostPerToken: ov.inputCostPerToken,
               outputCostPerToken: ov.outputCostPerToken,
               source: "override",
-              cacheReadCostPerToken: finiteOrNone(ov.cacheReadCostPerToken),
+              cacheReadCostPerToken: ov.cacheReadCostPerToken,
             };
           }
           return null;

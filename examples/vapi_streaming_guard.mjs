@@ -12,6 +12,7 @@ const budget = new VapiBudgetGuard(guard, { model: "demo" });
 let closed = false;
 let generated = 0;
 let forwarded = 0;
+/** Generate local chunks and expose cancellation so the demo can verify cleanup. */
 async function* source() {
   try {
     for (let i = 0; i < 10; i++) {

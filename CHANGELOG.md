@@ -17,7 +17,11 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   input. Unpriceable streams fail before opening upstream. Returning or throwing
   into an unstarted iterator releases its reservation. LiveKit is unchanged.
 - `StreamGuard.finish()` accepts additive `cacheReadInputTokens`, and manual
-  prices can preserve a `cacheReadCostPerToken` override.
+  prices can preserve a `cacheReadCostPerToken` override. Supplied cache-read
+  rates must be finite, non-negative numbers; invalid overrides fail closed.
+- Final Vapi usage checks include concurrent stream accrual and outstanding
+  holds. Known prompt costs count before the first chunk, with cleanup when a
+  source fails to open or an unstarted Vapi iterator is cancelled.
 
 ## Unreleased — js 0.16.0
 

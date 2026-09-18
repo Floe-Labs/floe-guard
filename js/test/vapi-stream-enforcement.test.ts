@@ -15,6 +15,75 @@ async function drain(stream: AsyncIterable<unknown>): Promise<void> {
 }
 
 describe("Vapi mid-stream enforcement", () => {
+  it.each([
+    { kind: "stream", heldUsd: 0 },
+    { kind: "stream", heldUsd: 0.004 },
+    { kind: "stream", heldUsd: 0.008 },
+    { kind: "hold", heldUsd: 0.008 },
+  ])("checks final usage against another $kind with a $heldUsd hold", async ({ kind, heldUsd }) => {
+    const guard = makeGuard();
+    const held = guard.reserve(heldUsd);
+    const other = kind === "stream" ? new StreamGuard(guard, "m", { reserved: held }) : undefined;
+    other?.feedTokens(8);
+    let closed = false;
+    const stream = adapter(guard).guardStream(async function* () {
+      try { yield { usage: { prompt_tokens: 0, completion_tokens: 3 } }; }
+      finally { closed = true; }
+    }, { estimatedCost: 0 });
+    await expect(stream.next()).rejects.toBeInstanceOf(BudgetExceeded);
+    expect(closed).toBe(true);
+    expect(guard.spentUsd).toBeCloseTo(0.003);
+    expect(guard.spendLog).toHaveLength(1);
+    if (other) other.close();
+    else guard.release(held);
+    expect(guard.spentUsd).toBeCloseTo(kind === "stream" ? 0.011 : 0.003);
+  });
+
+  it("counts prompt cost while awaiting the first provider chunk", async () => {
+    const guard = makeGuard();
+    let resume!: () => void;
+    const pending = new Promise<void>(resolve => { resume = resolve; });
+    const stream = adapter(guard).guardStream(async function* () {
+      await pending;
+      yield { usage: { prompt_tokens: 9, completion_tokens: 0 } };
+    }, { estimatedCost: 0, promptTokens: 9 });
+    const first = stream.next();
+    try {
+      expect(guard.remainingUsd).toBeCloseTo(0.001);
+      expect(() => guard.reserveTool(0.002)).toThrow(BudgetExceeded);
+    } finally { resume(); await first; await stream.return?.(); }
+    expect(guard.spentUsd).toBeCloseTo(0.009);
+    expect(guard.spendLog).toHaveLength(1);
+  });
+
+  it.each(["stream", "settle", "per-call"])("rejects negative cache pricing during %s and releases only its hold", mode => {
+    const invalidPrice = { ...price, cacheReadCostPerToken: -0.001 };
+    const guard = new BudgetGuard(0.01, {
+      priceOverrides: mode === "per-call" ? undefined : { m: invalidPrice },
+    });
+    const other = guard.reserveTool(0.002);
+    let opened = false;
+    expect(() => {
+      if (mode === "stream") {
+        adapter(guard).guardStream(async function* () {
+          opened = true;
+          yield text("word");
+        }, { estimatedCost: 0.003 });
+      } else {
+        const reserved = guard.reserve(0.003);
+        guard.settle("m", 10, 10, {
+          reserved, cacheReadInputTokens: 100,
+          price: mode === "per-call" ? invalidPrice : undefined,
+        });
+      }
+    }).toThrow(UnpriceableModelError);
+    expect(opened).toBe(false);
+    expect(guard.spentUsd).toBe(0);
+    expect(guard.spendLog).toHaveLength(0);
+    expect(guard.remainingUsd).toBeCloseTo(0.008, 12);
+    guard.release(other);
+  });
+
   it("applies final usage before the consumer can admit another call", async () => {
     const guard = makeGuard();
     const stream = adapter(guard).guardStream(async function* () {
@@ -138,7 +207,7 @@ describe("Vapi mid-stream enforcement", () => {
     const stream = adapter(guard).guardStream(() => {
       opened = true;
       return (async function* () { yield text("word"); })();
-    }, { estimatedCost: 0.004 });
+    }, { estimatedCost: 0.004, promptTokens: 9 });
     await stream.return?.();
     await stream.return?.();
     expect(opened).toBe(false);
@@ -149,7 +218,7 @@ describe("Vapi mid-stream enforcement", () => {
   it("releases on source startup failure without charging the prompt estimate", async () => {
     const guard = makeGuard();
     const stream = adapter(guard).guardStream(() => { throw new Error("connect failed"); }, {
-      estimatedCost: 0.004, promptTokens: 3,
+      estimatedCost: 0.004, promptTokens: 9,
     });
     await expect(drain(stream)).rejects.toThrow("connect failed");
     expect(guard.remainingUsd).toBe(0.01);

@@ -128,6 +128,7 @@ export interface ChatCompletionChunkLike {
 export class VapiUsageMissingError extends FloeGuardError {
   readonly model: string;
 
+  /** Identify the model whose stream ended without authoritative token usage. */
   constructor(model: string) {
     super(
       `Vapi custom-LLM stream for model '${model}' ended with no token usage to ` +
@@ -303,12 +304,14 @@ export class VapiBudgetGuard {
     return this.enforceStream(run, model, reserved, meter);
   }
 
+  /** Wrap the source with partial settlement and cleanup, including before its first pull. */
   private enforceStream<C extends ChatCompletionChunkLike>(
     run: StreamSource<C>, model: string, reserved: ReservationHandle, meter: StreamGuard,
   ): AsyncIterableIterator<C> {
     const guard = this.guard;
     let started = false;
     let released = false;
+    /** Meter source chunks and reconcile final usage before exposing it to the consumer. */
     async function* iterate(): AsyncIterableIterator<C> {
       started = true;
       let opened = false;
@@ -325,7 +328,7 @@ export class VapiBudgetGuard {
               promptTokens: usage.prompt, completionTokens: usage.completion,
               cacheReadInputTokens: usage.cacheRead,
             });
-            if (guard.spentUsd > guard.limitUsd + 1e-12) guard._blockStream();
+            if (guard._streamBudgetExceeded()) guard._blockStream();
             yield chunk;
             // OpenAI's usage-bearing chunk is final. Close the source on resumption.
             return;
@@ -335,19 +338,25 @@ export class VapiBudgetGuard {
         }
         throw new VapiUsageMissingError(model);
       } finally {
-        if (!opened) guard.release(reserved);
+        if (!opened) { meter._unregister(); guard.release(reserved); }
         else if (!settled) meter.close();
       }
     }
     const iterator = iterate();
     // An async generator's finally does not run for return()/throw() before next().
+    /** Release an unopened stream's hold once without charging prompt estimates. */
     const releaseUnstarted = () => {
-      if (!started && !released) { released = true; guard.release(reserved); }
+      if (!started && !released) {
+        released = true;
+        meter._unregister();
+        guard.release(reserved);
+      }
     };
     return {
       next: () => iterator.next(),
       return: value => { releaseUnstarted(); return iterator.return!(value); },
       throw: error => { releaseUnstarted(); return iterator.throw!(error); },
+      /** Keep for-await on this wrapper so early exit runs reservation cleanup. */
       [Symbol.asyncIterator]() { return this; },
     };
   }
