@@ -31,6 +31,8 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
   are configured as exceptions.
 - Token admission includes active streams' prompt and completion accrual beyond
   their token reservations, transferred atomically to settled usage.
+- Known prompt USD and tokens count from stream construction, before the first
+  completion chunk, preventing other calls from reusing prompt-only spend.
 
 ## Unreleased — js 0.16.0
 

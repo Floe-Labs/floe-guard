@@ -73,6 +73,7 @@ class StreamGuard:
 
     For priced streams, token accrual counts against ordinary admission's token
     ceiling. Mid-stream interruption itself enforces USD, not token limits.
+    Known prompt cost and tokens count from construction, before output arrives.
     """
 
     def __init__(
@@ -131,7 +132,16 @@ class StreamGuard:
         # entry; _settle() unregisters, so entries live exactly as long as the
         # stream. Parallel streams see each other's accrual through this. The
         # registry needs the full handle for token accounting and rejection cleanup.
-        self._key = guard._stream_register(reserved)
+        try:
+            prompt_cost = (
+                price_tokens(self._priced, self._prompt_tokens, 0) if self._priced else 0.0
+            )
+        except Exception:
+            guard.release(reserved)
+            raise
+        self._key = guard._stream_register(
+            reserved, prompt_cost, self._prompt_tokens if self._priced else 0
+        )
 
     def feed_text(self, delta: str) -> None:
         """Meter one text delta (token count via the heuristic/``count_tokens``).

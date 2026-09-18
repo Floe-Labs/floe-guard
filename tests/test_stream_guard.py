@@ -26,6 +26,52 @@ from floe_guard.stream import approx_tokens
 MODEL = "gpt-4o"  # $2.5e-6/input token, $1e-5/output token
 
 
+@pytest.mark.parametrize("held", [0, 200, 950])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_prompt_accrual_before_first_chunk(held: int, wrapped: bool) -> None:
+    """Known prompt spend counts immediately, independently of output arrival."""
+    guard = BudgetGuard(0.01, token_limit=1000, on_block=lambda *_: None)
+    handle = guard.reserve(held * 1e-5, estimated_tokens=held)
+    price = ManualPrice(1e-5, 1e-5)
+    if wrapped:
+        stream = guard_stream(guard, "manual", [], prompt_tokens=900, reserved=handle, price=price)
+    else:
+        stream = StreamGuard(guard, "manual", prompt_tokens=900, reserved=handle, price=price)
+    assert guard.remaining_usd == pytest.approx((1000 - max(900, held)) * 1e-5)
+    with pytest.raises(BudgetExceeded):
+        guard.check(0.002)
+    with pytest.raises(BudgetExceeded):
+        guard.reserve_tool(0.002)
+    with pytest.raises(TokenBudgetExceeded):
+        guard.check(0, estimated_tokens=200)
+    with pytest.raises(TokenBudgetExceeded):
+        guard.reserve(0, estimated_tokens=200)
+    # Existing holds are replaced by accrual, not added to it a second time.
+    other = guard.reserve(0.0005, estimated_tokens=50)
+    if wrapped:
+        stream.close()
+        guard.release(handle)
+        assert not guard.spend_log
+    else:
+        stream.finish(prompt_tokens=700, completion_tokens=0)
+        assert guard.spent_tokens == 700
+    guard.release(other)
+    assert guard.remaining_usd == pytest.approx(0.01 if wrapped else 0.003)
+    assert not guard._stream_costs
+
+
+def test_another_stream_counts_pending_prompt() -> None:
+    """A second stream cannot spend headroom consumed by a prompt-only stream."""
+    guard = BudgetGuard(0.01, on_block=lambda *_: None)
+    price = ManualPrice(1e-5, 1e-5)
+    with StreamGuard(guard, "manual", prompt_tokens=900, price=price):
+        with StreamGuard(guard, "manual", price=price) as second:
+            with pytest.raises(BudgetExceeded):
+                second.feed_tokens(200)
+    assert guard.spent_usd == pytest.approx(0.011)
+    assert len(guard.spend_log) == 2
+
+
 @pytest.mark.parametrize("phase", ["construct", "finish"])
 def test_warning_as_error_does_not_leak_stream_reservation(phase: str) -> None:
     """Warning policy must not prevent cleanup of an unpriceable call."""

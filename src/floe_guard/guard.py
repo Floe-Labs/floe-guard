@@ -1034,9 +1034,12 @@ class BudgetGuard:
         Yields the SAME guard, so no adapter needs to know about steps — pass the
         guard through as usual. Steps nest (an inner step is checked first); the
         innermost owns new reservations and unreserved records. Reserved calls
-        settle against their issuing step, even from a nested scope. **Not for concurrent parallel
-        steps on one guard** — that's a per-step identity registry, out of scope
-        for issue #46. Use one guard per parallel branch instead.
+        settle against their issuing step, even from a nested scope. A plain
+        ``0.0`` handle issued outside a step is indistinguishable from an
+        unreserved record and charges the current step instead.
+        **Not for concurrent parallel steps on one guard** — that requires a
+        per-step identity registry, out of scope for issue #46. Use one guard
+        per parallel branch instead.
 
         Steps cannot overlap active streams: stream accrual has no step owner.
         Starting either while the other is active raises ``ValueError``.
@@ -1362,7 +1365,9 @@ class BudgetGuard:
             max(0, stream.tokens - stream.held_tokens) for stream in self._stream_costs.values()
         )
 
-    def _stream_register(self, reserved: ReservationHandle) -> object:
+    def _stream_register(
+        self, reserved: ReservationHandle, prompt_cost: float, prompt_tokens: int
+    ) -> object:
         """Register an active stream (see :class:`~floe_guard.stream.StreamGuard`)
         and return its registry key. Active streams' accrued-but-unsettled costs
         count against the ceiling for each OTHER stream, so parallel unreserved
@@ -1375,6 +1380,8 @@ class BudgetGuard:
             self._stream_costs[key] = _StreamAccrual(
                 self._reserved_usd_of(reserved),
                 reserved.tokens if isinstance(reserved, BudgetReservation) else 0,
+                usd=prompt_cost,
+                tokens=prompt_tokens,
             )
         return key
 
