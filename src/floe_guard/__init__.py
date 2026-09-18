@@ -47,6 +47,12 @@ from .pricing import (
     price_tokens,
     resolve_price,
 )
+from .rate_card import (
+    RATE_CARD_ENV,
+    current_rate_card,
+    load_rate_card,
+    set_rate_card,
+)
 from .receipt import FloeCost, turn_cost
 from .retry import RetryPlan, async_with_budget_retry, with_budget_retry
 from .store import SqliteStore, StateStore
@@ -102,6 +108,11 @@ __all__ = [
     "FloeCost",
     "turn_cost",
     "VoiceRate",
+    # User-supplied rates — what YOU pay, beating the bundled list prices.
+    "RATE_CARD_ENV",
+    "load_rate_card",
+    "set_rate_card",
+    "current_rate_card",
     "lookup_voice_rate",
     "resolve_voice_rate",
     "voice_leg_cost",

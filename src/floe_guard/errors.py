@@ -101,23 +101,28 @@ class UnpriceableLegError(FloeGuardError):
     kept below as a deprecated alias, so ``except UnpriceableVoiceError`` in
     existing code still catches this.
 
-    The voice twin of :class:`UnpriceableModelError`: we refuse rather than
-    silently accrue $0 — "we cannot cap what we cannot price". It fires when an
-    adapter is asked to meter a leg for a vendor that is absent from the bundled
-    voice cost map (or whose entry has the wrong unit/mode for the leg) and no
-    per-unit override was given. Pass a per-unit rate
-    (``stt_usd_per_second`` / ``tts_usd_per_1k_chars`` /
-    ``telephony_usd_per_minute``) to make the leg enforceable.
+    The per-unit twin of :class:`UnpriceableModelError`: we refuse rather than
+    silently accrue $0 — "we cannot cap what we cannot price".
+
+    It fires when NONE of the three sources can price the leg: no per-call
+    override, no usable entry in your rate card, and no usable entry in the
+    bundled per-unit leg map. "Usable" matters — an entry whose ``mode`` or
+    ``unit`` is wrong for the leg is rejected rather than reinterpreted, so a
+    configured-but-malformed rate-card entry lands here too. That case is the
+    reason the message names the rate card: blaming only the bundled map would
+    send you looking in the wrong place for a rate you had in fact declared.
     """
 
     def __init__(self, vendor: str | None, mode: str) -> None:
         self.vendor = vendor
         self.mode = mode
         super().__init__(
-            f"Cannot price {mode} vendor {vendor!r}: not in the bundled voice cost "
-            f"map (or its entry has the wrong unit for a {mode} leg) and no per-unit "
-            f"override was given. The guard cannot enforce a budget on spend it "
-            f"cannot measure. Pass a per-unit rate to enable enforcement."
+            f"Cannot price {mode} vendor {vendor!r}: no per-call override, no usable "
+            f"entry in your rate card, and none in the bundled per-unit leg map — or "
+            f"an entry exists whose mode/unit is wrong for a {mode} leg, which is "
+            f"refused rather than reinterpreted. The guard cannot enforce a budget on "
+            f"spend it cannot measure. Declare the rate you pay in your rate card "
+            f"(FLOE_RATE_CARD) or pass a per-unit override to enable enforcement."
         )
 
 

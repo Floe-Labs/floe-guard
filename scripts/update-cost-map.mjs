@@ -102,19 +102,44 @@ const PINNED_MODELS = {
   },
 };
 
-// ── Voice rates (STT / TTS / telephony) ─────────────────────────────────────
+// ── Per-unit leg rates (STT / TTS / telephony / SMS / OCR / GPU / avatar) ────
 //
-// The token map above is fetched from LiteLLM; the voice map is NOT — LiteLLM
-// does not carry STT/TTS/telephony list prices, so these are hand-curated from
-// each vendor's public pricing page and injected under the reserved "__voice__"
+// The token map above is fetched from LiteLLM; this one is NOT — LiteLLM does
+// not carry list prices for any of these legs, so they are hand-curated from
+// each vendor's public pricing page and injected under the reserved "__legs__"
 // key (see src/floe_guard/pricing.py, which splits it back out so the token
 // resolver never sees it). They are a DRIFT-PRONE SNAPSHOT: vendors change these
 // far more often than this file is refreshed, so treat them as an estimate and
-// re-verify against the live pricing page before trusting a figure. Telephony is
-// US-only in v1.
+// re-verify against the live pricing page before trusting a figure. Telephony
+// and SMS are US-only in v1.
+//
+// The section was called "__voice__" until P1.11. The mechanism was never
+// voice-specific — it prices any leg billed in a unit other than tokens — and
+// once it grew SMS, OCR, GPU and avatar rates the old name was actively
+// misleading. pricing.py reads "__legs__" first and falls back to "__voice__",
+// so the rename is non-breaking for a map generated before it.
+//
+// The line between this map and the token map is the BILLING UNIT, not the
+// modality: per-token spend lives in the flat model map, per-anything-else lives
+// here. LLM inference is therefore NOT a leg, while a rented GPU-second is.
+//
+// TIERS ARE SEPARATE KEYS. Where a vendor publishes volume or plan tiers, each
+// tier ships as its own entry (e.g. "...-high-volume") so choosing one is a
+// choice of KEY by the caller, never a curation guess baked into a single
+// number. The bundled rate is a starting point the user confirms or replaces
+// with their own rate card — it is not an assertion about their bill.
+//
+// EVERY ENTRY CITES A SOURCE. Each block below names the public price-list URL
+// it was read from and the date it was read. An entry with no public source does
+// not ship — see the TODO(...) notes, which are deliberately left unpriced
+// rather than guessed. A guessed rate is worse than no rate: an unpriced leg
+// fails closed and is visible, a wrong one silently mis-bills.
 //
 // Units are canonical per mode and a mismatch fails closed downstream:
-//   stt -> usd_per_second, tts -> usd_per_1k_chars, telephony -> usd_per_minute.
+//   stt       -> usd_per_second       tts    -> usd_per_1k_chars
+//   telephony -> usd_per_minute       sms    -> usd_per_segment
+//   ocr       -> usd_per_page         gpu    -> usd_per_gpu_second
+//   avatar    -> usd_per_minute
 // Where a vendor lists a different unit, the arithmetic to convert is shown.
 const VOICE_RATES = {
   // Deepgram Nova-3 streaming, billed per minute -> ÷60 for $/sec.
@@ -208,10 +233,239 @@ const VOICE_RATES = {
     rate: 0.004, // US SIP inbound
     provider: "twilio",
   },
-  // TODO(telnyx): unverified list rate — deferred. Do not invent a number; add a
-  // telnyx-us-* entry only after confirming the current per-minute list price on
-  // the Telnyx pricing page.
+  // TODO(telnyx): unverified TELEPHONY list rate — deferred. Do not invent a
+  // number; add a telnyx-us-* telephony entry only after confirming the current
+  // per-minute list price. (Telnyx SMS below IS sourced and does ship.)
+
+  // ── SMS (per segment, US) ─────────────────────────────────────────────────
+  // Billed per SEGMENT, not per message: GSM-7 splits at 153 chars per segment
+  // for concatenated messages (67 for UCS-2), so one "message" can be several
+  // billable units. The caller passes segment count, not message count.
+  //
+  // These are the base list rates and EXCLUDE US carrier passthrough fees
+  // ($0.0025–$0.007/segment depending on carrier and number type), which neither
+  // vendor includes in the headline number. A real invoice will therefore exceed
+  // this; the guard under-states SMS spend by the carrier fee. Documented rather
+  // than fudged, because inventing a blended number would be a fabricated price.
+  //
+  // Source: https://www.twilio.com/en-us/sms/pricing/us — retrieved 2026-09-18
+  // ("$0.0083 per outbound/inbound message, plus carrier fees").
+  "twilio-sms-us-outbound": {
+    mode: "sms",
+    unit: "usd_per_segment",
+    rate: 0.0083, // $0.0083/segment list, ex carrier fees
+    provider: "twilio",
+  },
+  "twilio-sms-us-inbound": {
+    mode: "sms",
+    unit: "usd_per_segment",
+    rate: 0.0083, // Twilio lists the same rate both directions
+    provider: "twilio",
+  },
+  // Source: https://telnyx.com/pricing/messaging — retrieved 2026-09-18
+  // ("$0.004 per message part" outbound and inbound, plus carrier fees).
+  "telnyx-sms-us-outbound": {
+    mode: "sms",
+    unit: "usd_per_segment",
+    rate: 0.004, // $0.004/message part list, ex carrier fees
+    provider: "telnyx",
+  },
+  "telnyx-sms-us-inbound": {
+    mode: "sms",
+    unit: "usd_per_segment",
+    rate: 0.004,
+    provider: "telnyx",
+  },
+
+  // ── GPU (per GPU-second, per accelerator class) ───────────────────────────
+  // Modal bills per second natively, so these are list rates with no conversion.
+  // Source: https://modal.com/pricing — retrieved 2026-09-18.
+  "modal-b300": { mode: "gpu", unit: "usd_per_gpu_second", rate: 0.001972, provider: "modal" },
+  "modal-b200": { mode: "gpu", unit: "usd_per_gpu_second", rate: 0.001736, provider: "modal" },
+  "modal-h200-sxm": { mode: "gpu", unit: "usd_per_gpu_second", rate: 0.001261, provider: "modal" },
+  "modal-h100-sxm5": { mode: "gpu", unit: "usd_per_gpu_second", rate: 0.001097, provider: "modal" },
+  "modal-rtx-pro-6000": {
+    mode: "gpu",
+    unit: "usd_per_gpu_second",
+    rate: 0.000842,
+    provider: "modal",
+  },
+  "modal-a100-80gb": { mode: "gpu", unit: "usd_per_gpu_second", rate: 0.000694, provider: "modal" },
+  "modal-a100-40gb": { mode: "gpu", unit: "usd_per_gpu_second", rate: 0.000583, provider: "modal" },
+  "modal-l40s": { mode: "gpu", unit: "usd_per_gpu_second", rate: 0.000542, provider: "modal" },
+  "modal-a10": { mode: "gpu", unit: "usd_per_gpu_second", rate: 0.000306, provider: "modal" },
+  "modal-l4": { mode: "gpu", unit: "usd_per_gpu_second", rate: 0.000222, provider: "modal" },
+  "modal-t4": { mode: "gpu", unit: "usd_per_gpu_second", rate: 0.000164, provider: "modal" },
+  // TODO(runpod): deliberately NOT vendored. Runpod quotes per hour across two
+  // tiers (on-demand Pods vs the dearer serverless), and the bundled map cannot
+  // know which one a caller is on — vendoring either would be a curation guess
+  // about someone else's bill. A Runpod user adds it through their own rate
+  // card, which is the mechanism for every vendor-specific or negotiated rate.
+
+  // ── OCR (per page) ────────────────────────────────────────────────────────
+  // Vendors quote per 1,000 pages; stored per PAGE (÷1000) so the caller passes
+  // a page count and never has to remember the thousand-factor. Getting this
+  // wrong is a 1000x mis-bill, which is why the unit is explicit and checked.
+  //
+  // Both vendors are volume-tiered, and EVERY tier ships as its own key. The map
+  // cannot know what monthly volume a caller is at, so picking one tier for them
+  // would be a guess about their bill; picking the key is theirs to make, and a
+  // negotiated rate goes in their rate card instead.
+  //
+  // Source: https://cloud.google.com/vision/pricing — retrieved 2026-09-18
+  // ($1.50 per 1,000 units for 1,001–5,000,000/month; $0.60 above 5M; first
+  // 1,000/month free).
+  "gcp-vision-text-detection": {
+    mode: "ocr",
+    unit: "usd_per_page",
+    rate: 0.0015, // $1.50/1k pages ÷ 1000
+    provider: "gcp",
+  },
+  "gcp-vision-document-text-detection": {
+    mode: "ocr",
+    unit: "usd_per_page",
+    rate: 0.0015, // same tier pricing as TEXT_DETECTION
+    provider: "gcp",
+  },
+  "gcp-vision-text-detection-high-volume": {
+    mode: "ocr",
+    unit: "usd_per_page",
+    rate: 0.0006, // $0.60/1k pages ÷ 1000, above 5,000,000 units/month
+    provider: "gcp",
+  },
+  "gcp-vision-document-text-detection-high-volume": {
+    mode: "ocr",
+    unit: "usd_per_page",
+    rate: 0.0006, // $0.60/1k pages ÷ 1000, above 5,000,000 units/month
+    provider: "gcp",
+  },
+  // Source: https://aws.amazon.com/textract/pricing/ — retrieved 2026-09-18
+  // (US West (Oregon), the region the page prints: DetectDocumentText $0.0015/pg
+  // for the first 1M pages/month, $0.0006/pg above; Forms $0.05/pg; Tables
+  // $0.015/pg). Textract is priced per region — a caller outside us-west-2 may
+  // pay a different rate.
+  "aws-textract-detect-document-text": {
+    mode: "ocr",
+    unit: "usd_per_page",
+    rate: 0.0015, // $1.50/1k pages, first 1M/month
+    provider: "aws",
+  },
+  "aws-textract-detect-document-text-high-volume": {
+    mode: "ocr",
+    unit: "usd_per_page",
+    rate: 0.0006, // $0.60/1k pages, above 1M pages/month
+    provider: "aws",
+  },
+  "aws-textract-analyze-forms": {
+    mode: "ocr",
+    unit: "usd_per_page",
+    rate: 0.05, // $50/1k pages
+    provider: "aws",
+  },
+  "aws-textract-analyze-tables": {
+    mode: "ocr",
+    unit: "usd_per_page",
+    rate: 0.015, // $15/1k pages
+    provider: "aws",
+  },
+  // TODO(mistral-ocr): Mistral's pricing page states "OCR is per 1,000 pages"
+  // but publishes no figure. Unpriced until a public number exists.
+  // TODO(azure-document-intelligence): Azure's pricing page renders every
+  // Document Intelligence rate as "$-" and defers to the signed-in calculator.
+  // Unpriced until a public number exists.
+
+  // ── Avatar (per minute of generated video) ────────────────────────────────
+  // An avatar bills per minute of video and no voice framework emits a metric
+  // for it, so the caller derives minutes from call duration. This is the entry
+  // the livekit-full-bill-reconcile cookbook resolves instead of asking the
+  // operator to hand-set a rate.
+  //
+  // Tavus is plan-tiered and each plan ships as its own key — no bare "tavus-cvi"
+  // implying a default, because which plan you are on is a fact about you, not
+  // about Tavus.
+  //
+  // CAVEAT the linear model cannot express: usage rounds to 6s with a 30s minimum
+  // per conversation, so a short call bills MORE than duration x rate. A shop
+  // with many brief calls should put its own effective rate in a rate card.
+  // Source: https://www.tavus.io/pricing — retrieved 2026-09-18.
+  "tavus-cvi-starter": {
+    mode: "avatar",
+    unit: "usd_per_minute",
+    rate: 0.37, // Starter overage, beyond 100 included min/month
+    provider: "tavus",
+  },
+  "tavus-cvi-growth": {
+    mode: "avatar",
+    unit: "usd_per_minute",
+    rate: 0.32, // Growth overage, beyond 1,250 included min/month
+    provider: "tavus",
+  },
+  "tavus-cvi-business": {
+    mode: "avatar",
+    unit: "usd_per_minute",
+    rate: 0.26, // Business overage, beyond 4,000 included min/month
+    provider: "tavus",
+  },
+  // TODO(heygen): publishes only a monthly credit bundle, no per-minute rate.
+  // TODO(simli): pricing page is a 404 as of 2026-09-18.
+  // TODO(beyond-presence): no public per-minute list price found.
 };
+
+// ── Provenance stamping ─────────────────────────────────────────────────────
+//
+// Every rate curated in P1.11 carries the URL it was read from and the date it
+// was read, so a resolved rate can tell the caller where its number came from
+// and how stale it is. Applied as a loop rather than two extra lines on each of
+// 26 literals: the SOURCE_BY_PROVIDER table is then the single place a URL is
+// written, and it cannot disagree with itself.
+//
+// The 13 pre-P1.11 voice rates are deliberately NOT stamped. There is no
+// verified URL on record for them, and back-filling a plausible-looking one
+// would launder a guess into a citation. Absent provenance means UNVERIFIED and
+// the resolver reports it as such.
+const LEG_RATE_RETRIEVED_AT = "2026-09-18";
+const SOURCE_BY_PROVIDER = {
+  twilio: "https://www.twilio.com/en-us/sms/pricing/us",
+  telnyx: "https://telnyx.com/pricing/messaging",
+  modal: "https://modal.com/pricing",
+  gcp: "https://cloud.google.com/vision/pricing",
+  aws: "https://aws.amazon.com/textract/pricing/",
+  tavus: "https://www.tavus.io/pricing",
+};
+const SOURCED_IN_P111 = new Set([
+  "twilio-sms-us-outbound",
+  "twilio-sms-us-inbound",
+  "telnyx-sms-us-outbound",
+  "telnyx-sms-us-inbound",
+  "modal-b300",
+  "modal-b200",
+  "modal-h200-sxm",
+  "modal-h100-sxm5",
+  "modal-rtx-pro-6000",
+  "modal-a100-80gb",
+  "modal-a100-40gb",
+  "modal-l40s",
+  "modal-a10",
+  "modal-l4",
+  "modal-t4",
+  "gcp-vision-text-detection",
+  "gcp-vision-document-text-detection",
+  "gcp-vision-text-detection-high-volume",
+  "gcp-vision-document-text-detection-high-volume",
+  "aws-textract-detect-document-text",
+  "aws-textract-detect-document-text-high-volume",
+  "aws-textract-analyze-forms",
+  "aws-textract-analyze-tables",
+  "tavus-cvi-starter",
+  "tavus-cvi-growth",
+  "tavus-cvi-business",
+]);
+for (const [k, v] of Object.entries(VOICE_RATES)) {
+  if (!SOURCED_IN_P111.has(k)) continue;
+  const url = SOURCE_BY_PROVIDER[v.provider];
+  if (!url) throw new Error(`No source URL for provider ${v.provider} (entry ${k})`);
+  VOICE_RATES[k] = { ...v, source_url: url, retrieved_at: LEG_RATE_RETRIEVED_AT };
+}
 
 /** The key a model is vendored under: "gemini/gemini-2.5-flash" -> "gemini-2.5-flash". */
 function vendoredKey(k) {
@@ -349,7 +603,9 @@ const out = Object.create(null);
 out.__meta__ = {
   generated_at: new Date().toISOString().slice(0, 10),
   source:
-    "LiteLLM public model prices (bundled snapshot); voice rates verified from vendor list pages",
+    "LiteLLM public model prices (bundled snapshot); per-unit leg rates " +
+    "(stt/tts/telephony/sms/ocr/gpu/avatar) hand-curated from vendor list pages, " +
+    `leg rates last retrieved ${LEG_RATE_RETRIEVED_AT}`,
 };
 for (const [k, v] of entries) {
   const entry = {
@@ -428,10 +684,12 @@ for (const [k, v] of entries) {
   );
 }
 
-// Inject the hand-curated voice rates under the reserved "__voice__" key, last,
-// so a token refresh preserves them (they are not in the fetched LiteLLM data).
-// pricing.py splits this key back out, so it never reaches the token resolver.
-out.__voice__ = VOICE_RATES;
+// Inject the hand-curated per-unit leg rates under the reserved "__legs__" key,
+// last, so a token refresh preserves them (they are not in the fetched LiteLLM
+// data). pricing.py splits this key back out, so it never reaches the token
+// resolver. Renamed from "__voice__" in P1.11; the loaders read the new name
+// first and fall back to the old one, so an older vendored map still resolves.
+out.__legs__ = VOICE_RATES;
 
 const json = `${JSON.stringify(out, null, 2)}\n`;
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");

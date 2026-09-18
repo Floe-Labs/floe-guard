@@ -1,7 +1,7 @@
 {
   "__meta__": {
     "generated_at": "2026-09-14",
-    "source": "LiteLLM public model prices (bundled snapshot); voice rates verified from vendor list pages"
+    "source": "LiteLLM public model prices (bundled snapshot); per-unit leg rates (stt/tts/telephony/sms/ocr/gpu/avatar) hand-curated from vendor list pages, leg rates last retrieved 2026-09-18"
   },
   "chat-latest": {
     "input_cost_per_token": 0.000005,
@@ -1211,7 +1211,7 @@
     "litellm_provider": "openai",
     "mode": "embedding"
   },
-  "__voice__": {
+  "__legs__": {
     "deepgram-nova-3": {
       "mode": "stt",
       "unit": "usd_per_second",
@@ -1289,6 +1289,214 @@
       "unit": "usd_per_minute",
       "rate": 0.004,
       "provider": "twilio"
+    },
+    "twilio-sms-us-outbound": {
+      "mode": "sms",
+      "unit": "usd_per_segment",
+      "rate": 0.0083,
+      "provider": "twilio",
+      "source_url": "https://www.twilio.com/en-us/sms/pricing/us",
+      "retrieved_at": "2026-09-18"
+    },
+    "twilio-sms-us-inbound": {
+      "mode": "sms",
+      "unit": "usd_per_segment",
+      "rate": 0.0083,
+      "provider": "twilio",
+      "source_url": "https://www.twilio.com/en-us/sms/pricing/us",
+      "retrieved_at": "2026-09-18"
+    },
+    "telnyx-sms-us-outbound": {
+      "mode": "sms",
+      "unit": "usd_per_segment",
+      "rate": 0.004,
+      "provider": "telnyx",
+      "source_url": "https://telnyx.com/pricing/messaging",
+      "retrieved_at": "2026-09-18"
+    },
+    "telnyx-sms-us-inbound": {
+      "mode": "sms",
+      "unit": "usd_per_segment",
+      "rate": 0.004,
+      "provider": "telnyx",
+      "source_url": "https://telnyx.com/pricing/messaging",
+      "retrieved_at": "2026-09-18"
+    },
+    "modal-b300": {
+      "mode": "gpu",
+      "unit": "usd_per_gpu_second",
+      "rate": 0.001972,
+      "provider": "modal",
+      "source_url": "https://modal.com/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "modal-b200": {
+      "mode": "gpu",
+      "unit": "usd_per_gpu_second",
+      "rate": 0.001736,
+      "provider": "modal",
+      "source_url": "https://modal.com/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "modal-h200-sxm": {
+      "mode": "gpu",
+      "unit": "usd_per_gpu_second",
+      "rate": 0.001261,
+      "provider": "modal",
+      "source_url": "https://modal.com/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "modal-h100-sxm5": {
+      "mode": "gpu",
+      "unit": "usd_per_gpu_second",
+      "rate": 0.001097,
+      "provider": "modal",
+      "source_url": "https://modal.com/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "modal-rtx-pro-6000": {
+      "mode": "gpu",
+      "unit": "usd_per_gpu_second",
+      "rate": 0.000842,
+      "provider": "modal",
+      "source_url": "https://modal.com/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "modal-a100-80gb": {
+      "mode": "gpu",
+      "unit": "usd_per_gpu_second",
+      "rate": 0.000694,
+      "provider": "modal",
+      "source_url": "https://modal.com/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "modal-a100-40gb": {
+      "mode": "gpu",
+      "unit": "usd_per_gpu_second",
+      "rate": 0.000583,
+      "provider": "modal",
+      "source_url": "https://modal.com/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "modal-l40s": {
+      "mode": "gpu",
+      "unit": "usd_per_gpu_second",
+      "rate": 0.000542,
+      "provider": "modal",
+      "source_url": "https://modal.com/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "modal-a10": {
+      "mode": "gpu",
+      "unit": "usd_per_gpu_second",
+      "rate": 0.000306,
+      "provider": "modal",
+      "source_url": "https://modal.com/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "modal-l4": {
+      "mode": "gpu",
+      "unit": "usd_per_gpu_second",
+      "rate": 0.000222,
+      "provider": "modal",
+      "source_url": "https://modal.com/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "modal-t4": {
+      "mode": "gpu",
+      "unit": "usd_per_gpu_second",
+      "rate": 0.000164,
+      "provider": "modal",
+      "source_url": "https://modal.com/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "gcp-vision-text-detection": {
+      "mode": "ocr",
+      "unit": "usd_per_page",
+      "rate": 0.0015,
+      "provider": "gcp",
+      "source_url": "https://cloud.google.com/vision/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "gcp-vision-document-text-detection": {
+      "mode": "ocr",
+      "unit": "usd_per_page",
+      "rate": 0.0015,
+      "provider": "gcp",
+      "source_url": "https://cloud.google.com/vision/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "aws-textract-detect-document-text": {
+      "mode": "ocr",
+      "unit": "usd_per_page",
+      "rate": 0.0015,
+      "provider": "aws",
+      "source_url": "https://aws.amazon.com/textract/pricing/",
+      "retrieved_at": "2026-09-18"
+    },
+    "aws-textract-analyze-forms": {
+      "mode": "ocr",
+      "unit": "usd_per_page",
+      "rate": 0.05,
+      "provider": "aws",
+      "source_url": "https://aws.amazon.com/textract/pricing/",
+      "retrieved_at": "2026-09-18"
+    },
+    "aws-textract-analyze-tables": {
+      "mode": "ocr",
+      "unit": "usd_per_page",
+      "rate": 0.015,
+      "provider": "aws",
+      "source_url": "https://aws.amazon.com/textract/pricing/",
+      "retrieved_at": "2026-09-18"
+    },
+    "tavus-cvi-starter": {
+      "mode": "avatar",
+      "unit": "usd_per_minute",
+      "rate": 0.37,
+      "provider": "tavus",
+      "source_url": "https://www.tavus.io/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "gcp-vision-text-detection-high-volume": {
+      "mode": "ocr",
+      "unit": "usd_per_page",
+      "rate": 0.0006,
+      "provider": "gcp",
+      "source_url": "https://cloud.google.com/vision/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "gcp-vision-document-text-detection-high-volume": {
+      "mode": "ocr",
+      "unit": "usd_per_page",
+      "rate": 0.0006,
+      "provider": "gcp",
+      "source_url": "https://cloud.google.com/vision/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "aws-textract-detect-document-text-high-volume": {
+      "mode": "ocr",
+      "unit": "usd_per_page",
+      "rate": 0.0006,
+      "provider": "aws",
+      "source_url": "https://aws.amazon.com/textract/pricing/",
+      "retrieved_at": "2026-09-18"
+    },
+    "tavus-cvi-growth": {
+      "mode": "avatar",
+      "unit": "usd_per_minute",
+      "rate": 0.32,
+      "provider": "tavus",
+      "source_url": "https://www.tavus.io/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "tavus-cvi-business": {
+      "mode": "avatar",
+      "unit": "usd_per_minute",
+      "rate": 0.26,
+      "provider": "tavus",
+      "source_url": "https://www.tavus.io/pricing",
+      "retrieved_at": "2026-09-18"
     }
   }
 }

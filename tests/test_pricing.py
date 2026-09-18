@@ -265,12 +265,27 @@ def test_cost_map_generated_at_is_iso_date() -> None:
 
 
 def test_reserved_meta_keys_are_not_priceable_models() -> None:
-    """__meta__ / __voice__ are reserved keys, never resolved as models."""
+    """__meta__ / __legs__ / __voice__ are reserved keys, never resolved as models."""
     from floe_guard.pricing import _COST_MAP
 
     assert "__meta__" not in _COST_MAP
+    assert "__legs__" not in _COST_MAP
+    # The pre-P1.11 name. Excluded by SHAPE (dunder), not by an allowlist, so an
+    # older vendored map is filtered just as correctly as a current one.
     assert "__voice__" not in _COST_MAP
     assert "gpt-4o" in _COST_MAP  # real models are still present
+
+
+def test_leg_map_falls_back_to_the_pre_rename_key() -> None:
+    """P1.11 renamed "__voice__" -> "__legs__". The fallback is what makes that
+    non-breaking: a cost_map.json generated before the rename must still resolve,
+    or every pinned/vendored older map silently loses every leg rate."""
+    from floe_guard import pricing
+
+    raw = {"__voice__": {"old-vendor": {"mode": "stt", "unit": "usd_per_second", "rate": 0.1}}}
+    assert raw.get("__legs__", raw.get("__voice__", {}))["old-vendor"]["rate"] == 0.1
+    # And the shipped map is on the NEW key.
+    assert pricing._RAW_COST_MAP.get("__legs__"), "bundled map should use __legs__"
 
 
 @pytest.mark.parametrize(

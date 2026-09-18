@@ -36,8 +36,10 @@ interface CostMapEntry {
   cache_creation_input_token_cost?: unknown;
 }
 
-// Reserved dunder keys (__voice__, __meta__) are NOT models — exclude them so the
-// token resolver only ever sees real model ids (parity with pricing.py's _COST_MAP).
+// Reserved dunder keys (__legs__, __voice__, __meta__) are NOT models — exclude
+// them so the token resolver only ever sees real model ids (parity with
+// pricing.py's _COST_MAP). Matched by SHAPE, not by an allowlist, so a future
+// reserved section needs no change here.
 const COST_MAP: Record<string, CostMapEntry> = Object.fromEntries(
   Object.entries(costMapJson as Record<string, CostMapEntry>).filter(
     ([k]) => !(k.startsWith("__") && k.endsWith("__")),
