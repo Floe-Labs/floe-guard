@@ -24,7 +24,10 @@
  */
 
 import { BudgetExceeded, TokenBudgetExceeded, UnpriceableModelError } from "./errors.js";
-import { pushLedger } from "./sync.js";
+// The ledger-sync vocabulary lives with the validator that enforces it, so the
+// recording path and the push path can never disagree about what a kind is.
+// One-way edge: sync imports only ./errors.js, never ./guard.js.
+import { LEDGER_KINDS, pushLedger, type LedgerKind } from "./sync.js";
 import {
   type ManualPrice,
   type TokenCacheUsage,
@@ -88,7 +91,12 @@ interface StepState {
 export interface SpendEvent {
   /** Unix epoch seconds (UTC). */
   readonly timestamp: number;
-  readonly kind: "llm" | "tool";
+  /**
+   * The full ledger-sync vocabulary, not just `llm | tool`: a non-LLM workload
+   * records itself under its own name via `settleTool(..., { kind })` instead of
+   * disguising itself as a tool call.
+   */
+  readonly kind: LedgerKind;
   readonly modelOrTool: string;
   /** `null` for tool events. */
   readonly promptTokens: number | null;
@@ -574,17 +582,40 @@ export class BudgetGuard {
    * estimate (tracked separately from the LLM side; the default prediction is
    * the max of the two, so a tool-hammering loop's plain `check()` stops
    * BEFORE the crossing call without a cheap tool shrinking the LLM
-   * prediction), and appends
-   * a `kind: "tool"` {@link SpendEvent} to {@link BudgetGuard.spendLog}.
-   * Returns `costUsd`.
+   * prediction), and appends a {@link SpendEvent} to
+   * {@link BudgetGuard.spendLog}. Returns `costUsd`.
+   *
+   * `options.kind` says what the spend actually *is*, from the ledger-sync
+   * vocabulary (`LEDGER_KINDS`). It defaults to `"tool"`, so existing callers
+   * are byte-identical — deliberately, because `kind` is part of the server's
+   * per-event idempotency digest and changing what a call emits would re-key
+   * every event it ever wrote. Pass e.g. `{ kind: "avatar" }` to meter a leg
+   * under its own name instead of disguising it as a tool call; `exportLog()`
+   * then carries it and Reconcile Mode files it correctly.
    */
   settleTool(
     tool: string,
     costUsd: number,
-    options: { reserved?: ReservationHandle; label?: string } = {},
+    options: { reserved?: ReservationHandle; label?: string; kind?: LedgerKind } = {},
   ): number {
     if (!Number.isFinite(costUsd) || costUsd < 0) {
       throw new RangeError(`costUsd must be a finite, non-negative number, got ${costUsd}`);
+    }
+    const kind: LedgerKind = options.kind ?? "tool";
+    // Reject at RECORD time, not at push time: a ledger that only fails when you
+    // finally sync it is a ledger you discover is wrong after the run.
+    if (!LEDGER_KINDS.includes(kind)) {
+      throw new RangeError(
+        `kind must be one of ${LEDGER_KINDS.map((k) => `'${k}'`).join(", ")}, got '${kind}'.`,
+      );
+    }
+    if (kind === "llm") {
+      throw new RangeError(
+        "kind: 'llm' cannot be recorded through settleTool()/recordTool(). toolCosts is " +
+          "the non-token side of the one shared ceiling and `spentUsd - sum(toolCosts)` is " +
+          "documented as the token side; an 'llm' event on this path would break that " +
+          "split. Use record()/settle().",
+      );
     }
     const reserved = options.reserved ?? 0;
     // A bad reserved handle would corrupt the in-flight tally and break the
@@ -606,7 +637,7 @@ export class BudgetGuard {
     this.toolCostTotals[tool] = (this.toolCostTotals[tool] ?? 0) + costUsd;
     this.appendEvent({
       timestamp: Date.now() / 1000,
-      kind: "tool",
+      kind,
       modelOrTool: tool,
       promptTokens: null,
       completionTokens: null,
@@ -623,10 +654,18 @@ export class BudgetGuard {
    * Post-hoc accrual for costs only known after the call (metered APIs); when
    * the price is known up front, {@link BudgetGuard.reserveTool} /
    * {@link BudgetGuard.settleTool} give the stronger pre-call hard-stop. See
-   * `settleTool` for the full contract. Returns `costUsd`.
+   * `settleTool` for the full contract, including `kind`. Returns `costUsd`.
    */
-  recordTool(tool: string, costUsd: number, options: { label?: string } = {}): number {
-    return this.settleTool(tool, costUsd, { reserved: 0, label: options.label });
+  recordTool(
+    tool: string,
+    costUsd: number,
+    options: { label?: string; kind?: LedgerKind } = {},
+  ): number {
+    return this.settleTool(tool, costUsd, {
+      reserved: 0,
+      label: options.label,
+      kind: options.kind,
+    });
   }
 
   /**

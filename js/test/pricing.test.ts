@@ -152,6 +152,9 @@ describe("costMapGeneratedAt / reserved keys", () => {
 
   it("never resolves reserved dunder keys as models", () => {
     expect(resolvePrice("__meta__")).toBeNull();
+    expect(resolvePrice("__legs__")).toBeNull();
+    // The pre-P1.11 name. Excluded by SHAPE (dunder), not by an allowlist, so an
+    // older vendored map is filtered just as correctly as a current one.
     expect(resolvePrice("__voice__")).toBeNull();
     // a real model still resolves
     expect(resolvePrice("gpt-4o")).not.toBeNull();

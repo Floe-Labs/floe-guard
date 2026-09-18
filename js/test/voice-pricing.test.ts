@@ -112,6 +112,79 @@ describe("priceVoiceLeg — entry point", () => {
   });
 });
 
+describe("P1.11 — SMS / OCR / GPU / avatar", () => {
+  it("every mode has a unit", () => {
+    // A mode with no unit fails closed on EVERY call, which is worse than not
+    // having the mode at all. This is the bar for adding one.
+    expect(Object.keys(unitForMode).sort()).toEqual(
+      ["avatar", "gpu", "ocr", "sms", "stt", "telephony", "tts"].sort(),
+    );
+  });
+
+  it("bills each new mode in its own unit", () => {
+    expect(voiceLegCost("sms", 3, 0.0083)).toBeCloseTo(0.0249, 9);
+    expect(voiceLegCost("ocr", 200, 0.0015)).toBeCloseTo(0.3, 9);
+    expect(voiceLegCost("gpu", 90, 0.001097)).toBeCloseTo(0.09873, 9);
+    expect(voiceLegCost("avatar", 2.5, 0.37)).toBeCloseTo(0.925, 9);
+  });
+
+  it("resolves a vendor in each new modality", () => {
+    expect(lookupVoiceRate("twilio-sms-us-outbound", "sms")).toBeCloseTo(0.0083, 9);
+    expect(lookupVoiceRate("telnyx-sms-us-outbound", "sms")).toBeCloseTo(0.004, 9);
+    expect(lookupVoiceRate("modal-h100-sxm5", "gpu")).toBeCloseTo(0.001097, 9);
+    expect(lookupVoiceRate("aws-textract-detect-document-text", "ocr")).toBeCloseTo(0.0015, 9);
+    expect(lookupVoiceRate("tavus-cvi-starter", "avatar")).toBeCloseTo(0.37, 9);
+  });
+
+  it("stores OCR per PAGE, not per thousand pages", () => {
+    // Vendors quote per 1,000 pages. Getting this wrong is a 1000x mis-bill.
+    expect(priceVoiceLeg("ocr", 1000, { model: "gcp-vision-document-text-detection" })).toBeCloseTo(
+      1.5,
+      9,
+    );
+  });
+
+  it("ships volume tiers as separate keys", () => {
+    // Which tier you are on is a fact about YOU, so it is a choice of key rather
+    // than a curation guess baked into one number.
+    expect(lookupVoiceRate("gcp-vision-document-text-detection", "ocr")).toBeCloseTo(0.0015, 9);
+    expect(lookupVoiceRate("gcp-vision-document-text-detection-high-volume", "ocr")).toBeCloseTo(
+      0.0006,
+      9,
+    );
+    expect(lookupVoiceRate("tavus-cvi-growth", "avatar")).toBeCloseTo(0.32, 9);
+    expect(lookupVoiceRate("tavus-cvi-business", "avatar")).toBeCloseTo(0.26, 9);
+    // No bare "tavus-cvi" implying a default plan.
+    expect(lookupVoiceRate("tavus-cvi", "avatar")).toBeNull();
+  });
+
+  it("resolves a bundled rate as UNCONFIRMED, with its citation", () => {
+    // A list price is not a cost. It carries provenance and confirmed=false so a
+    // console can ask the user to confirm or correct it, rather than reporting a
+    // guess as though it were their bill.
+    const resolved = resolveVoiceRate("tavus-cvi-starter", "avatar");
+    expect(resolved.source).toBe("cost_map");
+    expect(resolved.confirmed).toBe(false);
+    expect(resolved.provider).toBe("tavus");
+    expect(resolved.source_url).toBe("https://www.tavus.io/pricing");
+    expect(resolved.retrieved_at).toBe("2026-09-18");
+  });
+
+  it("invents no provenance for the pre-P1.11 rates", () => {
+    // Back-filling a plausible-looking URL would launder a guess into a
+    // citation, so absent provenance is reported honestly as absent.
+    const resolved = resolveVoiceRate("deepgram-nova-3", "stt");
+    expect(resolved.source_url).toBeUndefined();
+    expect(resolved.confirmed).toBe(false);
+  });
+
+  it("does not vendor runpod", () => {
+    // Per-hour across two tiers, and the map cannot know which one a caller is
+    // on. Runpod users add it through their own rate card.
+    expect(lookupVoiceRate("runpod-h100-sxm", "gpu")).toBeNull();
+  });
+});
+
 describe("voiceLegCost — non-finite quantities fail closed", () => {
   it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
     "throws rather than returning a non-finite cost (%s)",

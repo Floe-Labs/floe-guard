@@ -50,6 +50,11 @@ from .errors import (
 from .pricing import ManualPrice, price_tokens, resolve_price
 from .store import StateStore
 
+# The ledger-sync vocabulary lives with the validator that enforces it, so the
+# recording path and the push path can never disagree about what a kind is.
+# One-way edge: sync imports only .errors, never .guard.
+from .sync import LEDGER_KINDS, LedgerKind
+
 # Tolerance for float rounding in the running spend total (well below $0.000001).
 _EPS = 1e-12
 
@@ -192,7 +197,10 @@ class SpendEvent:
     """
 
     timestamp: float  # Unix epoch seconds (UTC)
-    kind: Literal["llm", "tool"]
+    # The full ledger-sync vocabulary, not just llm | tool: a non-LLM workload
+    # records itself under its own name via ``settle_tool(..., kind=...)``
+    # instead of disguising itself as a tool call.
+    kind: LedgerKind
     model_or_tool: str
     prompt_tokens: int | None  # None for tool events
     completion_tokens: int | None  # None for tool events
@@ -779,6 +787,7 @@ class BudgetGuard:
         *,
         reserved: ReservationHandle = 0.0,
         label: str | None = None,
+        kind: LedgerKind = "tool",
     ) -> float:
         """Release a reservation and record a tool call's actual cost.
 
@@ -789,11 +798,33 @@ class BudgetGuard:
         of the next-call estimate (tracked separately from the LLM side; the
         default prediction is the max of the two, so a tool-hammering loop's
         plain :meth:`check` stops BEFORE the crossing call without a cheap tool
-        shrinking the LLM prediction), and appends a ``kind="tool"`` :class:`SpendEvent` to
+        shrinking the LLM prediction), and appends a :class:`SpendEvent` to
         :attr:`spend_log`. Returns ``cost_usd``.
+
+        :param kind: What the spend actually *is*, from the ledger-sync
+            vocabulary (:data:`~floe_guard.sync.LEDGER_KINDS`). Defaults to
+            ``"tool"``, so existing callers are byte-identical — deliberately,
+            because ``kind`` is part of the server's per-event idempotency
+            digest and changing what a call emits would re-key every event it
+            ever wrote. Pass e.g. ``kind="avatar"`` to meter a leg under its own
+            name instead of disguising it as a tool call; ``export_log()`` then
+            carries it and Reconcile Mode files it correctly.
         """
         if not math.isfinite(cost_usd) or cost_usd < 0:
             raise ValueError(f"cost_usd must be a finite, non-negative number, got {cost_usd!r}")
+        # Reject at RECORD time, not at push time: a ledger that only fails when
+        # you finally sync it is a ledger you discover is wrong after the run.
+        if kind not in LEDGER_KINDS:
+            raise ValueError(
+                f"kind must be one of {', '.join(repr(k) for k in LEDGER_KINDS)}, got {kind!r}."
+            )
+        if kind == "llm":
+            raise ValueError(
+                "kind='llm' cannot be recorded through settle_tool()/record_tool(). "
+                ":attr:`tool_costs` is the non-token side of the one shared ceiling and "
+                "`spent_usd - sum(tool_costs)` is documented as the token side; an 'llm' "
+                "event on this path would break that split. Use record()/settle()."
+            )
         # A bad reserved handle would corrupt _reserved and break the ceiling for
         # OTHER in-flight calls — same contract as settle(). _reserved_usd_of
         # validates the handle (raw float, or a BudgetReservation's fields).
@@ -826,7 +857,7 @@ class BudgetGuard:
             self._spend_log.append(
                 SpendEvent(
                     timestamp=time.time(),
-                    kind="tool",
+                    kind=kind,
                     model_or_tool=tool,
                     prompt_tokens=None,
                     completion_tokens=None,
@@ -837,15 +868,23 @@ class BudgetGuard:
             )
         return cost_usd
 
-    def record_tool(self, tool: str, cost_usd: float, *, label: str | None = None) -> float:
+    def record_tool(
+        self,
+        tool: str,
+        cost_usd: float,
+        *,
+        label: str | None = None,
+        kind: LedgerKind = "tool",
+    ) -> float:
         """Accrue a non-LLM cost (a paid tool/API call) against the same ceiling.
 
         Post-hoc accrual for costs only known after the call (metered APIs);
         when the price is known up front, :meth:`reserve_tool` /
         :meth:`settle_tool` give the stronger pre-call hard-stop. See
-        :meth:`settle_tool` for the full contract. Returns ``cost_usd``.
+        :meth:`settle_tool` for the full contract, including ``kind``.
+        Returns ``cost_usd``.
         """
-        return self.settle_tool(tool, cost_usd, reserved=0.0, label=label)
+        return self.settle_tool(tool, cost_usd, reserved=0.0, label=label, kind=kind)
 
     def release(self, reserved: ReservationHandle) -> None:
         """Drop an in-flight reservation without recording spend (e.g. the call

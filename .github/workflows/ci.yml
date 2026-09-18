@@ -45,6 +45,14 @@ jobs:
         run: |
           diff -q src/floe_guard/cost_map.json js/src/cost_map.json \
             || { echo "::error::cost_map.json drifted between src/floe_guard/ and js/src/ — re-sync the two copies."; exit 1; }
+      - name: Python and JS ledger-sync kind vocabularies must match
+        # P1.10: the same discipline as the cost map. `kind` is part of the
+        # server's idempotency digest, so the two SDKs disagreeing about the
+        # vocabulary means one of them emits events the other would reject —
+        # and a renamed value silently re-keys idempotency.
+        run: |
+          diff -q src/floe_guard/kinds.json js/src/kinds.json \
+            || { echo "::error::kinds.json drifted between src/floe_guard/ and js/src/ — re-sync the two copies."; exit 1; }
 
   examples-index:
     # README's "## Examples" table must list exactly the examples/*.py scripts

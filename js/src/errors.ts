@@ -96,19 +96,22 @@ export class UnpriceableModelError extends FloeGuardError {
 }
 
 /**
- * Thrown when a voice leg (STT/TTS/telephony) cannot be priced and the guard is
- * fail-closed.
+ * Thrown when a per-unit leg cannot be priced and the guard is fail-closed.
  *
- * The voice twin of {@link UnpriceableModelError}: we refuse rather than silently
- * accrue $0 — "we cannot cap what we cannot price". It fires when an adapter is
- * asked to meter a leg for a vendor that is absent from the bundled voice cost map
- * (or whose entry has the wrong unit/mode for the leg) and no per-unit override was
- * given. Pass a per-unit rate (`stt_usd_per_second` / `tts_usd_per_1k_chars` /
- * `telephony_usd_per_minute`) to make the leg enforceable.
+ * The per-unit twin of {@link UnpriceableModelError}: we refuse rather than
+ * silently accrue $0 — "we cannot cap what we cannot price".
+ *
+ * It fires when NONE of the three sources can price the leg: no per-call
+ * override, no usable entry in your rate card, and no usable entry in the
+ * bundled per-unit leg map. "Usable" matters — an entry whose `mode` or `unit` is
+ * wrong for the leg is rejected rather than reinterpreted, so a
+ * configured-but-malformed rate-card entry lands here too. That case is the
+ * reason the message names the rate card: blaming only the bundled map would send
+ * you looking in the wrong place for a rate you had in fact declared.
  *
  * Mirrors `UnpriceableVoiceError` in `src/floe_guard/errors.py`.
  */
-export class UnpriceableVoiceError extends FloeGuardError {
+export class UnpriceableLegError extends FloeGuardError {
   readonly vendor: string | null;
   readonly mode: string;
 
@@ -116,16 +119,35 @@ export class UnpriceableVoiceError extends FloeGuardError {
     // Match Python's `{vendor!r}`: a string is quoted, None renders as `None`.
     const shown = vendor === null ? "None" : `'${vendor}'`;
     super(
-      `Cannot price ${mode} vendor ${shown}: not in the bundled voice cost ` +
-        `map (or its entry has the wrong unit for a ${mode} leg) and no per-unit ` +
-        `override was given. The guard cannot enforce a budget on spend it ` +
-        `cannot measure. Pass a per-unit rate to enable enforcement.`,
+      `Cannot price ${mode} vendor ${shown}: no per-call override, no usable ` +
+        `entry in your rate card, and none in the bundled per-unit leg map — or ` +
+        `an entry exists whose mode/unit is wrong for a ${mode} leg, which is ` +
+        `refused rather than reinterpreted. The guard cannot enforce a budget on ` +
+        `spend it cannot measure. Declare the rate you pay in your rate card ` +
+        `(FLOE_RATE_CARD) or pass a per-unit override to enable enforcement.`,
     );
+    // The runtime name stays "UnpriceableVoiceError" so existing log scrapes
+    // and `err.name === …` checks keep matching. Only the exported symbol is
+    // generalised; renaming this string would be a silent breaking change.
     this.name = "UnpriceableVoiceError";
     this.vendor = vendor;
     this.mode = mode;
   }
 }
+
+/**
+ * Deprecated alias for {@link UnpriceableLegError}, kept so existing
+ * `catch (e) { if (e instanceof UnpriceableVoiceError) … }` keeps working. It IS
+ * the same class, not a subclass, so `instanceof` behaves identically in both
+ * directions. Prefer the leg-shaped name in new code.
+ *
+ * An export alias rather than `const UnpriceableVoiceError = UnpriceableLegError`:
+ * a const binding carries only the VALUE, so `let e: UnpriceableVoiceError` — a
+ * type-position use that compiled before — fails with TS2749. Aliasing the class
+ * on the export preserves both its value and its type identity, so deprecated
+ * really means "still works".
+ */
+export { UnpriceableLegError as UnpriceableVoiceError };
 
 /**
  * Thrown when an **opt-in** ledger sync to Reconcile Mode fails.
