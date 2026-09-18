@@ -208,6 +208,9 @@ estimate-based, so size reservations to the real request when possible.
 `StreamGuard` and `guard_stream()` require an in-memory guard. With a persistent
 store they raise `ValueError` before consuming chunks and release any supplied
 reservation: active stream accrual is not shared across processes.
+Streams also cannot overlap `guard.step()` scopes: creating a stream inside a
+step raises `ValueError` and releases its reservation; opening a step while a
+stream is active raises too. Finish or close streams before entering a step.
 
 ### Unpriceable models fail closed
 

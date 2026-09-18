@@ -1023,6 +1023,9 @@ class BudgetGuard:
         innermost is the one that owns each call. **Not for concurrent parallel
         steps on one guard** — that's a per-step identity registry, out of scope
         for issue #46. Use one guard per parallel branch instead.
+
+        Steps cannot overlap active streams: stream accrual has no step owner.
+        Starting either while the other is active raises ``ValueError``.
         """
         if self._store is not None:
             # Steps are an in-process, token-aware construct; persistence is USD-only
@@ -1042,6 +1045,8 @@ class BudgetGuard:
             max_usd=float(max_usd) if max_usd is not None else None, max_tokens=max_tokens
         )
         with self._lock:
+            if self._stream_costs:
+                raise ValueError("step() is not supported while a stream is active")
             self._steps.append(state)
         try:
             yield self
@@ -1327,14 +1332,17 @@ class BudgetGuard:
             if key is not exclude
         )
 
-    def _stream_register(self, reserved: float) -> object:
+    def _stream_register(self, reserved: ReservationHandle) -> object:
         """Register an active stream (see :class:`~floe_guard.stream.StreamGuard`)
         and return its registry key. Active streams' accrued-but-unsettled costs
         count against the ceiling for each OTHER stream, so parallel unreserved
         streams share the budget instead of each spending the full ceiling."""
         key = object()
         with self._lock:
-            self._stream_costs[key] = (0.0, max(0.0, reserved))
+            if self._steps:
+                self.release(reserved)
+                raise ValueError("StreamGuard is not supported inside a step scope")
+            self._stream_costs[key] = (0.0, self._reserved_usd_of(reserved))
         return key
 
     def _stream_unregister(self, key: object) -> None:

@@ -18,6 +18,11 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 - `StreamGuard` / `guard_stream()` now reject persistent stores with `ValueError`
   and release any supplied reservation before streaming starts. Previously,
   process-local stream accrual was invisible to persistent reservation admission.
+- Reject overlapping step scopes and streams with `ValueError`: active stream
+  accrual has no step owner and could bypass the step cap. Rejected streams
+  release their supplied reservation; a step can start once streams settle.
+- Closing or discarding an unstarted `guard_stream()` wrapper clears its stream
+  registration so later steps remain usable. Its reservation stays caller-owned.
 
 ## Unreleased — js 0.16.0
 

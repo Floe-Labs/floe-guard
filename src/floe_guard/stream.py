@@ -66,6 +66,10 @@ class StreamGuard:
     Persistent stores are not supported: active stream accrual is process-local
     and cannot be enforced atomically across store clients. Construction raises
     ``ValueError`` after releasing ``reserved`` when a store is configured.
+
+    Step scopes are also unsupported: stream accrual has no step ownership.
+    Construction inside a step releases ``reserved`` and raises ``ValueError``;
+    opening a step while a stream is active is rejected too.
     """
 
     def __init__(
@@ -123,8 +127,8 @@ class StreamGuard:
         # Registered AFTER the fail-closed raise so a refused stream leaves no
         # entry; _settle() unregisters, so entries live exactly as long as the
         # stream. Parallel streams see each other's accrual through this. The
-        # registry tracks USD only, so pass the USD amount of the handle.
-        self._key = guard._stream_register(self._reserved_usd)
+        # registry tracks USD only, but needs the full handle if it rejects a step.
+        self._key = guard._stream_register(reserved)
 
     def feed_text(self, delta: str) -> None:
         """Meter one text delta (token count via the heuristic/``count_tokens``).
@@ -229,10 +233,12 @@ def guard_stream(
     Validation and the fail-closed unpriceable check run eagerly, at call
     time. Once you start iterating, the wrapper owns ``reserved`` and settles
     or releases it on every exit path; a returned-but-never-iterated stream
-    leaves the handle with you (release it yourself).
+    leaves the handle with you (release it yourself). Closing that wrapper
+    removes its stream registration without charging prompt estimates.
 
     Persistent stores are rejected eagerly with ``ValueError``, releasing any
     supplied reservation before consuming chunks, as with :class:`StreamGuard`.
+    Active step scopes are rejected the same way.
     """
     sg = StreamGuard(
         guard,
@@ -256,12 +262,21 @@ def guard_stream(
     extract = get_text or _default_get_text
 
     def _run() -> Iterator[Any]:
+        # Prime only this cleanup boundary, without opening or consuming chunks.
+        # An unopened wrapper still leaves reservation ownership with its caller.
+        try:
+            yield None
+        except BaseException:
+            guard._stream_unregister(sg._key)
+            raise
         with sg:
             for chunk in chunks:
                 sg.feed_text(extract(chunk))
                 yield chunk
 
-    return _run()
+    stream = _run()
+    next(stream)  # Consume the private sentinel so close/throw can run cleanup.
+    return stream
 
 
 __all__ = ["StreamGuard", "guard_stream", "approx_tokens"]
