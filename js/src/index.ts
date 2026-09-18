@@ -70,6 +70,15 @@ export {
   priceVoiceLeg,
 } from "./voice-pricing.js";
 
+// User-supplied rates — what YOU pay, beating the bundled list prices.
+export {
+  RATE_CARD_ENV,
+  type RateCardEntry,
+  loadRateCard,
+  setRateCard,
+  currentRateCard,
+} from "./rate-card.js";
+
 // gates as a namespace, mirroring Python's `floe_guard.gates` — so
 // `import { gates } from "floe-guard"` reads like the Python package.
 export * as gates from "./gates.js";
