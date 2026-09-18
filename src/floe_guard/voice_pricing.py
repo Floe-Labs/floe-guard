@@ -29,7 +29,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from .errors import UnpriceableLegError, UnpriceableVoiceError
+from .errors import UnpriceableLegError
 from .pricing import _VOICE_MAP
 
 #: The legs the bundled map can price per unit. Named for the leg rather than

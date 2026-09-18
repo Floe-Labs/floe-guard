@@ -51,7 +51,7 @@ from .receipt import FloeCost, turn_cost
 from .retry import RetryPlan, async_with_budget_retry, with_budget_retry
 from .store import SqliteStore, StateStore
 from .stream import StreamGuard, guard_stream
-from .sync import push_ledger
+from .sync import LEDGER_KINDS, LedgerKind, push_ledger
 from .voice_pricing import (
     VoiceRate,
     lookup_voice_rate,
@@ -110,5 +110,8 @@ __all__ = [
     "hosted_remaining_usd",
     "push_ledger",
     "LedgerSyncError",
+    # The ledger-sync `kind` vocabulary, for `settle_tool(..., kind=...)`.
+    "LEDGER_KINDS",
+    "LedgerKind",
     "gates",
 ]

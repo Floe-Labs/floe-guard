@@ -9,7 +9,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { BudgetGuard, LedgerSyncError, pushLedger } from "../src/index.js";
+import {
+  BudgetGuard,
+  LEDGER_KINDS,
+  LedgerSyncError,
+  pushLedger,
+  type LedgerKind,
+} from "../src/index.js";
 
 // P1.10 — read the SHIPPED artifact, not a re-export: this is the same file the
 // validator loads and the same one CI diffs against the Python copy, so a drift
@@ -234,12 +240,59 @@ describe("pushLedger validates the ledger before sending", () => {
     await expect(pushLedger(`${lines}\n`, "floe_abc")).resolves.toBe(KINDS.length);
   });
 
-  it("no longer forces a non-LLM workload to disguise itself as 'tool'", async () => {
-    // The escape hatch this widening replaces: an avatar leg used to be metered
-    // as a tool call, so the declared kind and the real work disagreed.
-    const avatar = '{"timestamp":1,"kind":"avatar","model_or_tool":"livekit-avatar","cost_usd":0.12}\n';
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(ok({ synced: 1 }));
-    await expect(pushLedger(avatar, "floe_abc")).resolves.toBe(1);
+  it("carries a recorded avatar leg under its own name, end to end", async () => {
+    // The escape hatch this widening replaces, through the REAL producer: an
+    // avatar leg used to be metered as a tool call, so the declared kind and the
+    // real work disagreed. This drives recordTool({ kind }) → exportLog() →
+    // pushLedger rather than hand-building the JSON, which is the only way to
+    // prove a real workload — not just an externally authored file — can emit
+    // the new kinds.
+    const guard = new BudgetGuard(5.0);
+    guard.recordTool("livekit-avatar", 0.12, { kind: "avatar" });
+
+    expect(guard.spendLog.map((e) => e.kind)).toEqual(["avatar"]);
+
+    const ledger = guard.exportLog();
+    expect(JSON.parse(ledger.trim()).kind).toBe("avatar");
+
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(ok({ synced: 1 }));
+    await expect(pushLedger(ledger, "floe_abc")).resolves.toBe(1);
+    expect(spy).toHaveBeenCalledOnce();
+  });
+
+  it("still defaults to 'tool'", () => {
+    // `kind` is part of the server's per-event idempotency digest, so a call
+    // that did not ask for a kind must keep emitting `tool` — otherwise every
+    // event every existing caller ever wrote is re-keyed and a re-synced ledger
+    // double-counts.
+    const guard = new BudgetGuard(5.0);
+    guard.recordTool("exa.search", 0.01);
+    expect(guard.spendLog[0]?.kind).toBe("tool");
+  });
+
+  it("rejects a kind outside the vocabulary, at record time", () => {
+    // Not at push time — a ledger that only fails when you finally sync it is
+    // one you discover is wrong after the run.
+    const guard = new BudgetGuard(5.0);
+    expect(() =>
+      guard.recordTool("mystery", 0.01, { kind: "quantum-flux" as LedgerKind }),
+    ).toThrow(/kind must be one of/);
+    expect(guard.spendLog).toEqual([]);
+    expect(guard.spentUsd).toBe(0);
+  });
+
+  it("rejects kind: 'llm' on the tool path", () => {
+    // `spentUsd - sum(toolCosts)` is documented as the token side of the one
+    // shared ceiling; an 'llm' event here would break that split.
+    const guard = new BudgetGuard(5.0);
+    expect(() => guard.recordTool("gpt-4o", 0.01, { kind: "llm" })).toThrow(
+      /cannot be recorded through/,
+    );
+    expect(guard.spendLog).toEqual([]);
+  });
+
+  it("exports LEDGER_KINDS as the same vocabulary the validator uses", () => {
+    expect(LEDGER_KINDS).toEqual(KINDS);
   });
 
   it("the vocabulary is exactly the nine widened kinds, in order", async () => {

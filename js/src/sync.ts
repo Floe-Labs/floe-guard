@@ -40,7 +40,36 @@ import kindsJson from "./kinds.json";
  * ADDITIVE ONLY: `kind` is part of the server's per-event idempotency digest, so
  * adding a value is safe while renaming one re-keys every event that used it.
  */
-const KINDS: readonly string[] = (kindsJson as { kinds: string[] }).kinds;
+export const LEDGER_KINDS: readonly string[] = (kindsJson as { kinds: string[] }).kinds;
+
+const KINDS: readonly string[] = LEDGER_KINDS;
+
+/**
+ * The same vocabulary in the type system, for {@link SpendEvent.kind} and the
+ * `kind` option on {@link BudgetGuard.settleTool}.
+ *
+ * `resolveJsonModule` widens the imported array to `string[]`, so a union cannot
+ * be derived from the JSON — this list is typed out by hand, the ONE place the
+ * vocabulary is duplicated. It is not left to a code review to catch: the
+ * "vocabulary is exactly the nine widened kinds" test pins the JSON, and
+ * `assertLedgerKindUnionMatchesJson` below pins this union to it at compile time.
+ */
+export type LedgerKind =
+  | "llm"
+  | "tool"
+  | "stt"
+  | "tts"
+  | "telephony"
+  | "avatar"
+  | "sms"
+  | "ocr"
+  | "gpu";
+
+// Compile-time only: if a kind is added to kinds.json but not to LedgerKind (or
+// vice versa), one of these two assignments stops typechecking. Costs nothing at
+// runtime — tsup erases it.
+const assertLedgerKindUnionMatchesJson: readonly LedgerKind[] = KINDS as readonly LedgerKind[];
+void assertLedgerKindUnionMatchesJson;
 
 const FLOE_API_KEY_ENV = "FLOE_API_KEY";
 const FLOE_API_BASE_URL_ENV = "FLOE_API_BASE_URL";

@@ -31,7 +31,7 @@ export {
   UnpriceableVoiceError,
   LedgerSyncError,
 } from "./errors.js";
-export { pushLedger } from "./sync.js";
+export { pushLedger, LEDGER_KINDS, type LedgerKind } from "./sync.js";
 export {
   budgetGuardMiddleware,
   type BudgetGuardMiddleware,

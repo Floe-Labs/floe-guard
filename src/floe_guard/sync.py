@@ -32,6 +32,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from importlib import resources
+from typing import Literal
 
 from .errors import LedgerSyncError
 
@@ -78,7 +79,23 @@ def _load_kinds() -> tuple[str, ...]:
 # (sha256(agentId|timestamp|model_or_tool|cost_usd|kind)), so adding a value is
 # safe while renaming one re-keys every event that used it and would
 # double-count a re-synced ledger.
-_KINDS: tuple[str, ...] = _load_kinds()
+LEDGER_KINDS: tuple[str, ...] = _load_kinds()
+
+# Private alias kept so the validator below and existing tests keep reading the
+# name they always did. Same tuple, not a copy.
+_KINDS: tuple[str, ...] = LEDGER_KINDS
+
+#: The same vocabulary in the type system, for :attr:`~floe_guard.SpendEvent.kind`
+#: and the ``kind=`` argument on :meth:`~floe_guard.BudgetGuard.settle_tool`.
+#:
+#: ``Literal`` cannot be built from JSON at runtime, so this list is typed out by
+#: hand — the ONE place the vocabulary is duplicated. It is not left to a code
+#: review to catch: ``test_ledger_kind_literal_matches_the_vendored_json`` asserts
+#: this union and :data:`LEDGER_KINDS` are the same set, so adding a kind to
+#: ``kinds.json`` without adding it here fails the suite.
+LedgerKind = Literal[
+    "llm", "tool", "stt", "tts", "telephony", "avatar", "sms", "ocr", "gpu"
+]
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

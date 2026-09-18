@@ -135,8 +135,14 @@ export class UnpriceableLegError extends FloeGuardError {
  * `catch (e) { if (e instanceof UnpriceableVoiceError) … }` keeps working. It IS
  * the same class, not a subclass, so `instanceof` behaves identically in both
  * directions. Prefer the leg-shaped name in new code.
+ *
+ * An export alias rather than `const UnpriceableVoiceError = UnpriceableLegError`:
+ * a const binding carries only the VALUE, so `let e: UnpriceableVoiceError` — a
+ * type-position use that compiled before — fails with TS2749. Aliasing the class
+ * on the export preserves both its value and its type identity, so deprecated
+ * really means "still works".
  */
-export const UnpriceableVoiceError = UnpriceableLegError;
+export { UnpriceableLegError as UnpriceableVoiceError };
 
 /**
  * Thrown when an **opt-in** ledger sync to Reconcile Mode fails.
