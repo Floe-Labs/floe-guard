@@ -16,6 +16,11 @@ import pytest
 
 from floe_guard import BudgetGuard, LedgerSyncError, push_ledger
 
+# P1.10 — the vendored `kind` vocabulary, read from the module that enforces it
+# rather than re-typed here, so a drift between kinds.json and the validator
+# fails these tests instead of passing against a stale literal.
+from floe_guard.sync import _KINDS
+
 _LEDGER_KEYS = {
     "timestamp",
     "kind",
@@ -261,6 +266,8 @@ def test_push_ledger_rejects_smuggled_field_no_network() -> None:
     [
         '{"kind":"tool","model_or_tool":"api","cost_usd":0.01}',  # missing timestamp
         '{"timestamp":1.0,"kind":"bogus","model_or_tool":"api","cost_usd":0.01}',  # bad kind
+        '{"timestamp":1.0,"kind":"LLM","model_or_tool":"api","cost_usd":0.01}',  # case-sensitive
+        '{"timestamp":1.0,"kind":"voice","model_or_tool":"api","cost_usd":0.01}',  # unlisted
         '{"timestamp":1.0,"kind":"tool","model_or_tool":"api","cost_usd":-1}',  # negative cost
         '{"timestamp":1.0,"kind":"tool","model_or_tool":"api","cost_usd":"x"}',  # non-numeric cost
         '{"timestamp":1.0,"kind":"tool","model_or_tool":123,"cost_usd":0.01}',  # non-str model
@@ -272,6 +279,93 @@ def test_push_ledger_rejects_bad_schema_no_network(bad_line: str) -> None:
         with pytest.raises(LedgerSyncError):
             push_ledger(bad_line + "\n", api_key="floe_abc")
     opener.assert_not_called()
+
+
+# ── P1.10: the widened kind vocabulary ────────────────────────────────────────
+
+
+def test_push_ledger_accepts_every_vendored_kind() -> None:
+    """Every kind in kinds.json is accepted — the whole point of the widening."""
+    lines = "".join(
+        f'{{"timestamp":{i + 1}.0,"kind":"{k}","model_or_tool":"m","cost_usd":0.01}}\n'
+        for i, k in enumerate(_KINDS)
+    )
+    with mock.patch("floe_guard.sync._OPENER.open", return_value=_ok({"synced": len(_KINDS)})):
+        assert push_ledger(lines, api_key="floe_abc") == len(_KINDS)
+
+
+def test_a_recorded_avatar_leg_travels_under_its_own_name_end_to_end() -> None:
+    """The escape hatch this widening replaces, through the REAL producer.
+
+    An avatar leg used to be metered via ``record_tool`` and synced as ``tool``,
+    so the declared kind and the real work disagreed. This drives the actual
+    recording path — ``record_tool(kind=...)`` → ``export_log()`` → ``push_ledger``
+    — rather than hand-building the JSON, which is the only way to prove a real
+    workload (not just an externally authored file) can emit the new kinds.
+    """
+    guard = BudgetGuard(limit_usd=5.00)
+    guard.record_tool("livekit-avatar", 0.12, kind="avatar")
+
+    (event,) = guard.spend_log
+    assert event.kind == "avatar"
+
+    ledger = guard.export_log()
+    assert json.loads(ledger.splitlines()[0])["kind"] == "avatar"
+
+    with mock.patch("floe_guard.sync._OPENER.open", return_value=_ok({"synced": 1})) as opener:
+        assert push_ledger(ledger, api_key="floe_abc") == 1
+    opener.assert_called_once()
+
+
+def test_record_tool_still_defaults_to_tool() -> None:
+    """The default is byte-identical to before the widening.
+
+    ``kind`` is part of the server's per-event idempotency digest, so a call that
+    did not ask for a kind must keep emitting ``tool`` — otherwise every event
+    every existing caller ever wrote is re-keyed and a re-synced ledger
+    double-counts.
+    """
+    guard = BudgetGuard(limit_usd=5.00)
+    guard.record_tool("exa.search", 0.01)
+    assert guard.spend_log[0].kind == "tool"
+
+
+def test_record_tool_rejects_a_kind_outside_the_vocabulary() -> None:
+    """Rejected at RECORD time, not at push time — a ledger that only fails when
+    you finally sync it is one you discover is wrong after the run."""
+    guard = BudgetGuard(limit_usd=5.00)
+    with pytest.raises(ValueError, match="kind must be one of"):
+        guard.record_tool("mystery", 0.01, kind="quantum-flux")  # type: ignore[arg-type]
+    assert guard.spend_log == []
+    assert guard.spent_usd == 0.0
+
+
+def test_record_tool_rejects_llm_kind() -> None:
+    """``spent_usd - sum(tool_costs)`` is documented as the token side of the one
+    shared ceiling; an 'llm' event on the tool path would break that split."""
+    guard = BudgetGuard(limit_usd=5.00)
+    with pytest.raises(ValueError, match="cannot be recorded through"):
+        guard.record_tool("gpt-4o", 0.01, kind="llm")
+    assert guard.spend_log == []
+
+
+def test_ledger_kind_literal_matches_the_vendored_json() -> None:
+    """``Literal`` cannot be built from JSON at runtime, so :data:`LedgerKind` is
+    typed out by hand — the one place the vocabulary is duplicated. This is the
+    assertion that stops it drifting from ``kinds.json``."""
+    from typing import get_args
+
+    from floe_guard.sync import LedgerKind
+
+    assert set(get_args(LedgerKind)) == set(_KINDS)
+
+
+def test_kind_vocabulary_is_the_nine_widened_kinds_in_order() -> None:
+    """Pins the vendored list. The JS copy is byte-identical by CI (``diff -q``),
+    so asserting it here asserts it for both SDKs."""
+    assert _KINDS == (
+        "llm", "tool", "stt", "tts", "telephony", "avatar", "sms", "ocr", "gpu",
+    )
 
 
 def test_no_redirect_handler_refuses() -> None:

@@ -144,6 +144,58 @@ misses the rest of the bill. Rates are a snapshot of public US list prices and
 drift — details, caveats, and the Pipecat version in
 [Voice adapters](#voice-adapters-stt--llm--tts).
 
+## Your rates, not list prices
+
+The bundled map holds each vendor's **public list price**. Almost nobody pays
+list: volume tiers, negotiated contracts, committed-spend discounts, carrier
+passthrough fees and plan minimums all move the real number. So a bundled rate
+resolves as *unconfirmed* — a starting point you confirm or replace, never a
+claim about your bill.
+
+A **rate card** is your own rates. It beats the bundled map, and it can price
+vendors the map has never heard of:
+
+```bash
+export FLOE_RATE_CARD=~/floe-rates.json   # a path (Python) or inline JSON (JS)
+```
+
+```json
+{
+  "gcp-vision-document-text-detection": {
+    "mode": "ocr", "unit": "usd_per_page", "rate": 0.0004
+  },
+  "mistral-ocr": { "mode": "ocr", "unit": "usd_per_page", "rate": 0.001 }
+}
+```
+
+```python
+from floe_guard import set_rate_card, resolve_voice_rate
+
+set_rate_card("~/floe-rates.json")          # or a dict, or inline JSON
+rate = resolve_voice_rate("mistral-ocr", "ocr")
+rate.rate        # 0.001
+rate.source      # "rate_card"  — yours, not a list price
+rate.confirmed   # True
+```
+
+Resolution order, most specific first:
+
+```text
+per-call override  →  your rate card  →  bundled list price  →  UnpriceableLegError
+```
+
+Every resolved rate carries its provenance — `provider`, `source_url`,
+`retrieved_at`, `confirmed` — so a list price can be *shown* as one and queued
+for review, rather than quietly reported as a cost. A malformed rate card raises
+instead of being skipped: if your declared rates can't be read, falling back to
+list prices would produce confident, wrong numbers.
+
+Some vendors ship **no** bundled rate on purpose — Runpod (per-hour across tiers
+the map can't choose between), Mistral OCR and Azure Document Intelligence (no
+published figure), HeyGen (credits only), Simli and Beyond Presence. A guessed
+rate is worse than none: an unpriced leg fails closed and is visible, a wrong one
+silently mis-bills. Add them with a rate card.
+
 ## Why floe-guard?
 
 You can already *see* what your agent spends — the problem is seeing it too late.
@@ -601,7 +653,7 @@ The packages ship **voice-leg pricing** (`price_voice_leg` / `priceVoiceLeg`),
 
 Python and TypeScript ship native STT → LLM → TTS session adapters for the voice
 stacks. Each reserves before the model turn, settles on real usage, releases on
-interrupt, and meters STT/TTS/telephony legs from the `__voice__` cost map
+interrupt, and meters STT/TTS/telephony legs from the `__legs__` cost map
 (fail-closed via `UnpriceableVoiceError`) — the same enforcement contract across
 both languages. **Pre-turn / pre-call admission plus per-turn settlement only;
 no mid-call cutoff.**

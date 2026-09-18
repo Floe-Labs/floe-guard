@@ -34,6 +34,94 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 - Known prompt USD and tokens count from stream construction, before the first
   completion chunk, preventing other calls from reusing prompt-only spend.
 
+## Unreleased — py 0.25.0 / js 0.18.0
+
+### Added (py, js)
+
+- **New modality rates: SMS per segment, GPU per GPU-second, OCR per page, and
+  avatar per minute** (P1.11). Every entry ships with the public price-list URL
+  it was read from and the date it was read, so a resolved rate can say where its
+  number came from. Sourced 2026-09-18 from Twilio, Telnyx, Modal, Google Cloud
+  Vision, AWS Textract and Tavus.
+- **A user rate card — the rates YOU pay beat the bundled list prices.** Point
+  `FLOE_RATE_CARD` at a JSON file (Python) or inline JSON (JS), or call
+  `set_rate_card()` / `setRateCard()`. It can override a bundled vendor *and* add
+  one the map has never heard of, which is how vendors that publish no usable
+  figure get priced at all. Resolution order is
+  `override → rate card → bundled list → UnpriceableLegError`.
+- **Provenance on every resolved rate.** `VoiceRate` now carries `provider`,
+  `source_url`, `retrieved_at` and `confirmed`. A bundled list price resolves
+  `confirmed=False`: it is a starting point a human confirms or corrects, not an
+  assertion about anyone's bill. A rate you declared resolves `confirmed=True`.
+- `LegMode` widens to `stt | tts | telephony | sms | ocr | gpu | avatar`, each
+  with a canonical unit enforced by the existing fail-closed unit check.
+
+### Changed (py, js)
+
+- **The reserved cost-map key `__voice__` is now `__legs__`.** The mechanism was
+  never voice-specific, and once it held SMS, OCR and GPU rates the old name was
+  actively misleading. Non-breaking: both loaders read `__legs__` first and fall
+  back to `__voice__`, so a `cost_map.json` generated before the rename still
+  resolves. The line between this map and the token map is the BILLING UNIT, not
+  the modality — per-token spend stays in the flat model map.
+- **Volume and plan tiers ship as separate keys** (`…-high-volume`,
+  `tavus-cvi-starter` / `-growth` / `-business`). Which tier you are on is a fact
+  about you, so choosing one is a choice of key rather than a curation guess
+  baked into a single number. There is no bare `tavus-cvi` implying a default.
+
+### Notes
+
+- **SMS rates exclude US carrier passthrough fees** ($0.0025–$0.007/segment
+  depending on carrier and number type), which neither Twilio nor Telnyx includes
+  in the headline figure. A real invoice will exceed the bundled rate; put your
+  effective rate in a rate card.
+- **Not vendored, deliberately:** Runpod (per-hour across two tiers the map
+  cannot choose between), Mistral OCR and Azure Document Intelligence (publish no
+  figure), HeyGen (credits only), Simli and Beyond Presence (no public
+  per-minute rate). A guessed rate is worse than no rate: an unpriced leg fails
+  closed and is visible, a wrong one silently mis-bills. All are addable via a
+  rate card.
+- Tavus rounds usage to 6s with a 30s minimum per conversation, so a short call
+  bills more than `minutes × rate`. The linear model cannot express that; a shop
+  with many brief calls should declare its own effective rate.
+
+## Unreleased — py 0.24.0 / js 0.17.0
+
+### Added (py, js)
+
+- **The ledger-sync `kind` vocabulary widens past `llm | tool`** (P1.10). It now
+  carries `stt`, `tts`, `telephony`, `avatar`, `sms`, `ocr` and `gpu`, vendored
+  as data in `src/floe_guard/kinds.json` / `js/src/kinds.json` — byte-identical,
+  enforced by `diff -q` in CI, the same discipline the cost map has. A workload
+  that is neither an LLM call nor a tool call no longer has to disguise itself as
+  `tool` to be synced.
+- **`settle_tool` / `record_tool` (and `settleTool` / `recordTool`) take a
+  `kind`.** Defaults to `"tool"`, so every existing call emits exactly what it
+  emitted before. Pass `kind="avatar"` (etc.) to meter a leg under its own name
+  and `export_log()` carries it through to Reconcile Mode. Unknown kinds are
+  rejected at record time rather than at push time; `kind="llm"` is rejected on
+  this path because `spent_usd - sum(tool_costs)` is documented as the token
+  side of the one shared ceiling.
+- `LEDGER_KINDS` and the `LedgerKind` type are exported from both packages.
+
+### Fixed (js)
+
+- `UnpriceableVoiceError` is an **export alias** of `UnpriceableLegError` again,
+  not a `const` binding. A const carries only the value, so the deprecated name
+  stopped working in type position (`let e: UnpriceableVoiceError` → TS2749).
+  Both its value and type identities are preserved now.
+
+### Note on the adapters
+
+The bundled Pipecat / LiveKit / Vapi / Retell adapters still record their STT,
+TTS and telephony legs as `kind="tool"`, unchanged. `kind` is part of the
+server's per-event idempotency digest
+(`sha256(agentId|timestamp|model_or_tool|cost_usd|kind)`), so flipping an
+adapter to `kind="stt"` re-keys every event it has ever written — a ledger
+re-synced across that upgrade would double-count those legs. Migrating them is a
+deliberate, separately-sequenced change, not a side effect of widening the
+vocabulary.
+
 ## Unreleased — js 0.16.0
 
 ### Added (js)

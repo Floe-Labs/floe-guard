@@ -9,7 +9,20 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { BudgetGuard, LedgerSyncError, pushLedger } from "../src/index.js";
+import {
+  BudgetGuard,
+  LEDGER_KINDS,
+  LedgerSyncError,
+  pushLedger,
+  type LedgerKind,
+} from "../src/index.js";
+
+// P1.10 — read the SHIPPED artifact, not a re-export: this is the same file the
+// validator loads and the same one CI diffs against the Python copy, so a drift
+// in either direction fails here.
+import kindsJson from "../src/kinds.json";
+
+const KINDS: readonly string[] = (kindsJson as { kinds: string[] }).kinds;
 
 // The package compiles with `types: []` (no @types/node), so `process` is not
 // globally typed. Declare the minimal shape the tests touch (real `process` is
@@ -188,6 +201,8 @@ describe("pushLedger validates the ledger before sending", () => {
     ["missing model_or_tool", '{"timestamp":1,"kind":"tool","cost_usd":0.05}'],
     ["missing cost_usd", '{"timestamp":1,"kind":"tool","model_or_tool":"api"}'],
     ["bad kind", '{"timestamp":1,"kind":"other","model_or_tool":"api","cost_usd":0.05}'],
+    ["kind is case-sensitive", '{"timestamp":1,"kind":"LLM","model_or_tool":"api","cost_usd":0.05}'],
+    ["plausible but unlisted kind", '{"timestamp":1,"kind":"voice","model_or_tool":"api","cost_usd":0.05}'],
     ["non-string model_or_tool", '{"timestamp":1,"kind":"tool","model_or_tool":123,"cost_usd":0.05}'],
     ["negative cost_usd", '{"timestamp":1,"kind":"tool","model_or_tool":"api","cost_usd":-1}'],
     ["non-number cost_usd", '{"timestamp":1,"kind":"tool","model_or_tool":"api","cost_usd":"x"}'],
@@ -213,6 +228,79 @@ describe("pushLedger validates the ledger before sending", () => {
       '{"timestamp":2,"kind":"llm","model_or_tool":"gpt-4o","prompt_tokens":10,"completion_tokens":5,"cost_usd":0.01,"reserved":0.02}\n';
     vi.spyOn(globalThis, "fetch").mockResolvedValue(ok({ synced: 2 }));
     await expect(pushLedger(valid, "floe_abc")).resolves.toBe(2);
+  });
+
+  // ── P1.10: the widened vocabulary ───────────────────────────────────────
+
+  it("accepts every kind in the vendored vocabulary", async () => {
+    const lines = KINDS.map(
+      (k, i) => `{"timestamp":${i + 1},"kind":"${k}","model_or_tool":"m","cost_usd":0.01}`,
+    ).join("\n");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(ok({ synced: KINDS.length }));
+    await expect(pushLedger(`${lines}\n`, "floe_abc")).resolves.toBe(KINDS.length);
+  });
+
+  it("carries a recorded avatar leg under its own name, end to end", async () => {
+    // The escape hatch this widening replaces, through the REAL producer: an
+    // avatar leg used to be metered as a tool call, so the declared kind and the
+    // real work disagreed. This drives recordTool({ kind }) → exportLog() →
+    // pushLedger rather than hand-building the JSON, which is the only way to
+    // prove a real workload — not just an externally authored file — can emit
+    // the new kinds.
+    const guard = new BudgetGuard(5.0);
+    guard.recordTool("livekit-avatar", 0.12, { kind: "avatar" });
+
+    expect(guard.spendLog.map((e) => e.kind)).toEqual(["avatar"]);
+
+    const ledger = guard.exportLog();
+    expect(JSON.parse(ledger.trim()).kind).toBe("avatar");
+
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(ok({ synced: 1 }));
+    await expect(pushLedger(ledger, "floe_abc")).resolves.toBe(1);
+    expect(spy).toHaveBeenCalledOnce();
+  });
+
+  it("still defaults to 'tool'", () => {
+    // `kind` is part of the server's per-event idempotency digest, so a call
+    // that did not ask for a kind must keep emitting `tool` — otherwise every
+    // event every existing caller ever wrote is re-keyed and a re-synced ledger
+    // double-counts.
+    const guard = new BudgetGuard(5.0);
+    guard.recordTool("exa.search", 0.01);
+    expect(guard.spendLog[0]?.kind).toBe("tool");
+  });
+
+  it("rejects a kind outside the vocabulary, at record time", () => {
+    // Not at push time — a ledger that only fails when you finally sync it is
+    // one you discover is wrong after the run.
+    const guard = new BudgetGuard(5.0);
+    expect(() =>
+      guard.recordTool("mystery", 0.01, { kind: "quantum-flux" as LedgerKind }),
+    ).toThrow(/kind must be one of/);
+    expect(guard.spendLog).toEqual([]);
+    expect(guard.spentUsd).toBe(0);
+  });
+
+  it("rejects kind: 'llm' on the tool path", () => {
+    // `spentUsd - sum(toolCosts)` is documented as the token side of the one
+    // shared ceiling; an 'llm' event here would break that split.
+    const guard = new BudgetGuard(5.0);
+    expect(() => guard.recordTool("gpt-4o", 0.01, { kind: "llm" })).toThrow(
+      /cannot be recorded through/,
+    );
+    expect(guard.spendLog).toEqual([]);
+  });
+
+  it("exports LEDGER_KINDS as the same vocabulary the validator uses", () => {
+    expect(LEDGER_KINDS).toEqual(KINDS);
+  });
+
+  it("the vocabulary is exactly the nine widened kinds, in order", async () => {
+    // Pins the vendored list itself. The Python copy is byte-identical by CI
+    // (`diff -q`), so asserting it here asserts it for both SDKs.
+    expect(KINDS).toEqual([
+      "llm", "tool", "stt", "tts", "telephony", "avatar", "sms", "ocr", "gpu",
+    ]);
   });
 });
 

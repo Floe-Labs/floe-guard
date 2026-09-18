@@ -12,8 +12,13 @@ your process.
 Works with both **AI SDK v4 and v5** (`ai@4` / `ai@5`).
 
 ```bash
-npm i floe-guard ai @ai-sdk/openai
+npm i floe-guard ai@5 @ai-sdk/openai@2
 ```
+
+This example uses AI SDK 5 with its compatible OpenAI provider, version 2.
+For AI SDK 4, use `ai@4 @ai-sdk/openai@1`. Keep the SDK and provider major
+versions compatible; installing the latest provider can select a model API
+that this middleware does not support.
 
 ```ts
 import { wrapLanguageModel } from "ai";

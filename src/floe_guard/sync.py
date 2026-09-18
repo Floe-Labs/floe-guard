@@ -31,6 +31,8 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from importlib import resources
+from typing import Literal
 
 from .errors import LedgerSyncError
 
@@ -58,6 +60,42 @@ _ALLOWED_KEYS = frozenset(
     }
 )
 _REQUIRED_KEYS = frozenset({"timestamp", "kind", "model_or_tool", "cost_usd"})
+
+
+def _load_kinds() -> tuple[str, ...]:
+    """The ledger-sync ``kind`` vocabulary, loaded from the vendored JSON.
+
+    VENDORED IN TWO PLACES — ``src/floe_guard/kinds.json`` and ``js/src/kinds.json``
+    must stay byte-identical, and CI enforces it with ``diff -q`` exactly as it
+    does for the cost map. Data rather than a literal so the two SDKs cannot
+    drift into accepting different vocabularies, which would mean one emits
+    events the other would reject.
+    """
+    with resources.files("floe_guard").joinpath("kinds.json").open("r", encoding="utf-8") as fh:
+        return tuple(json.load(fh)["kinds"])
+
+
+# ADDITIVE ONLY. ``kind`` is part of the server's per-event idempotency digest
+# (sha256(agentId|timestamp|model_or_tool|cost_usd|kind)), so adding a value is
+# safe while renaming one re-keys every event that used it and would
+# double-count a re-synced ledger.
+LEDGER_KINDS: tuple[str, ...] = _load_kinds()
+
+# Private alias kept so the validator below and existing tests keep reading the
+# name they always did. Same tuple, not a copy.
+_KINDS: tuple[str, ...] = LEDGER_KINDS
+
+#: The same vocabulary in the type system, for :attr:`~floe_guard.SpendEvent.kind`
+#: and the ``kind=`` argument on :meth:`~floe_guard.BudgetGuard.settle_tool`.
+#:
+#: ``Literal`` cannot be built from JSON at runtime, so this list is typed out by
+#: hand — the ONE place the vocabulary is duplicated. It is not left to a code
+#: review to catch: ``test_ledger_kind_literal_matches_the_vendored_json`` asserts
+#: this union and :data:`LEDGER_KINDS` are the same set, so adding a kind to
+#: ``kinds.json`` without adding it here fails the suite.
+LedgerKind = Literal[
+    "llm", "tool", "stt", "tts", "telephony", "avatar", "sms", "ocr", "gpu"
+]
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -106,9 +144,10 @@ def _validate_ledger(jsonl: str) -> None:
             raise LedgerSyncError(
                 f"Ledger line {i} is missing required field(s): {sorted(missing)}."
             )
-        if event["kind"] not in ("llm", "tool"):
+        if event["kind"] not in _KINDS:
             raise LedgerSyncError(
-                f"Ledger line {i}: kind must be 'llm' or 'tool', got {event['kind']!r}."
+                f"Ledger line {i}: kind must be one of "
+                f"{', '.join(repr(k) for k in _KINDS)}, got {event['kind']!r}."
             )
         if not isinstance(event["model_or_tool"], str):
             raise LedgerSyncError(f"Ledger line {i}: model_or_tool must be a string.")
