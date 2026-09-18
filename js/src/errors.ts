@@ -108,7 +108,7 @@ export class UnpriceableModelError extends FloeGuardError {
  *
  * Mirrors `UnpriceableVoiceError` in `src/floe_guard/errors.py`.
  */
-export class UnpriceableVoiceError extends FloeGuardError {
+export class UnpriceableLegError extends FloeGuardError {
   readonly vendor: string | null;
   readonly mode: string;
 
@@ -121,11 +121,28 @@ export class UnpriceableVoiceError extends FloeGuardError {
         `override was given. The guard cannot enforce a budget on spend it ` +
         `cannot measure. Pass a per-unit rate to enable enforcement.`,
     );
+    // The runtime name stays "UnpriceableVoiceError" so existing log scrapes
+    // and `err.name === …` checks keep matching. Only the exported symbol is
+    // generalised; renaming this string would be a silent breaking change.
     this.name = "UnpriceableVoiceError";
     this.vendor = vendor;
     this.mode = mode;
   }
 }
+
+/**
+ * Deprecated alias for {@link UnpriceableLegError}, kept so existing
+ * `catch (e) { if (e instanceof UnpriceableVoiceError) … }` keeps working. It IS
+ * the same class, not a subclass, so `instanceof` behaves identically in both
+ * directions. Prefer the leg-shaped name in new code.
+ *
+ * An export alias rather than `const UnpriceableVoiceError = UnpriceableLegError`:
+ * a const binding carries only the VALUE, so `let e: UnpriceableVoiceError` — a
+ * type-position use that compiled before — fails with TS2749. Aliasing the class
+ * on the export preserves both its value and its type identity, so deprecated
+ * really means "still works".
+ */
+export { UnpriceableLegError as UnpriceableVoiceError };
 
 /**
  * Thrown when an **opt-in** ledger sync to Reconcile Mode fails.

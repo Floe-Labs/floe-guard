@@ -93,9 +93,13 @@ class UnpriceableModelError(FloeGuardError):
         )
 
 
-class UnpriceableVoiceError(FloeGuardError):
-    """Raised when a voice leg (STT/TTS/telephony) cannot be priced and the guard
-    is fail-closed.
+class UnpriceableLegError(FloeGuardError):
+    """Raised when a metered leg cannot be priced and the guard is fail-closed.
+
+    Named for the leg rather than for voice: the same failure applies to any
+    per-unit leg the bundled map cannot price. :class:`UnpriceableVoiceError` is
+    kept below as a deprecated alias, so ``except UnpriceableVoiceError`` in
+    existing code still catches this.
 
     The voice twin of :class:`UnpriceableModelError`: we refuse rather than
     silently accrue $0 — "we cannot cap what we cannot price". It fires when an
@@ -115,6 +119,13 @@ class UnpriceableVoiceError(FloeGuardError):
             f"override was given. The guard cannot enforce a budget on spend it "
             f"cannot measure. Pass a per-unit rate to enable enforcement."
         )
+
+
+#: Deprecated alias for :class:`UnpriceableLegError`, kept so existing
+#: ``except UnpriceableVoiceError`` handlers keep working. It IS the same class,
+#: not a subclass, so ``isinstance`` and ``except`` behave identically in both
+#: directions. Prefer the leg-shaped name in new code.
+UnpriceableVoiceError = UnpriceableLegError
 
 
 class HostedEnforcementError(FloeGuardError):

@@ -1,0 +1,18 @@
+{
+  "__meta__": {
+    "description": "The ledger-sync `kind` vocabulary. VENDORED IN TWO PLACES — src/floe_guard/kinds.json and js/src/kinds.json must stay byte-identical; CI enforces it with `diff -q`, the same discipline cost_map.json has.",
+    "contract": "ADDITIVE ONLY. `kind` is part of the server's per-event idempotency digest (sha256(agentId|timestamp|model_or_tool|cost_usd|kind)), so ADDING a value is safe but RENAMING one re-keys every event that used it and would double-count a re-synced ledger. Never rename, never remove.",
+    "compatibility": "A client pinned to the old two-value list keeps working unchanged: it simply never emits the new kinds. A server that predates a kind rejects it with a named 400 rather than silently coercing it to 'tool'."
+  },
+  "kinds": [
+    "llm",
+    "tool",
+    "stt",
+    "tts",
+    "telephony",
+    "avatar",
+    "sms",
+    "ocr",
+    "gpu"
+  ]
+}

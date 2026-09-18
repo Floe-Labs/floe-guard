@@ -8,6 +8,43 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.24.0 / js 0.17.0
+
+### Added (py, js)
+
+- **The ledger-sync `kind` vocabulary widens past `llm | tool`** (P1.10). It now
+  carries `stt`, `tts`, `telephony`, `avatar`, `sms`, `ocr` and `gpu`, vendored
+  as data in `src/floe_guard/kinds.json` / `js/src/kinds.json` — byte-identical,
+  enforced by `diff -q` in CI, the same discipline the cost map has. A workload
+  that is neither an LLM call nor a tool call no longer has to disguise itself as
+  `tool` to be synced.
+- **`settle_tool` / `record_tool` (and `settleTool` / `recordTool`) take a
+  `kind`.** Defaults to `"tool"`, so every existing call emits exactly what it
+  emitted before. Pass `kind="avatar"` (etc.) to meter a leg under its own name
+  and `export_log()` carries it through to Reconcile Mode. Unknown kinds are
+  rejected at record time rather than at push time; `kind="llm"` is rejected on
+  this path because `spent_usd - sum(tool_costs)` is documented as the token
+  side of the one shared ceiling.
+- `LEDGER_KINDS` and the `LedgerKind` type are exported from both packages.
+
+### Fixed (js)
+
+- `UnpriceableVoiceError` is an **export alias** of `UnpriceableLegError` again,
+  not a `const` binding. A const carries only the value, so the deprecated name
+  stopped working in type position (`let e: UnpriceableVoiceError` → TS2749).
+  Both its value and type identities are preserved now.
+
+### Note on the adapters
+
+The bundled Pipecat / LiveKit / Vapi / Retell adapters still record their STT,
+TTS and telephony legs as `kind="tool"`, unchanged. `kind` is part of the
+server's per-event idempotency digest
+(`sha256(agentId|timestamp|model_or_tool|cost_usd|kind)`), so flipping an
+adapter to `kind="stt"` re-keys every event it has ever written — a ledger
+re-synced across that upgrade would double-count those legs. Migrating them is a
+deliberate, separately-sequenced change, not a side effect of widening the
+vocabulary.
+
 ## Unreleased — js 0.16.0
 
 ### Added (js)

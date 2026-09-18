@@ -29,7 +29,19 @@
 import costMapJson from "./cost_map.json";
 import { UnpriceableVoiceError } from "./errors.js";
 
-export type VoiceMode = "stt" | "tts" | "telephony";
+/**
+ * The legs the bundled map can price per unit.
+ *
+ * Named for the leg rather than for voice — the pricing mechanism is not
+ * voice-specific — but the MEMBERS are deliberately unchanged: each one needs a
+ * unit in `unitForMode` and an entry shape in the cost map, so widening this is
+ * a pricing change, not a rename. {@link VoiceMode} remains as a deprecated
+ * alias.
+ */
+export type LegMode = "stt" | "tts" | "telephony";
+
+/** Deprecated alias for {@link LegMode}. Prefer the leg-shaped name. */
+export type VoiceMode = LegMode;
 
 interface VoiceMapEntry {
   mode?: unknown;

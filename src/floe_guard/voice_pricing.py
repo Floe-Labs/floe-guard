@@ -29,10 +29,17 @@ import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from .errors import UnpriceableVoiceError
+from .errors import UnpriceableLegError
 from .pricing import _VOICE_MAP
 
-VoiceMode = Literal["stt", "tts", "telephony"]
+#: The legs the bundled map can price per unit. Named for the leg rather than
+#: for voice — the mechanism is not voice-specific — but the MEMBERS are
+#: deliberately unchanged: each needs a unit in ``_UNIT_FOR_MODE`` and an entry
+#: shape in the cost map, so widening this is a pricing change, not a rename.
+LegMode = Literal["stt", "tts", "telephony"]
+
+#: Deprecated alias for :data:`LegMode`. Prefer the leg-shaped name.
+VoiceMode = LegMode
 
 # The one unit each leg is billed in. An entry whose ``unit`` disagrees with its
 # leg is a schema mismatch and fails closed — a Deepgram $/min figure stored
@@ -104,7 +111,7 @@ def resolve_voice_rate(
         return VoiceRate(mode, _UNIT_FOR_MODE[mode], float(override), "override")
     rate = lookup_voice_rate(model, mode)
     if rate is None:
-        raise UnpriceableVoiceError(model, mode)
+        raise UnpriceableLegError(model, mode)
     return VoiceRate(mode, _UNIT_FOR_MODE[mode], rate, "cost_map")
 
 
@@ -154,6 +161,9 @@ def price_voice_leg(
 
 
 __all__ = [
+    "LegMode",
+    # Deprecated alias for LegMode — kept exported so existing annotations and
+    # `from floe_guard.voice_pricing import VoiceMode` keep working.
     "VoiceMode",
     "VoiceRate",
     "lookup_voice_rate",
