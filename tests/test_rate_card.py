@@ -13,7 +13,6 @@ import json
 import pytest
 
 from floe_guard import rate_card
-from floe_guard.errors import UnpriceableVoiceError
 from floe_guard.voice_pricing import lookup_voice_rate, price_voice_leg, resolve_voice_rate
 
 
@@ -56,24 +55,94 @@ def test_rate_card_can_price_a_vendor_the_map_has_never_heard_of() -> None:
     assert price_voice_leg("ocr", 250, model="mistral-ocr") == pytest.approx(0.25)
 
 
-def test_a_broken_declaration_fails_closed_rather_than_using_list_price() -> None:
-    """The dangerous direction, pinned.
+def test_a_wrong_unit_is_rejected_at_load_not_at_pricing_time() -> None:
+    """The dangerous direction, closed at the door.
 
-    The user declared what this leg costs them. If that declaration is unusable,
-    quietly substituting Google's list price would produce a confident, wrong
-    number — so it raises instead.
+    A wrong unit used to survive loading and only fail at lookup. Now the
+    validator knows the mode/unit table, so it never installs — which is strictly
+    better: you learn at startup, not after a call.
     """
-    rate_card.set_rate_card(
-        {
-            "gcp-vision-document-text-detection": {
-                "mode": "ocr",
-                "unit": "usd_per_1k_pages",  # wrong: ocr must be usd_per_page
-                "rate": 0.4,
+    with pytest.raises(ValueError, match="bills in 'usd_per_page'"):
+        rate_card.set_rate_card(
+            {
+                "gcp-vision-document-text-detection": {
+                    "mode": "ocr",
+                    "unit": "usd_per_1k_pages",  # wrong: ocr must be usd_per_page
+                    "rate": 0.4,
+                }
             }
-        }
+        )
+
+
+def test_a_typo_in_mode_is_rejected() -> None:
+    """The hole this closes.
+
+    ``mode`` was once validated only as a non-empty string, so "orc" loaded fine.
+    It then resolved as a leg unrelated to "ocr", meaning a lookup for a key that
+    ALSO exists in the bundled map silently used Google's list price instead of
+    the rate the user declared. Loud at load, or it is not a guarantee.
+    """
+    with pytest.raises(ValueError, match="unknown mode 'orc'"):
+        rate_card.set_rate_card(
+            {
+                "gcp-vision-document-text-detection": {
+                    "mode": "orc",
+                    "unit": "usd_per_page",
+                    "rate": 0.4,
+                }
+            }
+        )
+
+
+def test_an_installed_card_is_still_readable_by_the_resolver() -> None:
+    """Regression: freezing the card must not hide it from pricing.
+
+    The installed card is a MappingProxyType, and `isinstance(proxy, dict)` is
+    False — so a dict-only type check in the resolver made every declared rate
+    invisible and fell back to the list price. Exactly the silent substitution
+    this module exists to prevent, introduced by the immutability fix itself.
+    """
+    gcp = "gcp-vision-document-text-detection"
+    rate_card.set_rate_card({gcp: {"mode": "ocr", "unit": "usd_per_page", "rate": 0.0004}})
+    assert lookup_voice_rate(gcp, "ocr") == pytest.approx(0.0004)
+
+
+def test_the_installed_card_cannot_be_mutated() -> None:
+    """A validated rate that can be edited afterwards was never validated."""
+    rate_card.set_rate_card({"acme": {"mode": "ocr", "unit": "usd_per_page", "rate": 0.5}})
+    card = rate_card.current_rate_card()
+    with pytest.raises(TypeError):
+        card["acme"]["rate"] = 0.0
+    with pytest.raises(TypeError):
+        card["evil"] = {"mode": "ocr", "unit": "usd_per_page", "rate": 0.0}
+    assert lookup_voice_rate("acme", "ocr") == pytest.approx(0.5)
+
+
+def test_mutating_the_source_after_install_does_not_change_pricing() -> None:
+    """Install takes a deep copy, so the caller keeps no handle on the live card."""
+    source = {"acme": {"mode": "ocr", "unit": "usd_per_page", "rate": 0.5}}
+    rate_card.set_rate_card(source)
+    source["acme"]["rate"] = 99.0
+    assert lookup_voice_rate("acme", "ocr") == pytest.approx(0.5)
+
+
+def test_reinstalling_the_current_card_round_trips() -> None:
+    """`set_rate_card(current_rate_card())` must not treat the frozen mapping as
+    a file path — it is a Mapping, not a dict."""
+    rate_card.set_rate_card({"acme": {"mode": "ocr", "unit": "usd_per_page", "rate": 0.5}})
+    rate_card.set_rate_card(rate_card.current_rate_card())
+    assert lookup_voice_rate("acme", "ocr") == pytest.approx(0.5)
+
+
+def test_a_home_relative_path_is_expanded(monkeypatch, tmp_path) -> None:
+    """The documented example is "~/floe-rates.json", and open() does not expand
+    ~ — without expansion the very path the README shows raises."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "rates.json").write_text(
+        json.dumps({"acme": {"mode": "ocr", "unit": "usd_per_page", "rate": 0.25}}),
+        encoding="utf-8",
     )
-    with pytest.raises(UnpriceableVoiceError):
-        resolve_voice_rate("gcp-vision-document-text-detection", "ocr")
+    assert rate_card.load_rate_card("~/rates.json")["acme"]["rate"] == 0.25
 
 
 def test_a_card_entry_for_another_mode_does_not_shadow_this_leg() -> None:

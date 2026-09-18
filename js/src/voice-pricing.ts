@@ -43,6 +43,7 @@
 
 import costMapJson from "./cost_map.json";
 import { UnpriceableVoiceError } from "./errors.js";
+import { LEG_MODES, unitForMode, type LegMode } from "./leg-units.js";
 import { currentRateCard } from "./rate-card.js";
 
 /**
@@ -54,7 +55,7 @@ import { currentRateCard } from "./rate-card.js";
  * a pricing change, not a rename. {@link VoiceMode} remains as a deprecated
  * alias.
  */
-export type LegMode = "stt" | "tts" | "telephony" | "sms" | "ocr" | "gpu" | "avatar";
+export type { LegMode };
 
 /**
  * Deprecated alias for {@link LegMode}. Prefer the leg-shaped name. It now spans
@@ -90,20 +91,10 @@ const VOICE_MAP = (rawCostMap["__legs__"] ?? rawCostMap["__voice__"] ?? {}) as R
   VoiceMapEntry
 >;
 
-/**
- * The one unit each leg is billed in. An entry whose `unit` disagrees with its
- * leg is a schema mismatch and fails closed — a Deepgram $/min figure stored
- * without the ÷60 conversion would over-bill 60x if it were silently accepted.
- */
-export const unitForMode: Record<VoiceMode, string> = {
-  stt: "usd_per_second",
-  tts: "usd_per_1k_chars",
-  telephony: "usd_per_minute",
-  sms: "usd_per_segment",
-  ocr: "usd_per_page",
-  gpu: "usd_per_gpu_second",
-  avatar: "usd_per_minute",
-};
+// Re-exported from leg-units, which owns the table. It lives there so the
+// rate-card validator can check mode/unit consistency without importing this
+// module, which imports IT. See leg-units for why that cycle mattered.
+export { unitForMode, LEG_MODES };
 
 /**
  * A resolved per-unit leg rate plus where it came from.

@@ -31,6 +31,8 @@
  * object to {@link setRateCard} for anything more elaborate.
  */
 
+import { LEG_MODES, unitForMode } from "./leg-units.js";
+
 /** Environment variable holding rate-card JSON (inline, not a path). */
 export const RATE_CARD_ENV = "FLOE_RATE_CARD";
 
@@ -69,11 +71,16 @@ function envValue(name: string): string | undefined {
 }
 
 /**
- * Reject a malformed entry loudly. Shape only.
+ * Reject a malformed entry loudly — shape, mode, AND mode/unit consistency.
  *
- * The mode/unit CONSISTENCY check (`ocr` must be `usd_per_page` etc.) lives in
- * `voice-pricing.ts`, which owns that table — checking it here would make this
- * module import the thing that imports it.
+ * The mode check is the load-bearing one. `mode` was once validated only as a
+ * non-empty string, which let a typo like `"orc"` through: it then resolved as a
+ * different leg from `"ocr"`, so a lookup for a key that ALSO exists in the
+ * bundled map silently fell through to the public list price. You declared a
+ * rate, the guard used someone else's number, and nothing said a word — the
+ * precise failure this module exists to prevent. Both the table and the units
+ * come from `leg-units.ts` so this validator cannot drift from the pricing path
+ * that consumes it.
  */
 function validateEntry(key: string, entry: unknown): asserts entry is RateCardEntry {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
@@ -97,6 +104,21 @@ function validateEntry(key: string, entry: unknown): asserts entry is RateCardEn
     if (typeof e[field] !== "string" || !e[field]) {
       throw new TypeError(`Rate card entry '${key}': ${field} must be a non-empty string.`);
     }
+  }
+  const mode = e.mode as string;
+  if (!LEG_MODES.includes(mode)) {
+    throw new TypeError(
+      `Rate card entry '${key}': unknown mode '${mode}'. ` +
+        `Expected one of: ${[...LEG_MODES].sort().join(", ")}.`,
+    );
+  }
+  const expectedUnit = unitForMode[mode as keyof typeof unitForMode];
+  if (e.unit !== expectedUnit) {
+    throw new TypeError(
+      `Rate card entry '${key}': a '${mode}' leg bills in '${expectedUnit}', got ` +
+        `'${String(e.unit)}'. The unit is not a label — pricing multiplies by it, so ` +
+        `the wrong one mis-bills by whatever the conversion factor is.`,
+    );
   }
   const rate = e.rate;
   if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 0) {
@@ -146,18 +168,37 @@ export function loadRateCard(source?: unknown): Record<string, RateCardEntry> {
   const out: Record<string, RateCardEntry> = {};
   for (const [key, entry] of Object.entries(raw as Record<string, unknown>)) {
     validateEntry(key, entry);
-    out[key] = entry;
+    // Copy the ENTRY, not just the outer object: retaining the caller's nested
+    // object would leave them holding the same thing the guard prices from, so a
+    // later `card.acme.rate = 0` would change a validated rate with no validation.
+    out[key] = { ...entry };
   }
   return out;
 }
 
-/** Install a rate card for this process and return it. `{}` clears it. */
+/**
+ * Freeze a validated card so mutating what you read cannot re-price a leg.
+ *
+ * Frozen rather than copy-on-read on purpose: {@link currentRateCard} is called
+ * on EVERY priced leg, so copying there would put an O(entries) allocation in the
+ * hot path. `Object.freeze` gives the same protection for free.
+ */
+function freeze(card: Record<string, RateCardEntry>): Record<string, RateCardEntry> {
+  for (const entry of Object.values(card)) Object.freeze(entry);
+  return Object.freeze(card);
+}
+
+/**
+ * Install a rate card for this process and return a frozen view of it. `{}`
+ * clears it. The installed card is a copy, so mutating whatever you passed in
+ * afterwards cannot change what the guard prices from.
+ */
 export function setRateCard(source?: unknown): Record<string, RateCardEntry> {
-  RATE_CARD = loadRateCard(source);
+  RATE_CARD = freeze(loadRateCard(source));
   return RATE_CARD;
 }
 
-/** The rate card in force. Empty when none is configured. */
+/** The rate card in force, frozen. Empty when none is configured. */
 export function currentRateCard(): Record<string, RateCardEntry> {
   return RATE_CARD;
 }
@@ -165,4 +206,4 @@ export function currentRateCard(): Record<string, RateCardEntry> {
 // Load once at module init so `FLOE_RATE_CARD=... node agent.js` needs no code
 // change. A broken card throws here rather than at the first priced leg, which
 // is the difference between a startup failure and a wrong invoice.
-RATE_CARD = loadRateCard();
+RATE_CARD = freeze(loadRateCard());

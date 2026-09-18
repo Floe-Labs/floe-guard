@@ -56,19 +56,56 @@ describe("a declared rate wins", () => {
 });
 
 describe("a broken declaration fails closed", () => {
-  it("does NOT silently fall back to the list price", () => {
-    // The dangerous direction, pinned. The user said what this leg costs them;
-    // quietly substituting Google's list price would be a confident wrong number.
+  it("rejects a wrong unit at LOAD time, not at pricing time", () => {
+    // A wrong unit used to survive loading and only fail at lookup. The validator
+    // now knows the mode/unit table, so it never installs — strictly better: you
+    // learn at startup rather than after a call.
+    expect(() =>
+      setRateCard({
+        "gcp-vision-document-text-detection": {
+          mode: "ocr",
+          unit: "usd_per_1k_pages", // wrong: ocr must be usd_per_page
+          rate: 0.4,
+        },
+      }),
+    ).toThrow(/bills in 'usd_per_page'/);
+  });
+
+  it("rejects a typo in mode", () => {
+    // The hole this closes. `mode` was once validated only as a non-empty
+    // string, so "orc" loaded fine — then resolved as a leg unrelated to "ocr",
+    // so a lookup for a key that ALSO exists in the bundled map silently used
+    // Google's list price instead of the declared rate.
+    expect(() =>
+      setRateCard({
+        "gcp-vision-document-text-detection": { mode: "orc", unit: "usd_per_page", rate: 0.4 },
+      }),
+    ).toThrow(/unknown mode 'orc'/);
+  });
+
+  it("keeps an installed card visible to the resolver", () => {
+    // Regression guard for the Python twin, where freezing the card hid every
+    // declared rate from pricing and fell back to the list price.
     setRateCard({
-      "gcp-vision-document-text-detection": {
-        mode: "ocr",
-        unit: "usd_per_1k_pages", // wrong: ocr must be usd_per_page
-        rate: 0.4,
-      },
+      "gcp-vision-document-text-detection": { mode: "ocr", unit: "usd_per_page", rate: 0.0004 },
     });
-    expect(() => resolveVoiceRate("gcp-vision-document-text-detection", "ocr")).toThrow(
-      UnpriceableVoiceError,
-    );
+    expect(lookupVoiceRate("gcp-vision-document-text-detection", "ocr")).toBeCloseTo(0.0004, 9);
+  });
+
+  it("freezes the installed card", () => {
+    // A validated rate that can be edited afterwards was never validated.
+    setRateCard({ acme: { mode: "ocr", unit: "usd_per_page", rate: 0.5 } });
+    const card = currentRateCard();
+    expect(Object.isFrozen(card)).toBe(true);
+    expect(Object.isFrozen(card.acme)).toBe(true);
+    expect(lookupVoiceRate("acme", "ocr")).toBeCloseTo(0.5, 9);
+  });
+
+  it("copies on install, so mutating the source changes nothing", () => {
+    const source = { acme: { mode: "ocr", unit: "usd_per_page", rate: 0.5 } };
+    setRateCard(source);
+    source.acme.rate = 99;
+    expect(lookupVoiceRate("acme", "ocr")).toBeCloseTo(0.5, 9);
   });
 
   it("but a card entry for ANOTHER mode does not shadow this leg", () => {

@@ -41,42 +41,24 @@ under-pricing lets a crossing call through.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from . import rate_card
 from .errors import UnpriceableLegError
+from .leg_units import LEG_MODES, UNIT_FOR_MODE, LegMode
 from .pricing import _VOICE_MAP
 
-#: The legs the bundled map can price per unit. Named for the leg rather than
-#: for voice — the mechanism is not voice-specific.
-#:
-#: P1.11 is the pricing change this was held open for: ``sms``, ``ocr``, ``gpu``
-#: and ``avatar`` each arrived WITH a unit in :data:`_UNIT_FOR_MODE`, an arm in
-#: :func:`voice_leg_cost`, and sourced entries in the cost map. That is the bar
-#: for adding a member — a mode with no unit and no priced entry is a mode that
-#: fails closed on every call, which is worse than not having it.
-LegMode = Literal["stt", "tts", "telephony", "sms", "ocr", "gpu", "avatar"]
-
-#: Deprecated alias for :data:`LegMode`. Prefer the leg-shaped name. It now spans
-#: legs that are not voice at all; the name is kept only for compatibility.
+#: Deprecated alias for :data:`~floe_guard.leg_units.LegMode`. Prefer the
+#: leg-shaped name. It now spans legs that are not voice at all; the name is kept
+#: only for compatibility.
 VoiceMode = LegMode
 
-# The one unit each leg is billed in. An entry whose ``unit`` disagrees with its
-# leg is a schema mismatch and fails closed — a Deepgram $/min figure stored
-# without the ÷60 conversion would over-bill 60x if it were silently accepted.
-# The same trap applies to the P1.11 legs: OCR vendors quote per 1,000 pages and
-# GPU vendors quote per hour, so both are converted at curation time and stored
-# in the canonical per-unit form.
-_UNIT_FOR_MODE: dict[str, str] = {
-    "stt": "usd_per_second",
-    "tts": "usd_per_1k_chars",
-    "telephony": "usd_per_minute",
-    "sms": "usd_per_segment",
-    "ocr": "usd_per_page",
-    "gpu": "usd_per_gpu_second",
-    "avatar": "usd_per_minute",
-}
+# Back-compat alias. The table itself moved to leg_units so the rate-card
+# validator can check mode/unit consistency without importing this module, which
+# imports IT. See leg_units for why that cycle mattered.
+_UNIT_FOR_MODE: dict[str, str] = UNIT_FOR_MODE
 
 
 @dataclass(frozen=True)
@@ -121,7 +103,11 @@ def _finite_non_negative(value: Any) -> bool:
 
 def _entry_is_usable(entry: Any, mode: VoiceMode) -> bool:
     """Fail-closed on every mismatch: wrong mode, wrong unit, or a bad rate."""
-    if not isinstance(entry, dict):
+    # Mapping, not dict: an installed rate card is a read-only MappingProxyType,
+    # and `isinstance(proxy, dict)` is False. Checking for dict here made every
+    # declared rate invisible and silently fell back to the bundled list price —
+    # this feature's own failure mode, reintroduced by the immutability fix.
+    if not isinstance(entry, Mapping):
         return False
     if entry.get("mode") != mode:
         return False
@@ -147,7 +133,8 @@ def _lookup_leg_entry(model: str | None, mode: VoiceMode) -> tuple[dict[str, Any
     if model is None:
         return None
     declared = rate_card.current_rate_card().get(model)
-    if isinstance(declared, dict) and declared.get("mode") == mode:
+    # Mapping, not dict — see _entry_is_usable.
+    if isinstance(declared, Mapping) and declared.get("mode") == mode:
         return (declared, "rate_card") if _entry_is_usable(declared, mode) else None
     entry = _VOICE_MAP.get(model)
     if _entry_is_usable(entry, mode):
@@ -256,6 +243,8 @@ def price_voice_leg(
 
 __all__ = [
     "LegMode",
+    "LEG_MODES",
+    "UNIT_FOR_MODE",
     # Deprecated alias for LegMode — kept exported so existing annotations and
     # `from floe_guard.voice_pricing import VoiceMode` keep working.
     "VoiceMode",

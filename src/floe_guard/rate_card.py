@@ -42,7 +42,11 @@ from __future__ import annotations
 import json
 import math
 import os
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
+
+from .leg_units import LEG_MODES, UNIT_FOR_MODE
 
 #: Environment variable holding a path to a rate-card JSON file, or the JSON
 #: itself (anything starting with ``{`` is parsed inline).
@@ -56,17 +60,22 @@ _ALLOWED_ENTRY_KEYS = frozenset(
 )
 _REQUIRED_ENTRY_KEYS = ("mode", "unit", "rate")
 
-_RATE_CARD: dict[str, Any] = {}
+_RATE_CARD: Any = MappingProxyType({})
 
 
 def _validate_entry(key: str, entry: Any) -> None:
-    """Reject a malformed entry loudly. Shape only.
+    """Reject a malformed entry loudly — shape, mode, AND mode/unit consistency.
 
-    The mode/unit CONSISTENCY check (``ocr`` must be ``usd_per_page`` etc.) lives
-    in :mod:`floe_guard.voice_pricing`, which owns that table — checking it here
-    would make this module import the thing that imports it.
+    The mode check is the load-bearing one. ``mode`` was once validated only as a
+    non-empty string, which let a typo like ``"orc"`` through: it then resolved as
+    a different leg from ``"ocr"``, so a lookup for a key that ALSO exists in the
+    bundled map silently fell through to the public list price. You declared a
+    rate, the guard used someone else's number, and nothing said a word — the
+    precise failure this module exists to prevent. Both the table and the units
+    come from :mod:`floe_guard.leg_units` so this validator cannot drift from the
+    pricing path that consumes it.
     """
-    if not isinstance(entry, dict):
+    if not isinstance(entry, Mapping):
         raise ValueError(f"Rate card entry {key!r} must be an object, got {type(entry).__name__}.")
     extra = sorted(set(entry) - _ALLOWED_ENTRY_KEYS)
     if extra:
@@ -80,6 +89,19 @@ def _validate_entry(key: str, entry: Any) -> None:
     for field in ("mode", "unit"):
         if not isinstance(entry[field], str) or not entry[field]:
             raise ValueError(f"Rate card entry {key!r}: {field} must be a non-empty string.")
+    mode = entry["mode"]
+    if mode not in UNIT_FOR_MODE:
+        raise ValueError(
+            f"Rate card entry {key!r}: unknown mode {mode!r}. "
+            f"Expected one of: {', '.join(sorted(LEG_MODES))}."
+        )
+    expected_unit = UNIT_FOR_MODE[mode]
+    if entry["unit"] != expected_unit:
+        raise ValueError(
+            f"Rate card entry {key!r}: a {mode!r} leg bills in {expected_unit!r}, "
+            f"got {entry['unit']!r}. The unit is not a label — pricing multiplies by "
+            f"it, so the wrong one mis-bills by whatever the conversion factor is."
+        )
     rate = entry["rate"]
     if (
         isinstance(rate, bool)
@@ -112,7 +134,10 @@ def load_rate_card(source: Any = None) -> dict[str, Any]:
         source = os.environ.get(RATE_CARD_ENV)
         if not source:
             return {}
-    if isinstance(source, dict):
+    # Mapping, not dict: an installed card is a read-only MappingProxyType, so
+    # `set_rate_card(current_rate_card())` would otherwise fall through to the
+    # else-branch and be str()'d into a nonsense FILE PATH.
+    if isinstance(source, Mapping):
         raw: Any = source
     else:
         text = str(source)
@@ -123,34 +148,55 @@ def load_rate_card(source: Any = None) -> dict[str, Any]:
                 raise ValueError(f"Rate card is not valid JSON: {exc}") from exc
         else:
             try:
-                with open(text, encoding="utf-8") as fh:
+                # expanduser: the documented example is "~/floe-rates.json", and
+                # open() does not expand ~ — without this the very path the README
+                # shows raises "Cannot read rate card".
+                with open(os.path.expanduser(text), encoding="utf-8") as fh:
                     raw = json.load(fh)
             except OSError as exc:
                 raise ValueError(f"Cannot read rate card at {text!r}: {exc}") from exc
             except ValueError as exc:
                 raise ValueError(f"Rate card at {text!r} is not valid JSON: {exc}") from exc
-    if not isinstance(raw, dict):
+    if not isinstance(raw, Mapping):
         raise ValueError("Rate card must be a JSON object mapping vendor keys to entries.")
     for key, entry in raw.items():
         _validate_entry(key, entry)
-    return dict(raw)
+    # Copy the ENTRIES, not just the outer dict: a shallow copy would leave the
+    # caller holding the same nested dicts the guard prices from, so a later
+    # `card["acme"]["rate"] = 0` would change a validated rate with no validation.
+    return {key: dict(entry) for key, entry in raw.items()}
 
 
-def set_rate_card(source: Any = None) -> dict[str, Any]:
-    """Install a rate card for this process and return it. ``{}`` clears it."""
+def _freeze(card: dict[str, Any]) -> Any:
+    """A read-only view of a validated card.
+
+    Read-only rather than copy-on-read on purpose: :func:`current_rate_card` is
+    called on EVERY priced leg, so copying there would put an O(entries)
+    allocation in the hot path. ``MappingProxyType`` gives the same protection for
+    free — mutating what you read raises instead of silently re-pricing.
+    """
+    return MappingProxyType({key: MappingProxyType(entry) for key, entry in card.items()})
+
+
+def set_rate_card(source: Any = None) -> Any:
+    """Install a rate card for this process and return a read-only view of it.
+
+    ``{}`` clears it. The installed card is a deep copy, so mutating whatever you
+    passed in afterwards cannot change what the guard prices from.
+    """
     global _RATE_CARD
-    _RATE_CARD = load_rate_card(source)
+    _RATE_CARD = _freeze(load_rate_card(source))
     return _RATE_CARD
 
 
-def current_rate_card() -> dict[str, Any]:
-    """The rate card in force. Empty when none is configured."""
+def current_rate_card() -> Any:
+    """The rate card in force, as a read-only view. Empty when none is configured."""
     return _RATE_CARD
 
 
 # Load once at import so `FLOE_RATE_CARD=... python agent.py` needs no code
 # change. A broken card raises here rather than at the first priced leg, which
 # is the difference between a startup failure and a wrong invoice.
-_RATE_CARD = load_rate_card()
+_RATE_CARD = _freeze(load_rate_card())
 
 __all__ = ["RATE_CARD_ENV", "load_rate_card", "set_rate_card", "current_rate_card"]
