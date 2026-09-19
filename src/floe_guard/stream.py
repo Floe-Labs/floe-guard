@@ -62,6 +62,18 @@ class StreamGuard:
     Not thread-safe itself (a stream is consumed sequentially); the underlying
     guard accounting stays lock-protected, so parallel streams each wrap their
     own ``StreamGuard`` against the same guard.
+
+    Persistent stores are not supported: active stream accrual is process-local
+    and cannot be enforced atomically across store clients. Construction raises
+    ``ValueError`` after releasing ``reserved`` when a store is configured.
+
+    Step scopes are also unsupported: stream accrual has no step ownership.
+    Construction inside a step releases ``reserved`` and raises ``ValueError``;
+    opening a step while a stream is active is rejected too.
+
+    For priced streams, token accrual counts against ordinary admission's token
+    ceiling. Mid-stream interruption itself enforces USD, not token limits.
+    Known prompt cost and tokens count from construction, before output arrives.
     """
 
     def __init__(
@@ -80,15 +92,17 @@ class StreamGuard:
         # time. Accepts a plain float (USD-only) OR a BudgetReservation from a
         # token/step-aware reserve() — a token-aware handle used to crash here.
         reserved_usd = guard._reserved_usd_of(reserved)
+        if guard._store is not None:
+            guard.release(reserved)
+            raise ValueError(
+                "StreamGuard is not supported with a persistent store: active stream "
+                "accrual cannot be enforced across processes. Use an in-memory BudgetGuard."
+            )
         self._guard = guard
         self._model = model
         self._prompt_tokens = max(0, int(prompt_tokens))
-        # Keep the ORIGINAL handle so settle()/release() drain the token hold too
-        # AND preserve a persistent handle's issuing-window provenance — coercing
-        # to a plain float here would make a stream that crosses midnight settle
-        # against the new UTC day's empty reservation row. Keep the USD amount for
-        # the stream-cost registry (mid-stream enforcement is USD-only; a stream's
-        # token hold is reconciled at settle()).
+        # Keep the original handle so settle()/release() drain the token hold too.
+        # The registry tracks both dimensions for admission while streaming.
         self._reserved = reserved
         self._reserved_usd = reserved_usd
         self._price = price
@@ -103,6 +117,8 @@ class StreamGuard:
         if self._priced is None and guard.fail_closed:
             # Same policy as settle(), applied BEFORE any money moves: refuse to
             # stream spend the guard cannot measure.
+            self._closed = True
+            guard.release(reserved)
             warnings.warn(
                 f"Cannot price model {model!r}: not in the bundled cost map and no "
                 f"manual price given. A stream whose spend cannot be measured "
@@ -111,14 +127,21 @@ class StreamGuard:
                 UnpriceableModelWarning,
                 stacklevel=2,
             )
-            self._closed = True
-            guard.release(reserved)
             raise UnpriceableModelError(model)
         # Registered AFTER the fail-closed raise so a refused stream leaves no
         # entry; _settle() unregisters, so entries live exactly as long as the
         # stream. Parallel streams see each other's accrual through this. The
-        # registry tracks USD only, so pass the USD amount of the handle.
-        self._key = guard._stream_register(self._reserved_usd)
+        # registry needs the full handle for token accounting and rejection cleanup.
+        try:
+            prompt_cost = (
+                price_tokens(self._priced, self._prompt_tokens, 0) if self._priced else 0.0
+            )
+        except Exception:
+            guard.release(reserved)
+            raise
+        self._key = guard._stream_register(
+            reserved, prompt_cost, self._prompt_tokens if self._priced else 0
+        )
 
     def feed_text(self, delta: str) -> None:
         """Meter one text delta (token count via the heuristic/``count_tokens``).
@@ -137,7 +160,9 @@ class StreamGuard:
         if self._priced is None:
             return  # fail-open + unpriceable: nothing to price chunks with
         cumulative = price_tokens(self._priced, self._prompt_tokens, self._completion_tokens)
-        if self._guard._stream_would_cross(self._key, cumulative):
+        if self._guard._stream_would_cross(
+            self._key, cumulative, self._prompt_tokens + self._completion_tokens
+        ):
             # The tokens in this chunk were already generated (and billed) —
             # settle them before raising so spent_usd reflects reality. The
             # overshoot is at most this one chunk, not the rest of the stream.
@@ -169,20 +194,20 @@ class StreamGuard:
 
     def _settle(self) -> float:
         self._closed = True
-        try:
-            return self._guard.settle(
-                self._model,
-                self._prompt_tokens,
-                self._completion_tokens,
-                reserved=self._reserved,
-                price=self._price,
-                label=self._label,
-            )
-        finally:
-            # Settle moved the accrual into spent_usd (or skipped it, fail-open)
-            # — either way the registry entry must go, even if settle raised,
-            # or a phantom accrual would throttle every other stream forever.
-            self._guard._stream_unregister(self._key)
+        # Transfer accrual to settled spend atomically; both calls re-enter the lock.
+        with self._guard._lock:
+            try:
+                return self._guard.settle(
+                    self._model,
+                    self._prompt_tokens,
+                    self._completion_tokens,
+                    reserved=self._reserved,
+                    price=self._price,
+                    label=self._label,
+                )
+            finally:
+                # Remove accrual even when settlement raises or skips an unpriced call.
+                self._guard._stream_unregister(self._key)
 
     def __enter__(self) -> StreamGuard:
         return self
@@ -223,7 +248,12 @@ def guard_stream(
     Validation and the fail-closed unpriceable check run eagerly, at call
     time. Once you start iterating, the wrapper owns ``reserved`` and settles
     or releases it on every exit path; a returned-but-never-iterated stream
-    leaves the handle with you (release it yourself).
+    leaves the handle with you (release it yourself). Closing that wrapper
+    removes its stream registration without charging prompt estimates.
+
+    Persistent stores are rejected eagerly with ``ValueError``, releasing any
+    supplied reservation before consuming chunks, as with :class:`StreamGuard`.
+    Active step scopes are rejected the same way.
     """
     sg = StreamGuard(
         guard,
@@ -247,12 +277,21 @@ def guard_stream(
     extract = get_text or _default_get_text
 
     def _run() -> Iterator[Any]:
+        # Prime only this cleanup boundary, without opening or consuming chunks.
+        # An unopened wrapper still leaves reservation ownership with its caller.
+        try:
+            yield None
+        except BaseException:
+            guard._stream_unregister(sg._key)
+            raise
         with sg:
             for chunk in chunks:
                 sg.feed_text(extract(chunk))
                 yield chunk
 
-    return _run()
+    stream = _run()
+    next(stream)  # Consume the private sentinel so close/throw can run cleanup.
+    return stream
 
 
 __all__ = ["StreamGuard", "guard_stream", "approx_tokens"]

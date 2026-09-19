@@ -8,6 +8,32 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.23.9
+
+### Fixed (py)
+
+- In-memory `check()` / `reserve()` admission and `remaining_usd` now include
+  active streams' accrued spend beyond their reservations. Ordinary LLM and
+  paid-tool calls can no longer reuse headroom already consumed by a stream.
+- `StreamGuard` / `guard_stream()` now reject persistent stores with `ValueError`
+  and release any supplied reservation before streaming starts. Previously,
+  process-local stream accrual was invisible to persistent reservation admission.
+- Reject overlapping step scopes and streams with `ValueError`: active stream
+  accrual has no step owner and could bypass the step cap. Rejected streams
+  release their supplied reservation; a step can start once streams settle.
+- Closing or discarding an unstarted `guard_stream()` wrapper clears its stream
+  registration so later steps remain usable. Its reservation stays caller-owned.
+- Reservation cleanup now drains only its issuing step, preserving unrelated
+  holds when a stream is rejected inside a different step.
+- Settlement charges that same issuing step. Reservation values carry a stable
+  scope identifier so copying or serializing them does not clone mutable step state.
+- Unpriceable calls release reservations before warning, including when warnings
+  are configured as exceptions.
+- Token admission includes active streams' prompt and completion accrual beyond
+  their token reservations, transferred atomically to settled usage.
+- Known prompt USD and tokens count from stream construction, before the first
+  completion chunk, preventing other calls from reusing prompt-only spend.
+
 ## Unreleased — py 0.25.0 / js 0.18.0
 
 ### Added (py, js)

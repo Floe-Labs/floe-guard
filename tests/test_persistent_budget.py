@@ -19,6 +19,7 @@ from floe_guard import (
     StreamGuard,
     UnpriceableModelError,
     UnpriceableModelWarning,
+    guard_stream,
 )
 
 _LIMIT = 0.05
@@ -127,26 +128,55 @@ def test_reservations_settle_and_release_against_their_issuing_day(
     assert store.load("2026-08-05", 1.0) == pytest.approx((0.1, 0.0))
 
 
-def test_stream_settles_against_its_reservation_day(
+@pytest.mark.parametrize("held", [0.0, 0.002, 0.0095])
+@pytest.mark.parametrize("wrapper", [False, True])
+@pytest.mark.parametrize("fail_closed", [False, True])
+def test_persistent_stream_rejected_before_accrual(
+    tmp_path: Path, held: float, wrapper: bool, fail_closed: bool
+) -> None:
+    """Refuse streams before generation and release only their supplied hold."""
+    store = SqliteStore(tmp_path / "budget.sqlite3")
+    guard = BudgetGuard(0.01, window="utc-day", store=store, fail_closed=fail_closed)
+    other = guard.reserve_tool(0.0005)
+    reserved = guard.reserve(held)
+    consumed = []
+
+    def chunks():
+        consumed.append(True)
+        yield "generated text"
+
+    with pytest.raises(ValueError, match="StreamGuard is not supported with a persistent store"):
+        if wrapper:
+            guard_stream(guard, "gpt-4o", chunks(), reserved=reserved)
+        else:
+            StreamGuard(guard, "gpt-4o", reserved=reserved)
+    assert consumed == []
+    assert store.load(guard_module._utc_day_window_id(), 0.01) == pytest.approx((0.0, 0.0005))
+    assert guard.remaining_usd == pytest.approx(0.0095)
+    assert guard.spend_log == []
+    guard.release(other)
+    tool = guard.reserve_tool(0.002)
+    guard.settle_tool("search", 0.002, reserved=tool)
+    assert guard.remaining_usd == pytest.approx(0.008)
+
+
+def test_rejected_stream_releases_against_its_reservation_day(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A rejected stream must release the issuing day's reservation after rollover."""
     current_day = ["2026-08-04"]
     monkeypatch.setattr(guard_module, "_utc_day_window_id", lambda: current_day[0])
     store = SqliteStore(tmp_path / "budget.sqlite3")
     guard = BudgetGuard(1.0, window="utc-day", store=store)
     reserved = guard.reserve(0.2)
-    stream = StreamGuard(
-        guard,
-        "manual",
-        reserved=reserved,
-        price=ManualPrice(input_cost_per_token=0.2, output_cost_per_token=0.0),
-    )
-
     current_day[0] = "2026-08-05"
-    stream.finish(prompt_tokens=1, completion_tokens=0)
+    other = guard.reserve_tool(0.1)
+    with pytest.raises(ValueError, match="StreamGuard is not supported with a persistent store"):
+        StreamGuard(guard, "gpt-4o", reserved=reserved)
 
-    assert store.load("2026-08-04", 1.0) == pytest.approx((0.2, 0.0))
-    assert store.load("2026-08-05", 1.0) == pytest.approx((0.0, 0.0))
+    assert store.load("2026-08-04", 1.0) == pytest.approx((0.0, 0.0))
+    assert store.load("2026-08-05", 1.0) == pytest.approx((0.0, 0.1))
+    guard.release(other)
 
 
 def test_persistence_configuration_is_explicit(tmp_path: Path) -> None:
