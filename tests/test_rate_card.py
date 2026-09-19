@@ -138,6 +138,7 @@ def test_a_home_relative_path_is_expanded(monkeypatch, tmp_path) -> None:
     """The documented example is "~/floe-rates.json", and open() does not expand
     ~ — without expansion the very path the README shows raises."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     (tmp_path / "rates.json").write_text(
         json.dumps({"acme": {"mode": "ocr", "unit": "usd_per_page", "rate": 0.25}}),
         encoding="utf-8",

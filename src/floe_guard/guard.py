@@ -36,7 +36,7 @@ import warnings
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal, NoReturn
 
@@ -65,7 +65,7 @@ class BudgetReservation:
     :meth:`BudgetGuard.reserve` when a token ceiling or an active
     :meth:`BudgetGuard.step` is involved.
 
-    A dumb value handle — it carries the amounts held, nothing else. Pass it
+    A value handle carrying the amounts held and private issuing-step ownership. Pass it
     straight back to :meth:`BudgetGuard.settle` / :meth:`BudgetGuard.release`.
     When neither tokens nor a step are involved, ``reserve`` returns a plain
     ``float`` instead (byte-for-byte the old behaviour), so ``ReservationHandle``
@@ -74,6 +74,7 @@ class BudgetReservation:
 
     usd: float
     tokens: int
+    _step_id: int | None = field(default=None, repr=False, compare=False, kw_only=True)
 
     def __post_init__(self) -> None:
         # Public, re-exported value object: validate at construction so a
@@ -131,6 +132,17 @@ class _StepState:
     spent_tokens: int = 0
     reserved_usd: float = 0.0
     reserved_tokens: int = 0
+    id: int = 0
+
+
+@dataclass
+class _StreamAccrual:
+    """Accrued usage and its already-counted reservation for one active stream."""
+
+    held_usd: float
+    held_tokens: int
+    usd: float = 0.0
+    tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -339,6 +351,7 @@ class BudgetGuard:
         self._reserved_tokens = 0
         # Step stack: innermost step is last. Empty when no step() is active.
         self._steps: list[_StepState] = []
+        self._step_sequence = 0
         self.price_overrides = price_overrides
         self.fail_closed = fail_closed
         self._on_block = on_block or _default_on_block
@@ -375,11 +388,11 @@ class BudgetGuard:
         # Active streams' (accrued_usd, reserved_usd), keyed by registry token —
         # see _stream_register(). Lets parallel streams count each other's
         # in-flight accrual against the ceiling before anything settles.
-        self._stream_costs: dict[object, tuple[float, float]] = {}
+        self._stream_costs: dict[object, _StreamAccrual] = {}
         # Per-tool running totals (settle_tool/record_tool) — the tool side of
         # the one shared ceiling, exposed via the tool_costs property.
         self._tool_costs: dict[str, float] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         # Adopt the store's authoritative snapshot for today's window at startup,
         # so a fresh process (cron/serverless) continues where the last left off.
         if self._store is not None:
@@ -602,7 +615,9 @@ class BudgetGuard:
                     # so pre-existing USD-only callers get byte-for-byte the old handle.
                     if tokens == 0 and step is None:
                         return estimate
-                    return BudgetReservation(usd=estimate, tokens=tokens)
+                    return BudgetReservation(
+                        usd=estimate, tokens=tokens, _step_id=step.id if step else None
+                    )
         # Blocked — notify and raise outside the lock.
         self._raise_block(blocked)
 
@@ -640,6 +655,8 @@ class BudgetGuard:
         reserved_usd = self._reserved_usd_of(reserved)
         priced = self._resolve(model, price)
         if priced is None:
+            # Cleanup must precede warnings, which callers may promote to errors.
+            self.release(reserved)
             warnings.warn(
                 f"Cannot price model {model!r}: not in the bundled cost map and no "
                 f"manual price given. The budget guard cannot enforce a ceiling on "
@@ -648,10 +665,6 @@ class BudgetGuard:
                 UnpriceableModelWarning,
                 stacklevel=2,
             )
-            # Release any held reservation on BOTH paths. Fail-closed must not
-            # leak the in-flight hold, or _reserved grows permanently and
-            # remaining_usd shrinks until reserve() starts blocking everything.
-            self.release(reserved)
             if self.fail_closed:
                 raise UnpriceableModelError(model)
             return 0.0
@@ -696,7 +709,7 @@ class BudgetGuard:
                 if reserved:
                     self._consume_reservation_locked(reserved)
                 self.spent_usd += cost
-                self._accrue_step_locked(cost, accrued_tokens)
+                self._accrue_step_locked(cost, accrued_tokens, reserved)
                 # Clamp a sub-epsilon float overshoot back to the limit so the running
                 # total never reports as having crossed the ceiling by a rounding artifact.
                 if 0.0 < self.spent_usd - self.limit_usd < _EPS:
@@ -847,7 +860,7 @@ class BudgetGuard:
                     self._consume_reservation_locked(reserved)
                 self.spent_usd += cost_usd
                 # A paid tool spends the step's USD too (no tokens to price).
-                self._accrue_step_locked(cost_usd, 0)
+                self._accrue_step_locked(cost_usd, 0, reserved)
                 # Same sub-epsilon clamp as settle(): never report a rounding-artifact
                 # crossing of the ceiling.
                 if 0.0 < self.spent_usd - self.limit_usd < _EPS:
@@ -907,11 +920,14 @@ class BudgetGuard:
 
     @property
     def remaining_usd(self) -> float:
-        """USD left before the ceiling, net of in-flight reservations (never negative)."""
+        """USD left, net of reservations and unsettled stream overages (never negative)."""
         with self._lock:
             if self._store is not None:
                 self._refresh_persistent_state_locked()
-            return max(0.0, self.limit_usd - self.spent_usd - self._reserved)
+            return max(
+                0.0,
+                self.limit_usd - self.spent_usd - self._reserved - self._stream_overage_locked(),
+            )
 
     @property
     def tool_costs(self) -> dict[str, float]:
@@ -1056,9 +1072,16 @@ class BudgetGuard:
 
         Yields the SAME guard, so no adapter needs to know about steps — pass the
         guard through as usual. Steps nest (an inner step is checked first); the
-        innermost is the one that owns each call. **Not for concurrent parallel
-        steps on one guard** — that's a per-step identity registry, out of scope
-        for issue #46. Use one guard per parallel branch instead.
+        innermost owns new reservations and unreserved records. Reserved calls
+        settle against their issuing step, even from a nested scope. A plain
+        ``0.0`` handle issued outside a step is indistinguishable from an
+        unreserved record and charges the current step instead.
+        **Not for concurrent parallel steps on one guard** — that requires a
+        per-step identity registry, out of scope for issue #46. Use one guard
+        per parallel branch instead.
+
+        Steps cannot overlap active streams: stream accrual has no step owner.
+        Starting either while the other is active raises ``ValueError``.
         """
         if self._store is not None:
             # Steps are an in-process, token-aware construct; persistence is USD-only
@@ -1078,6 +1101,10 @@ class BudgetGuard:
             max_usd=float(max_usd) if max_usd is not None else None, max_tokens=max_tokens
         )
         with self._lock:
+            if self._stream_costs:
+                raise ValueError("step() is not supported while a stream is active")
+            self._step_sequence += 1
+            state.id = self._step_sequence
             self._steps.append(state)
         try:
             yield self
@@ -1219,11 +1246,8 @@ class BudgetGuard:
         per-handle tracking and remains the caller's responsibility.
 
         Drains both dimensions the SAME way — a ``BudgetReservation`` carries a
-        token hold too, and (like the USD float) it also unwinds the innermost
-        active step. A plain ``float`` handle drains only USD (the backward-compat
-        path). We do NOT track which step a handle came from: a handle is drained
-        against whatever step is innermost now, matching the sequential-loop
-        contract (concurrent parallel steps on one guard are out of scope, #46).
+        token hold too and unwinds only its issuing step. A plain ``float``
+        handle was issued outside a step and drains only aggregate USD.
         """
         usd = reserved.usd if isinstance(reserved, BudgetReservation) else reserved
         tokens = reserved.tokens if isinstance(reserved, BudgetReservation) else 0
@@ -1240,7 +1264,7 @@ class BudgetGuard:
             )
         self._reserved = max(0.0, self._reserved - usd)
         self._reserved_tokens = max(0, self._reserved_tokens - tokens)
-        step = self._steps[-1] if self._steps else None
+        step = self._reservation_step_locked(reserved)
         if step is not None:
             step.reserved_usd = max(0.0, step.reserved_usd - usd)
             step.reserved_tokens = max(0, step.reserved_tokens - tokens)
@@ -1344,25 +1368,60 @@ class BudgetGuard:
             raise ValueError(f"reserved must be a finite, non-negative number, got {reserved!r}")
         return reserved
 
-    def _accrue_step_locked(self, cost: float, tokens: int) -> None:
-        """Accrue a settled call into the innermost active step. Caller must
-        hold ``self._lock``. No-op when no step is active — the reservation was
-        already drained by _consume_reservation_locked, this adds the *settled*
-        amount. Sequential-loop contract: the innermost step is the one that
-        owns the call (concurrent parallel steps on one guard are out of scope)."""
-        step = self._steps[-1] if self._steps else None
+    def _reservation_step_locked(self, reserved: ReservationHandle) -> _StepState | None:
+        """Resolve a handle's issuing scope without storing mutable state in it."""
+        if isinstance(reserved, BudgetReservation):
+            return next((step for step in self._steps if step.id == reserved._step_id), None)
+        return None
+
+    def _accrue_step_locked(self, cost: float, tokens: int, reserved: ReservationHandle) -> None:
+        """Charge the issuing step; unreserved records use the current step.
+
+        A closed issuing step has no active cap to update. Caller holds the lock.
+        """
+        step = (
+            self._reservation_step_locked(reserved)
+            if reserved
+            else self._steps[-1]
+            if self._steps
+            else None
+        )
         if step is not None:
             step.spent_usd += cost
             step.spent_tokens += tokens
 
-    def _stream_register(self, reserved: float) -> object:
+    def _stream_overage_locked(self, exclude: object | None = None) -> float:
+        """Accrued costs beyond stream holds. Caller must hold ``self._lock``."""
+        return sum(
+            max(0.0, stream.usd - stream.held_usd)
+            for key, stream in self._stream_costs.items()
+            if key is not exclude
+        )
+
+    def _stream_token_overage_locked(self) -> int:
+        """Unsettled tokens beyond stream holds. Caller must hold ``self._lock``."""
+        return sum(
+            max(0, stream.tokens - stream.held_tokens) for stream in self._stream_costs.values()
+        )
+
+    def _stream_register(
+        self, reserved: ReservationHandle, prompt_cost: float, prompt_tokens: int
+    ) -> object:
         """Register an active stream (see :class:`~floe_guard.stream.StreamGuard`)
         and return its registry key. Active streams' accrued-but-unsettled costs
         count against the ceiling for each OTHER stream, so parallel unreserved
         streams share the budget instead of each spending the full ceiling."""
         key = object()
         with self._lock:
-            self._stream_costs[key] = (0.0, max(0.0, reserved))
+            if self._steps:
+                self.release(reserved)
+                raise ValueError("StreamGuard is not supported inside a step scope")
+            self._stream_costs[key] = _StreamAccrual(
+                self._reserved_usd_of(reserved),
+                reserved.tokens if isinstance(reserved, BudgetReservation) else 0,
+                usd=prompt_cost,
+                tokens=prompt_tokens,
+            )
         return key
 
     def _stream_unregister(self, key: object) -> None:
@@ -1371,7 +1430,9 @@ class BudgetGuard:
         with self._lock:
             self._stream_costs.pop(key, None)
 
-    def _stream_would_cross(self, key: object, cumulative_call_cost: float) -> bool:
+    def _stream_would_cross(
+        self, key: object, cumulative_call_cost: float, cumulative_tokens: int
+    ) -> bool:
         """Atomically record stream ``key``'s cumulative cost so far and answer:
         would it cross the ceiling? Counted against the limit: settled spend,
         other calls' reservations (this stream's own hold is excluded — its real
@@ -1380,13 +1441,11 @@ class BudgetGuard:
         inside ``_reserved``). Used by :class:`~floe_guard.stream.StreamGuard`.
         """
         with self._lock:
-            own_reserved = self._stream_costs.get(key, (0.0, 0.0))[1]
-            self._stream_costs[key] = (cumulative_call_cost, own_reserved)
-            other_overage = sum(
-                max(0.0, accrued - held)
-                for k, (accrued, held) in self._stream_costs.items()
-                if k is not key
-            )
+            stream = self._stream_costs[key]
+            own_reserved = stream.held_usd
+            stream.usd = cumulative_call_cost
+            stream.tokens = cumulative_tokens
+            other_overage = self._stream_overage_locked(exclude=key)
             others = self.spent_usd + max(0.0, self._reserved - own_reserved) + other_overage
             return others + cumulative_call_cost > self.limit_usd + _EPS
 
@@ -1411,12 +1470,14 @@ class BudgetGuard:
         """
         # Aggregate USD — same comparison the original _would_cross used. The
         # message/callback report the accrued total (spent_usd), as _block did.
-        committed = self.spent_usd + self._reserved
+        committed = self.spent_usd + self._reserved + self._stream_overage_locked()
         if committed > self.limit_usd - _EPS or committed + estimate_usd > self.limit_usd + _EPS:
             return ("usd", "aggregate", self.spent_usd, self.limit_usd)
         # Aggregate tokens (integers — no epsilon needed).
         if self.token_limit is not None:
-            committed_t = self.spent_tokens + self._reserved_tokens
+            committed_t = (
+                self.spent_tokens + self._reserved_tokens + self._stream_token_overage_locked()
+            )
             if committed_t >= self.token_limit or committed_t + estimate_tokens > self.token_limit:
                 return ("tokens", "aggregate", committed_t, self.token_limit)
         # Innermost active step's caps (an outer step can only be crossed by

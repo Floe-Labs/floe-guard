@@ -257,6 +257,16 @@ manually. This feature is Python-only and supports `window="utc-day"` only;
 arbitrary rolling durations are not yet supported. As elsewhere, enforcement is
 estimate-based, so size reservations to the real request when possible.
 
+`StreamGuard` and `guard_stream()` require an in-memory guard. With a persistent
+store they raise `ValueError` before consuming chunks and release any supplied
+reservation: active stream accrual is not shared across processes.
+Streams also cannot overlap `guard.step()` scopes: creating a stream inside a
+step raises `ValueError` and releases its reservation; opening a step while a
+stream is active raises too. Finish or close streams before entering a step.
+For priced streams, `check()` and `reserve()` count active prompt/completion
+tokens against `token_limit`, net of their existing token holds. Mid-stream
+interruption itself remains USD-based; token limits govern new admissions.
+
 ### Unpriceable models fail closed
 
 If a model isn't in the cost map and you didn't supply a price, the guard **warns
