@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from floe_guard import BudgetExceeded, BudgetGuard, ManualPrice, SqliteStore
+from floe_guard import BudgetExceeded, BudgetGuard, ManualPrice, SqliteStore, StreamGuard
 from floe_guard.integrations.vapi import VapiBudgetGuard, VapiUsageMissingError
 
 
@@ -17,6 +17,93 @@ def guard(limit=0.01):
 
 def chunk():
     return {"choices": [{"delta": {"content": "word"}}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["next", "close", "send", "throw"])
+async def test_overlapping_operation_does_not_lose_cleanup(operation):
+    g = guard()
+    ready, resume = asyncio.Event(), asyncio.Event()
+    closed = []
+
+    async def source():
+        try:
+            ready.set()
+            await resume.wait()
+            yield chunk()
+        finally:
+            closed.append(True)
+
+    stream = VapiBudgetGuard(g, model="m").guard_stream(source, estimated_cost=0.003)
+    first = asyncio.create_task(anext(stream))
+    await ready.wait()
+    try:
+        with pytest.raises(RuntimeError, match="already running"):
+            if operation == "next":
+                await anext(stream)
+            elif operation == "close":
+                await stream.aclose()
+            elif operation == "send":
+                await stream.asend(None)
+            else:
+                await stream.athrow(RuntimeError("cancel"))
+    finally:
+        resume.set()
+        await first
+        await stream.aclose()
+    assert closed == [True]
+    assert len(g.spend_log) == 1
+    assert g.spent_usd == pytest.approx(0.001)
+    assert g.remaining_usd == pytest.approx(0.009)
+    assert not g._stream_costs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held", [0, 0.004, 0.008])
+@pytest.mark.parametrize("actual", [2, 3])
+async def test_final_usage_counts_other_stream_without_double_counting(held, actual):
+    g = guard()
+    other = StreamGuard(g, "m", reserved=g.reserve(held))
+    other.feed_tokens(8)
+    closed = []
+
+    async def source():
+        try:
+            yield {"usage": {"prompt_tokens": 0, "completion_tokens": actual}}
+        finally:
+            closed.append(True)
+
+    stream = VapiBudgetGuard(g, model="m").guard_stream(source, estimated_cost=0.001)
+    try:
+        if actual == 3:
+            with pytest.raises(BudgetExceeded):
+                await anext(stream)
+        else:
+            assert (await anext(stream))["usage"]["completion_tokens"] == actual
+    finally:
+        await stream.aclose()
+        other.finish()
+    assert closed == [True]
+    assert len(g.spend_log) == 2
+    assert g.spent_usd == pytest.approx((8 + actual) * 0.001)
+
+
+@pytest.mark.asyncio
+async def test_final_usage_preserves_an_unrelated_tool_hold():
+    g = guard()
+    held = g.reserve_tool(0.008)
+
+    async def source():
+        yield {"usage": {"prompt_tokens": 0, "completion_tokens": 3}}
+
+    stream = VapiBudgetGuard(g, model="m").guard_stream(source, estimated_cost=0)
+    with pytest.raises(BudgetExceeded):
+        await anext(stream)
+    assert len(g.spend_log) == 1
+    assert g.spent_usd == pytest.approx(0.003)
+    assert g.remaining_usd == 0
+    g.release(held)
+    assert g.remaining_usd == pytest.approx(0.007)
 
 
 @pytest.mark.asyncio

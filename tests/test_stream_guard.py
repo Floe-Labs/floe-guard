@@ -14,6 +14,7 @@ from floe_guard import (
     BudgetGuard,
     ManualPrice,
     StreamGuard,
+    TokenBudgetExceeded,
     UnpriceableModelError,
     UnpriceableModelWarning,
     guard_stream,
@@ -23,6 +24,273 @@ from floe_guard.integrations.litellm import _estimate_request
 from floe_guard.stream import approx_tokens
 
 MODEL = "gpt-4o"  # $2.5e-6/input token, $1e-5/output token
+
+
+@pytest.mark.parametrize("held", [0, 200, 950])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_prompt_accrual_before_first_chunk(held: int, wrapped: bool) -> None:
+    """Known prompt spend counts immediately, independently of output arrival."""
+    guard = BudgetGuard(0.01, token_limit=1000, on_block=lambda *_: None)
+    handle = guard.reserve(held * 1e-5, estimated_tokens=held)
+    price = ManualPrice(1e-5, 1e-5)
+    if wrapped:
+        stream = guard_stream(guard, "manual", [], prompt_tokens=900, reserved=handle, price=price)
+    else:
+        stream = StreamGuard(guard, "manual", prompt_tokens=900, reserved=handle, price=price)
+    assert guard.remaining_usd == pytest.approx((1000 - max(900, held)) * 1e-5)
+    with pytest.raises(BudgetExceeded):
+        guard.check(0.002)
+    with pytest.raises(BudgetExceeded):
+        guard.reserve_tool(0.002)
+    with pytest.raises(TokenBudgetExceeded):
+        guard.check(0, estimated_tokens=200)
+    with pytest.raises(TokenBudgetExceeded):
+        guard.reserve(0, estimated_tokens=200)
+    # Existing holds are replaced by accrual, not added to it a second time.
+    other = guard.reserve(0.0005, estimated_tokens=50)
+    if wrapped:
+        stream.close()
+        guard.release(handle)
+        assert not guard.spend_log
+    else:
+        stream.finish(prompt_tokens=700, completion_tokens=0)
+        assert guard.spent_tokens == 700
+    guard.release(other)
+    assert guard.remaining_usd == pytest.approx(0.01 if wrapped else 0.003)
+    assert not guard._stream_costs
+
+
+def test_another_stream_counts_pending_prompt() -> None:
+    """A second stream cannot spend headroom consumed by a prompt-only stream."""
+    guard = BudgetGuard(0.01, on_block=lambda *_: None)
+    price = ManualPrice(1e-5, 1e-5)
+    with StreamGuard(guard, "manual", prompt_tokens=900, price=price):
+        with StreamGuard(guard, "manual", price=price) as second:
+            with pytest.raises(BudgetExceeded):
+                second.feed_tokens(200)
+    assert guard.spent_usd == pytest.approx(0.011)
+    assert len(guard.spend_log) == 2
+
+
+@pytest.mark.parametrize("phase", ["construct", "finish"])
+def test_warning_as_error_does_not_leak_stream_reservation(phase: str) -> None:
+    """Warning policy must not prevent cleanup of an unpriceable call."""
+    import warnings
+
+    guard = BudgetGuard(1, fail_closed=phase == "construct")
+    other = guard.reserve(0.2)
+    handle = guard.reserve(0.3)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UnpriceableModelWarning)
+        with pytest.raises(UnpriceableModelWarning):
+            stream = StreamGuard(guard, "unknown-review-model", reserved=handle)
+            stream.finish()
+    assert guard.remaining_usd == pytest.approx(0.8)
+    assert not guard._stream_costs
+    assert not guard.spend_log
+    guard.release(other)
+
+
+@pytest.mark.parametrize("kind", ["llm", "tool"])
+def test_nested_settlement_charges_issuing_step(kind: str) -> None:
+    """Settling in a nested scope cannot reopen the issuing scope's budget."""
+    guard = BudgetGuard(10, on_block=lambda *_: None)
+    with guard.step(max_usd=1, max_tokens=10):
+        handle = guard.reserve(1, estimated_tokens=10)
+        with guard.step(max_usd=10, max_tokens=100):
+            if kind == "llm":
+                guard.settle("manual", 10, 0, reserved=handle, price=ManualPrice(0.1, 0))
+            else:
+                guard.settle_tool("job", 1, reserved=handle)
+            guard.check(1, estimated_tokens=100)
+        with pytest.raises(BudgetExceeded):
+            guard.reserve(0.01)
+
+
+@pytest.mark.parametrize("copy_mode", ["shallow", "deep", "replace", "pickle", "asdict"])
+@pytest.mark.parametrize("terminal", ["release", "settle"])
+def test_copied_reservation_preserves_step(copy_mode: str, terminal: str) -> None:
+    """Value-handle copies keep the issuing scope, without cloning mutable state."""
+    import copy
+    import pickle
+    from dataclasses import asdict, replace
+
+    from floe_guard import BudgetReservation
+
+    guard = BudgetGuard(10, on_block=lambda *_: None)
+    with guard.step(max_usd=1):
+        handle = guard.reserve(1)
+        handle = {
+            "shallow": copy.copy,
+            "deep": copy.deepcopy,
+            "replace": replace,
+            "pickle": lambda h: pickle.loads(pickle.dumps(h)),
+            "asdict": lambda h: BudgetReservation(**asdict(h)),
+        }[copy_mode](handle)
+        with guard.step(max_usd=10):
+            if terminal == "release":
+                guard.release(handle)
+            else:
+                guard.settle_tool("job", 0.6, reserved=handle)
+        guard.check(0.4)
+        if terminal == "settle":
+            with pytest.raises(BudgetExceeded):
+                guard.check(0.5)
+        else:
+            guard.check(1)
+
+
+@pytest.mark.parametrize("origin", ["outside", "outer", "current"])
+@pytest.mark.parametrize("tokens", [0, 40])
+def test_rejected_stream_releases_issuing_step_only(origin: str, tokens: int) -> None:
+    """Rejection must not erase a different step's USD or token reservation."""
+    from contextlib import nullcontext
+
+    guard = BudgetGuard(1, token_limit=1000)
+    with guard.step(max_usd=0.1) if origin == "outer" else nullcontext():
+        handle = guard.reserve(0.004, estimated_tokens=tokens) if origin != "current" else None
+        with guard.step(max_usd=0.01, max_tokens=100):
+            if origin == "current":
+                handle = guard.reserve(0.004, estimated_tokens=tokens)
+            inside = guard.reserve(0.004, estimated_tokens=40)
+            with pytest.raises(ValueError, match="step"):
+                StreamGuard(guard, MODEL, reserved=handle)
+            with pytest.raises(BudgetExceeded):
+                guard.reserve(0.007)
+            with pytest.raises(TokenBudgetExceeded):
+                guard.reserve(0, estimated_tokens=70)
+            guard.release(inside)
+
+
+@pytest.mark.parametrize("held", [0, 200, 950])
+def test_active_stream_tokens_count_in_admission(held: int) -> None:
+    """Prompt and generated tokens count once, before and after reconciliation."""
+    guard = BudgetGuard(1, token_limit=1000)
+    with StreamGuard(
+        guard, MODEL, prompt_tokens=100, reserved=guard.reserve(0, estimated_tokens=held)
+    ) as stream:
+        stream.feed_tokens(800)
+        with pytest.raises(TokenBudgetExceeded):
+            guard.check(0, estimated_tokens=200)
+        with pytest.raises(TokenBudgetExceeded):
+            guard.reserve(0, estimated_tokens=200)
+        other = guard.reserve(0, estimated_tokens=50)
+        stream.finish(prompt_tokens=100, completion_tokens=600)
+    remaining = guard.reserve(0, estimated_tokens=250)
+    with pytest.raises(TokenBudgetExceeded):
+        guard.reserve(0, estimated_tokens=1)
+    guard.release(remaining)
+    guard.release(other)
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_parallel_stream_tokens_and_abort(wrapped: bool) -> None:
+    """Closing one stream transfers its tokens once and preserves another's hold."""
+    guard = BudgetGuard(1, token_limit=1000)
+    with StreamGuard(guard, MODEL, reserved=guard.reserve(0, estimated_tokens=100)) as first:
+        first.feed_tokens(400)
+        handle = guard.reserve(0, estimated_tokens=200)
+        if wrapped:
+            second = guard_stream(
+                guard, MODEL, ["word"], reserved=handle, count_tokens=lambda _: 300
+            )
+            next(second)
+        else:
+            second = StreamGuard(guard, MODEL, reserved=handle)
+            second.feed_tokens(300)
+        with pytest.raises(TokenBudgetExceeded):
+            guard.reserve(0, estimated_tokens=301)
+        if wrapped:
+            second.close()
+        else:
+            second.finish()
+        allowed = guard.reserve(0, estimated_tokens=300)
+        with pytest.raises(TokenBudgetExceeded):
+            guard.check(0, estimated_tokens=1)
+        guard.release(allowed)
+    assert guard.spent_tokens == 700
+    assert not guard._stream_costs
+
+
+def test_token_admission_during_settlement() -> None:
+    """Admission cannot see tokens both accrued and settled during cleanup."""
+    settled, resume, admitting = Event(), Event(), Event()
+
+    class PausedGuard(BudgetGuard):
+        def settle(self, *args: Any, **kwargs: Any) -> float:
+            cost = super().settle(*args, **kwargs)
+            settled.set()
+            assert resume.wait(5)
+            return cost
+
+    guard = PausedGuard(1, token_limit=1000)
+    stream = StreamGuard(guard, MODEL)
+    stream.feed_tokens(600)
+
+    def admit():
+        admitting.set()
+        return guard.reserve(0, estimated_tokens=400)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        finishing = pool.submit(stream.finish)
+        try:
+            assert settled.wait(5)
+            admission = pool.submit(admit)
+            assert admitting.wait(5)
+            with pytest.raises(TimeoutError):
+                admission.result(timeout=0.1)
+        finally:
+            resume.set()
+        finishing.result(timeout=5)
+        guard.release(admission.result(timeout=5))
+    assert guard.spent_tokens == 600
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("fail_closed", [False, True])
+@pytest.mark.parametrize("held", [0.0, 0.002])
+def test_stream_rejected_inside_step(wrapped: bool, fail_closed: bool, held: float) -> None:
+    """Reject streaming before consumption and release only its USD/token hold."""
+    guard = BudgetGuard(1, token_limit=100, fail_closed=fail_closed)
+    consumed = []
+
+    def chunks():
+        consumed.append(True)
+        yield "word"
+
+    with guard.step(max_usd=0.01, max_tokens=10):
+        other = guard.reserve(0.002, estimated_tokens=2)
+        reserved = guard.reserve(held, estimated_tokens=3)
+        with pytest.raises(ValueError, match="step"):
+            if wrapped:
+                guard_stream(guard, MODEL, chunks(), reserved=reserved)
+            else:
+                StreamGuard(guard, MODEL, reserved=reserved)
+        assert not consumed
+        assert not guard.spend_log
+        assert guard.remaining_usd == pytest.approx(0.998)
+        # Both step dimensions have the rejected stream's hold removed.
+        replacement = guard.reserve(0.008, estimated_tokens=8)
+        guard.release(replacement)
+        guard.release(other)
+    with guard.step(max_usd=0.01):
+        guard.check(0.01)
+
+
+@pytest.mark.parametrize("caps", [{"max_usd": 0.01}, {"max_tokens": 10}, {}])
+@pytest.mark.parametrize("accrued", [0, 900])
+def test_step_rejected_while_stream_active(caps: dict, accrued: int) -> None:
+    """A pre-existing stream cannot settle into a newly opened step."""
+    guard = BudgetGuard(1)
+    with StreamGuard(guard, MODEL) as stream:
+        stream.feed_tokens(accrued)
+        with pytest.raises(ValueError, match="stream"):
+            with guard.step(**caps):
+                pytest.fail("step must not start")
+    assert guard.spent_usd == pytest.approx(accrued * 1e-5)
+    with guard.step(max_usd=0.01):
+        hold = guard.reserve(0.01)
+        guard.release(hold)
 
 
 @pytest.mark.parametrize("held", [0.0, 0.002, 0.006])
@@ -332,6 +600,42 @@ def test_unpriceable_stream_fail_open_passes_through() -> None:
 
 
 # ── guard_stream wrapper ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("exit_mode", ["close", "throw", "discard"])
+def test_unstarted_wrapper_cleanup_allows_steps(exit_mode: str) -> None:
+    """Closing an unopened wrapper drops registration without billing or releasing holds."""
+    import gc
+
+    guard = BudgetGuard(1, token_limit=100)
+    other = guard.reserve(0.02, estimated_tokens=20)
+    handle = guard.reserve(0.01, estimated_tokens=10)
+    consumed = []
+
+    def chunks():
+        consumed.append(True)
+        yield "hello"
+
+    stream = guard_stream(guard, MODEL, chunks(), reserved=handle, prompt_tokens=50)
+    if exit_mode == "close":
+        stream.close()
+        stream.close()
+    elif exit_mode == "throw":
+        with pytest.raises(RuntimeError, match="cancel"):
+            stream.throw(RuntimeError("cancel"))
+    else:
+        del stream
+        gc.collect()
+    assert not consumed
+    assert not guard.spend_log
+    assert guard.remaining_usd == pytest.approx(0.97)
+    # Before iteration, ownership of the reservation stays with the caller.
+    guard.release(handle)
+    assert guard.remaining_usd == pytest.approx(0.98)
+    with guard.step(max_usd=0.1):
+        replacement = guard.reserve(0.1, estimated_tokens=80)
+        guard.release(replacement)
+    guard.release(other)
 
 
 def test_guard_stream_yields_until_the_ceiling_then_raises() -> None:

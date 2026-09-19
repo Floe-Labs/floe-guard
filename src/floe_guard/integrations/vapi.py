@@ -185,7 +185,7 @@ class _GuardedStream(AsyncGenerator[Any, None]):
     ``finally`` settles or releases exactly once on completion, error, or abort.
     """
 
-    __slots__ = ("_gen", "_release", "_started")
+    __slots__ = ("_gen", "_release", "_started", "_running")
 
     def __init__(
         self,
@@ -195,32 +195,28 @@ class _GuardedStream(AsyncGenerator[Any, None]):
         self._gen: AsyncGenerator[Any, None] | None = gen
         self._release = release
         self._started = False
+        self._running = False
 
     def __aiter__(self) -> _GuardedStream:
         return self
 
     async def __anext__(self) -> Any:
-        gen = self._gen
-        if gen is None:
-            raise StopAsyncIteration
-        self._started = True
-        try:
-            item = await gen.__anext__()
-        except StopAsyncIteration:
-            self._gen = None
-            raise
-        except BaseException:
-            self._gen = None
-            raise
-        return item
+        return await self.asend(None)
+
+    def _require_idle(self) -> None:
+        """Reject overlapping operations without discarding cleanup ownership."""
+        if self._running:
+            raise RuntimeError("guarded stream is already running")
 
     async def asend(self, value: Any) -> Any:
+        self._require_idle()
         gen = self._gen
         if gen is None:
             raise StopAsyncIteration
         if not self._started and value is not None:
             raise TypeError("cannot send a non-None value to an unstarted stream")
         self._started = True
+        self._running = True
         try:
             return await gen.asend(value)
         except StopAsyncIteration:
@@ -229,14 +225,18 @@ class _GuardedStream(AsyncGenerator[Any, None]):
         except BaseException:
             self._gen = None
             raise
+        finally:
+            self._running = False
 
     async def athrow(self, *args: Any, **kwargs: Any) -> Any:
+        self._require_idle()
         gen = self._gen
         if gen is None:
             raise StopAsyncIteration
         if not self._started:
             self._release()
         self._started = True
+        self._running = True
         try:
             return await gen.athrow(*args, **kwargs)
         except StopAsyncIteration:
@@ -245,14 +245,21 @@ class _GuardedStream(AsyncGenerator[Any, None]):
         except BaseException:
             self._gen = None
             raise
+        finally:
+            self._running = False
 
     async def aclose(self) -> None:
+        self._require_idle()
         gen, self._gen = self._gen, None
         if gen is None:
             return
         if not self._started:
             self._release()
-        await gen.aclose()
+        self._running = True
+        try:
+            await gen.aclose()
+        finally:
+            self._running = False
 
     def __del__(self) -> None:
         try:
@@ -447,13 +454,20 @@ class VapiBudgetGuard:
                 async for chunk in iterator:
                     usage = read_usage(_field(chunk, "usage"))
                     if usage is not None:
-                        meter.finish(
-                            prompt_tokens=usage[0],
-                            completion_tokens=usage[1],
-                            cache_read_input_tokens=usage[2],
-                        )
-                        if self._guard.spent_usd > self._guard.limit_usd + 1e-12:
-                            self._guard._block()
+                        # Reconcile and capture the decision atomically; invoke
+                        # user callbacks only after releasing the guard's lock.
+                        with self._guard._lock:
+                            meter.finish(
+                                prompt_tokens=usage[0],
+                                completion_tokens=usage[1],
+                                cache_read_input_tokens=usage[2],
+                            )
+                            crossed = self._guard._stream_budget_exceeded()
+                            spent = self._guard.spent_usd
+                        if crossed:
+                            self._guard._raise_block(
+                                ("usd", "aggregate", spent, self._guard.limit_usd)
+                            )
                         yield chunk
                         return  # OpenAI's usage-bearing chunk is final.
                     meter.feed_text(_chunk_text(chunk))

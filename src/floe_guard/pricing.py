@@ -53,23 +53,37 @@ def _load_cost_map() -> dict[str, Any]:
         return json.load(fh)
 
 
-# The voice rates (STT/TTS/telephony) live under one reserved key so the flat
-# LLM map stays LLM-only: they have a different schema (rate/unit/mode, not
-# per-token prices), so keeping them out of _COST_MAP means the token resolver
-# and its whole-map invariants never see them. See voice_pricing.py.
+# The per-unit leg rates live under one reserved key so the flat LLM map stays
+# LLM-only: they have a different schema (rate/unit/mode, not per-token prices),
+# so keeping them out of _COST_MAP means the token resolver and its whole-map
+# invariants never see them. See voice_pricing.py.
+#
+# The line between the two maps is the BILLING UNIT, not the modality: anything
+# billed per token lives in the flat map, anything billed per second / char /
+# minute / segment / page / GPU-second lives here.
+#
+# Renamed "__voice__" -> "__legs__" in P1.11, when the section grew SMS, OCR, GPU
+# and avatar rates and the old name became actively misleading. The fallback
+# below is what makes that rename non-breaking: a cost_map.json generated before
+# the rename still resolves, so an older vendored map (or a user's pinned copy)
+# keeps working untouched. Read new-name-first, old-name-second.
+_LEG_MAP_KEY = "__legs__"
 _VOICE_MAP_KEY = "__voice__"
 # Reserved metadata key: provenance/freshness of the bundled snapshot, e.g.
 # {"generated_at": "2026-08-17"}. Like __voice__ it is NOT a model, so it stays
 # out of _COST_MAP; surfaced via cost_map_generated_at().
 _META_KEY = "__meta__"
 _RAW_COST_MAP: dict[str, Any] = _load_cost_map()
-_VOICE_MAP: dict[str, Any] = _RAW_COST_MAP.get(_VOICE_MAP_KEY, {})
+_VOICE_MAP: dict[str, Any] = _RAW_COST_MAP.get(
+    _LEG_MAP_KEY, _RAW_COST_MAP.get(_VOICE_MAP_KEY, {})
+)
 # Coerce to a dict — a null / non-dict ``__meta__`` in the JSON must not break
 # the accessor (the docstring promises a safe ``None``, not a crash).
 _meta_raw = _RAW_COST_MAP.get(_META_KEY, {})
 _META: dict[str, Any] = _meta_raw if isinstance(_meta_raw, dict) else {}
-# Exclude every reserved dunder key (__voice__, __meta__, …) so the token
-# resolver only ever sees real model ids.
+# Exclude every reserved dunder key (__legs__, __voice__, __meta__, …) so the
+# token resolver only ever sees real model ids. Matched by SHAPE, not by an
+# allowlist, so a future reserved section needs no change here.
 _COST_MAP: dict[str, Any] = {
     k: v for k, v in _RAW_COST_MAP.items() if not (k.startswith("__") and k.endswith("__"))
 }

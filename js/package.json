@@ -1,7 +1,7 @@
 {
   "name": "floe-guard",
-  "version": "0.16.0",
-  "description": "Know what every AI call really costs — a live ledger of your agent's real spend, plus a hard-stop before runaway spend crosses your ceiling. Vercel AI SDK middleware + LiveKit / Vapi / Retell voice adapters. Local, no account, no telemetry.",
+  "version": "0.18.0",
+  "description": "Know what every AI call really costs \u2014 a live ledger of your agent's real spend, plus a hard-stop before runaway spend crosses your ceiling. Vercel AI SDK middleware + LiveKit / Vapi / Retell voice adapters. Local, no account, no telemetry.",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -48,7 +48,8 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "src/cost_map.json"
+    "src/cost_map.json",
+    "src/kinds.json"
   ],
   "engines": {
     "node": ">=18"
