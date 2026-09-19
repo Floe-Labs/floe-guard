@@ -20,6 +20,43 @@ def chunk():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("started", [False, True])
+@pytest.mark.parametrize(
+    "invalid", [(), ("bad",), (ValueError, None, "bad traceback"), (ValueError, None, None, None)]
+)
+async def test_invalid_throw_preserves_stream_for_retry_and_cleanup(started, invalid):
+    g = guard()
+    closed = []
+
+    async def source():
+        try:
+            yield chunk()
+            yield chunk()
+        finally:
+            closed.append(True)
+
+    stream = VapiBudgetGuard(g, model="m").guard_stream(source, estimated_cost=0.003)
+    if started:
+        await anext(stream)
+    # Keep the generator alive: garbage collection must not mask lost ownership.
+    native = stream._gen
+    try:
+        with pytest.raises(TypeError):
+            await stream.athrow(*invalid)
+        assert stream._gen is native
+        assert await anext(stream) == chunk()
+        await stream.aclose()
+        assert closed == [True]
+        assert len(g.spend_log) == 1
+        assert g.spent_usd == pytest.approx(0.002 if started else 0.001)
+        assert g.remaining_usd == pytest.approx(0.008 if started else 0.009)
+        assert not g._stream_costs
+    finally:
+        await native.aclose()
+        await stream.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["next", "close", "send", "throw"])
 async def test_overlapping_operation_does_not_lose_cleanup(operation):
     g = guard()

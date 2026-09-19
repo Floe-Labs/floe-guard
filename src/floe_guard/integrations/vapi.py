@@ -230,23 +230,25 @@ class _GuardedStream(AsyncGenerator[Any, None]):
 
     async def athrow(self, *args: Any, **kwargs: Any) -> Any:
         self._require_idle()
+        # Some Python versions leave ag_running set after invalid arity.
+        if not 1 <= len(args) <= 3:
+            raise TypeError("athrow expected 1 to 3 arguments")
         gen = self._gen
         if gen is None:
             raise StopAsyncIteration
-        if not self._started:
-            self._release()
-        self._started = True
         self._running = True
         try:
-            return await gen.athrow(*args, **kwargs)
-        except StopAsyncIteration:
-            self._gen = None
-            raise
-        except BaseException:
-            self._gen = None
-            raise
+            result = await gen.athrow(*args, **kwargs)
+            self._started = True
+            return result
         finally:
             self._running = False
+            # This wrapper owns a native async generator. Invalid arguments
+            # leave its frame alive; retain ownership so retry/close still work.
+            if inspect.isasyncgen(gen) and gen.ag_frame is None:
+                self._gen = None
+                if not self._started:
+                    self._release()
 
     async def aclose(self) -> None:
         self._require_idle()

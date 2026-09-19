@@ -20,6 +20,7 @@ both packages adhere to [Semantic Versioning](https://semver.org/).
 - Final Vapi usage checks include other reservations and active stream accrual,
   with settlement and the budget decision captured under the same lock.
 - Overlapping operations on a Vapi stream raise without losing its cleanup handle.
+  Invalid `athrow()` arguments also preserve the stream for retry or explicit close.
 
 ## Unreleased — py 0.23.9
 
