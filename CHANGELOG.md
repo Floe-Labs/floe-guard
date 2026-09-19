@@ -8,7 +8,22 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
-## Unreleased — py 0.23.9
+## Unreleased — js 0.19.0
+
+### Changed (js)
+
+- Vapi `guardStream()` delegates to `StreamGuard` for mid-stream enforcement.
+  Interrupted streams now settle partial estimates; final usage reconciles cached
+  input. Unpriceable streams fail before opening upstream. Returning or throwing
+  into an unstarted iterator releases its reservation. LiveKit is unchanged.
+- `StreamGuard.finish()` accepts additive `cacheReadInputTokens`, and manual
+  prices can preserve a `cacheReadCostPerToken` override. Supplied cache-read
+  rates must be finite, non-negative numbers; invalid overrides fail closed.
+- Final Vapi usage checks include concurrent stream accrual and outstanding
+  holds. Known prompt costs count before the first chunk, with cleanup when a
+  source fails to open or an unstarted Vapi iterator is cancelled.
+
+## Unreleased — py 0.25.1
 
 ### Fixed (py)
 

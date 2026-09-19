@@ -654,9 +654,11 @@ The packages ship **voice-leg pricing** (`price_voice_leg` / `priceVoiceLeg`),
 Python and TypeScript ship native STT → LLM → TTS session adapters for the voice
 stacks. Each reserves before the model turn, settles on real usage, releases on
 interrupt, and meters STT/TTS/telephony legs from the `__legs__` cost map
-(fail-closed via `UnpriceableVoiceError`) — the same enforcement contract across
-both languages. **Pre-turn / pre-call admission plus per-turn settlement only;
-no mid-call cutoff.**
+(fail-closed via `UnpriceableVoiceError`). These adapters use pre-turn / pre-call
+admission plus per-turn settlement. TypeScript Vapi's `guardStream()` also
+interrupts LLM streams at the budget ceiling and settles partial usage; see the
+[Vapi streaming guide](js/README.md#vapi-streaming). Other voice adapters do not provide
+mid-call cutoff.
 
 ```ts
 // LiveKit Agents (Node) — @livekit/agents is an optional peer

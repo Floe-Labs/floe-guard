@@ -6,9 +6,29 @@
 
 import { describe, expect, it } from "vitest";
 
-import { costMapGeneratedAt, priceTokens, resolvePrice } from "../src/pricing";
+import { costMapGeneratedAt, priceTokens, resolvePrice, type ManualPrice } from "../src/pricing";
 
 describe("resolvePrice", () => {
+  it.each([-1, NaN, Infinity, -Infinity, null, "0", false])(
+    "rejects invalid manual cache-read rate %s without falling back to the map",
+    cacheReadCostPerToken => {
+      const override: ManualPrice = { inputCostPerToken: 0.001, outputCostPerToken: 0.001 };
+      Reflect.set(override, "cacheReadCostPerToken", cacheReadCostPerToken);
+      expect(resolvePrice("gpt-4o", { "gpt-4o": override })).toBeNull();
+    },
+  );
+
+  it.each([[undefined, 0.03], [0, 0.02], [0.0002, 0.04]])(
+    "preserves valid cache-read rate %s",
+    (cacheReadCostPerToken, expected) => {
+      const priced = resolvePrice("manual", { manual: {
+        inputCostPerToken: 0.001, outputCostPerToken: 0.001, cacheReadCostPerToken,
+      } });
+      expect(priced).not.toBeNull();
+      expect(priceTokens(priced!, 10, 10, { cacheReadInputTokens: 100 })).toBeCloseTo(expected!, 12);
+    },
+  );
+
   it("resolves a known model and its provider-prefixed form", () => {
     const bare = resolvePrice("gpt-4o");
     const prefixed = resolvePrice("openai/gpt-4o");

@@ -1,6 +1,6 @@
 /**
  * VapiBudgetGuard — reserve before the model turn, settle on the real OpenAI usage,
- * release on error/abort, admit the call via the assistant-request gate, and price
+ * settle partial streams on error/abort, admit via the assistant-request gate, and price
  * the STT/TTS/telephony legs the custom-LLM proxy never sees.
  *
  * Fabricated OpenAI-shaped completions / SSE chunk streams drive the adapter — no
@@ -195,11 +195,11 @@ describe("VapiBudgetGuard — release on error / abort", () => {
       sseStream(10, { prompt_tokens: 1000, completion_tokens: 500 }),
     );
     // Break after one chunk — for-await calls stream.return(), unwinding to the
-    // generator's finally, which releases the still-open hold.
+    // generator's finally, which settles the generated delta and frees the hold.
     for await (const _ of stream) break;
 
-    expect(guard.remainingUsd).toBeCloseTo(afterTurn1, 12);
-    expect(guard.spentUsd).toBeCloseTo(0.002, 12); // aborted turn metered nothing
+    expect(guard.remainingUsd).toBeCloseTo(afterTurn1 - PRICE.outputCostPerToken, 12);
+    expect(guard.spentUsd).toBeCloseTo(0.002 + PRICE.outputCostPerToken, 12);
   });
 });
 
@@ -224,7 +224,7 @@ describe("VapiBudgetGuard — missing usage fails loudly", () => {
 
     const stream = budget.guardStream(() => sseStream(3)); // no usage chunk emitted
     await expect(drainStream(stream)).rejects.toBeInstanceOf(VapiUsageMissingError);
-    expect(guard.spentUsd).toBe(0); // nothing metered
+    expect(guard.spentUsd).toBeCloseTo(3 * PRICE.outputCostPerToken, 12);
   });
 });
 
@@ -283,20 +283,17 @@ describe("VapiBudgetGuard — voice legs price via the cost map", () => {
 });
 
 describe("VapiBudgetGuard — no double release", () => {
-  it("does not double-release when a streaming settle throws (non-priceable model)", async () => {
+  it("does not double-release when stream construction rejects an unpriceable model", () => {
     const guard = new BudgetGuard(1.0); // failClosed default; "mystery-model" unpriceable
     guard.recordTool("prior", 0.1); // non-zero next-call estimate → the reserve holds 0.10
     const before = guard.remainingUsd; // 0.90
     const budget = new VapiBudgetGuard(guard, { model: "mystery-model" });
-    const stream = budget.guardStream(() =>
+    expect(() => budget.guardStream(() =>
       (async function* () {
         yield { usage: { prompt_tokens: 100, completion_tokens: 50 } };
       })(),
-    );
-    // Draining triggers settle("mystery-model", …) → UnpriceableModelError, which
-    // releases the reservation ITSELF. The finally must not release it again — a
-    // double release would drive `reserved` negative and inflate remainingUsd.
-    await expect(drainStream(stream)).rejects.toThrow(UnpriceableModelError);
+    )).toThrow(UnpriceableModelError);
+    // Construction rejects before opening upstream and owns reservation cleanup.
     expect(guard.remainingUsd).toBe(before); // released exactly once — ceiling intact
   });
 });

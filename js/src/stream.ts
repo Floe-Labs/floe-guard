@@ -72,10 +72,26 @@ export class StreamGuard {
         console.warn(`Cannot price model '${model}': pass a price override to enforce a streaming budget.`);
         throw new UnpriceableModelError(model);
       }
+      this._start();
     } catch (error) {
       guard.release(this.reserved);
       throw error;
     }
+  }
+
+  /** @internal Account for known input before waiting for the first provider chunk. */
+  _start(): void {
+    if (this.priced !== null && this.key === undefined) {
+      this.key = this.guard._registerStream(
+        this.reserved, priceTokens(this.priced, this.promptTokens, this.tokens),
+      );
+    }
+  }
+
+  /** @internal Remove accrual when settled, or when a wrapper has not opened its source. */
+  _unregister(): void {
+    if (this.key !== undefined) this.guard._unregisterStream(this.key);
+    this.key = undefined;
   }
 
   /** Generated completion tokens counted so far (estimated until finish()). */
@@ -96,20 +112,20 @@ export class StreamGuard {
     this.tokens = tokenCount(this.tokens + tokenCount(tokens));
     if (this.priced === null) return;
     const cost = priceTokens(this.priced, this.promptTokens, this.tokens);
-    // An unconsumed wrapper owns no registry entry; its reservation still
-    // belongs to the caller until iteration starts, as in Python.
-    this.key ??= this.guard._registerStream(this.reserved);
-    if (this.guard._streamWouldCross(this.key, cost)) {
+    this._start();
+    if (this.guard._streamWouldCross(this.key!, cost)) {
       this.finish();
       this.guard._blockStream();
     }
   }
 
-  /** Reconcile estimates to provider usage, or settle accumulated estimates. */
-  finish(usage: { promptTokens?: number; completionTokens?: number } = {}): number {
+  /** Reconcile or settle estimates; cache-read tokens are additive to uncached prompt tokens. */
+  finish(usage: { promptTokens?: number; completionTokens?: number; cacheReadInputTokens?: number } = {}): number {
     if (this.closed) throw new Error("stream already settled");
     const prompt = tokenCount(usage.promptTokens ?? this.promptTokens);
     const completion = tokenCount(usage.completionTokens ?? this.tokens);
+    // Cached tokens are additive: promptTokens contains only uncached input.
+    const cacheRead = tokenCount(usage.cacheReadInputTokens ?? 0);
     this.promptTokens = prompt;
     this.tokens = completion;
     this.closed = true;
@@ -123,10 +139,11 @@ export class StreamGuard {
       return this.guard.settle(this.model, prompt, completion, {
         reserved: this.reserved,
         price: this.priced,
+        cacheReadInputTokens: cacheRead,
         label: this.label,
       });
     } finally {
-      if (this.key !== undefined) this.guard._unregisterStream(this.key);
+      this._unregister();
     }
   }
 
@@ -161,6 +178,8 @@ export function guardStream<C>(
   guard: BudgetGuard, model: string, chunks: Iterable<C> | AsyncIterable<C>, options: GuardStreamOptions<C> = {},
 ): IterableIterator<C> | AsyncIterableIterator<C> {
   const stream = new StreamGuard(guard, model, options);
+  // Until iteration starts, the supplied reservation remains the caller's.
+  stream._unregister();
   const extract = options.getText ?? ((chunk: C): string => {
     if (typeof chunk !== "string") throw new TypeError("guardStream needs getText for non-string chunks");
     return chunk;
@@ -168,6 +187,7 @@ export function guardStream<C>(
   /** Meter synchronous chunks and settle on completion, break or error. */
   function* run(source: Iterable<C>): IterableIterator<C> {
     try {
+      stream._start();
       for (const chunk of source) {
         stream.feedText(extract(chunk));
         yield chunk;
@@ -179,6 +199,7 @@ export function guardStream<C>(
   /** Meter asynchronous chunks and settle on completion, break or error. */
   async function* runAsync(source: AsyncIterable<C>): AsyncIterableIterator<C> {
     try {
+      stream._start();
       for await (const chunk of source) {
         stream.feedText(extract(chunk));
         yield chunk;

@@ -100,7 +100,7 @@ try {
   provider buffering and delayed cancellation can cause additional actual
   spend. Stopping iteration requests iterator cleanup, not guaranteed remote
   cancellation. Connect cleanup to your provider's abort mechanism where needed.
-- Existing Vapi, LiveKit and middleware streaming behavior is unchanged; this
+- Existing LiveKit and middleware streaming behavior is unchanged; this
   is the standalone primitive requested in issue #124.
 
 Run the no-key example from a repository checkout:
@@ -111,6 +111,52 @@ npm ci
 npm run build
 node ../examples/streaming_guard.mjs
 ```
+
+### Vapi streaming
+
+`VapiBudgetGuard.guardStream()` now delegates to `StreamGuard` automatically.
+It meters text, refusal, and function/tool-call deltas before forwarding each
+chunk. A chunk that crosses the estimated budget is recorded but not forwarded;
+iteration raises `BudgetExceeded` and closes the source iterator.
+
+```ts
+const stream = budget.guardStream(
+  () => openai.chat.completions.create({
+    model, messages, stream: true, stream_options: { include_usage: true },
+  }),
+  { model, promptTokens: estimatedPromptTokens },
+);
+for await (const chunk of stream) {
+  // Forward the original chunk to your SSE response.
+}
+```
+
+`promptTokens` defaults to zero: the adapter cannot inspect messages inside your
+source function. Supply a prompt estimate for input accounting before provider
+usage arrives, and `estimatedCost` for pre-call admission. `countTokens` can
+replace the default ~4 characters/token output estimate. Hidden reasoning/audio
+tokens and provider buffering are not observable in text deltas; final usage can
+reveal spend beyond the estimates. These estimates are not a strict billing cap.
+
+The OpenAI final usage chunk is reconciled before it is forwarded, preserving
+cached-input pricing and making the actual spend visible to other calls immediately.
+The adapter treats this usage-bearing chunk as terminal and closes its source
+on the next pull or explicit return. Early break,
+upstream errors, and missing final usage now record partial estimates instead of
+discarding generated usage. Missing final usage still raises `VapiUsageMissingError`.
+If final reported usage exceeds the ceiling, it is recorded before `BudgetExceeded`.
+Unknown models fail closed before opening the source, unless the guard is fail-open.
+
+Call `return()` on a returned iterator if you cancel before consuming it; this
+also releases its reservation before the first pull. A bare abandoned iterator
+cannot clean itself up. During iteration, cancellation closes the source iterator;
+remote cancellation depends on that source. A pending provider read may delay
+iterator cleanup, so connect client disconnects to the provider's abort mechanism.
+Handle iteration errors in the SSE response lifecycle: after headers are sent,
+the handler cannot switch to a new HTTP error response. Stopping the LLM stream
+does not hang up the Vapi call or stop STT/TTS/telephony charges.
+
+After building, run `node ../examples/vapi_streaming_guard.mjs` for an offline demo.
 
 ## Pricing
 
