@@ -12,8 +12,9 @@ adapter has three jobs, and only the first is automatic:
 
 1. **Guard the model turn** — :meth:`VapiBudgetGuard.guard_completion` (JSON)
    and :meth:`VapiBudgetGuard.guard_stream` (SSE) reserve the estimated cost
-   BEFORE the upstream call, meter the **real** ``usage`` after, and release the
-   hold on error/abort. Reserving first is what refuses a turn before its spend
+   BEFORE the upstream call and meter the **real** ``usage`` after. Streaming
+   also enforces generated deltas and records partial spend on error/abort.
+   Reserving first is what refuses a turn before its spend
    lands: an over-budget turn raises :class:`~floe_guard.errors.BudgetExceeded`
    instead of being proxied.
 2. **Admit the call** — :meth:`VapiBudgetGuard.assistant_request` answers
@@ -70,15 +71,12 @@ OpenAI-style SSE omits ``usage`` from every chunk **unless** the caller sets
 a final chunk (empty ``choices``) carries the token ``usage``. This adapter
 meters the model turn from that real ``usage``; if a stream ends with no usage
 anywhere, :meth:`VapiBudgetGuard.guard_stream` **fails loudly**
-(:class:`VapiUsageMissingError`) and releases the hold rather than silently
-metering the turn at $0. Set ``include_usage: True`` on your upstream streaming
-call. Aborting a stream early (an ``aclose()``, or the task cancellation a
-framework raises on client disconnect) runs the generator's ``finally``, which
-releases the hold; nothing is metered for an aborted turn.
-
-Scope is strictly **pre-call admission plus per-turn settlement**. There is no
-mid-call intervention: an admitted turn runs to completion; nothing here cuts a
-turn — or a stream — off partway.
+(:class:`VapiUsageMissingError`) after settling partial estimates. Final usage
+replaces those estimates, preserving cached-input pricing. Streaming budget
+errors can occur during iteration, after SSE headers have already been sent;
+handle them in the response lifecycle rather than attempting a new HTTP status.
+Closing the source requests provider cancellation; it does not hang up the Vapi
+call or stop other voice legs. Cancellation support depends on the source.
 """
 
 from __future__ import annotations
@@ -86,12 +84,14 @@ from __future__ import annotations
 import inspect
 import logging
 import math
+import sys
 from collections.abc import AsyncGenerator, AsyncIterable, Awaitable, Callable
 from typing import Any, TypeVar
 
 from ..errors import BudgetExceeded, FloeGuardError
 from ..gates import vapi as vapi_gate
-from ..guard import BudgetGuard, ReservationHandle
+from ..guard import BudgetGuard
+from ..stream import StreamGuard
 from ..voice_pricing import price_voice_leg
 
 logger = logging.getLogger(__name__)
@@ -133,8 +133,8 @@ def _finite_number(value: Any) -> bool:
     )
 
 
-def read_usage(usage: Any) -> tuple[int, int] | None:
-    """Read an OpenAI ``usage`` block into settled prompt/completion counts.
+def read_usage(usage: Any) -> tuple[int, int, int] | None:
+    """Read OpenAI usage into uncached prompt, completion, and cached counts.
 
     ``usage`` is the OpenAI wire format Vapi speaks (``prompt_tokens`` /
     ``completion_tokens``), accepted as a dict or any object exposing both
@@ -150,14 +150,27 @@ def read_usage(usage: Any) -> tuple[int, int] | None:
         completion = getattr(usage, "completion_tokens", None)
     if not _finite_number(prompt) or not _finite_number(completion):
         return None
-    return int(prompt), int(completion)
+    cached = _field(_field(usage, "prompt_tokens_details"), "cached_tokens")
+    cached = min(int(cached), int(prompt)) if _finite_number(cached) else 0
+    return int(prompt) - cached, int(completion), cached
 
 
-def _completion_usage(completion: Any) -> Any:
-    """The ``usage`` on a completion-like — dict key or attribute, either way."""
-    if isinstance(completion, dict):
-        return completion.get("usage")
-    return getattr(completion, "usage", None)
+def _field(value: Any, name: str) -> Any:
+    """Read OpenAI fields from dictionaries or SDK objects."""
+    return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+
+def _chunk_text(chunk: Any) -> str:
+    """Visible generated text, including refusal and function/tool-call fragments."""
+    parts = []
+    for choice in _field(chunk, "choices") or ():
+        delta = _field(choice, "delta")
+        parts.extend((_field(delta, "content") or "", _field(delta, "refusal") or ""))
+        functions = [_field(delta, "function_call")]
+        functions.extend(_field(call, "function") for call in _field(delta, "tool_calls") or ())
+        for function in functions:
+            parts.extend((_field(function, "name") or "", _field(function, "arguments") or ""))
+    return "".join(parts)
 
 
 class _GuardedStream(AsyncGenerator[Any, None]):
@@ -172,7 +185,7 @@ class _GuardedStream(AsyncGenerator[Any, None]):
     ``finally`` settles or releases exactly once on completion, error, or abort.
     """
 
-    __slots__ = ("_gen", "_release", "_started")
+    __slots__ = ("_gen", "_release", "_started", "_running")
 
     def __init__(
         self,
@@ -182,30 +195,28 @@ class _GuardedStream(AsyncGenerator[Any, None]):
         self._gen: AsyncGenerator[Any, None] | None = gen
         self._release = release
         self._started = False
+        self._running = False
 
     def __aiter__(self) -> _GuardedStream:
         return self
 
     async def __anext__(self) -> Any:
-        gen = self._gen
-        if gen is None:
-            raise StopAsyncIteration
-        self._started = True
-        try:
-            item = await gen.__anext__()
-        except StopAsyncIteration:
-            self._gen = None
-            raise
-        except BaseException:
-            self._gen = None
-            raise
-        return item
+        return await self.asend(None)
+
+    def _require_idle(self) -> None:
+        """Reject overlapping operations without discarding cleanup ownership."""
+        if self._running:
+            raise RuntimeError("guarded stream is already running")
 
     async def asend(self, value: Any) -> Any:
+        self._require_idle()
         gen = self._gen
         if gen is None:
             raise StopAsyncIteration
+        if not self._started and value is not None:
+            raise TypeError("cannot send a non-None value to an unstarted stream")
         self._started = True
+        self._running = True
         try:
             return await gen.asend(value)
         except StopAsyncIteration:
@@ -214,28 +225,43 @@ class _GuardedStream(AsyncGenerator[Any, None]):
         except BaseException:
             self._gen = None
             raise
+        finally:
+            self._running = False
 
     async def athrow(self, *args: Any, **kwargs: Any) -> Any:
+        self._require_idle()
+        # Some Python versions leave ag_running set after invalid arity.
+        if not 1 <= len(args) <= 3:
+            raise TypeError("athrow expected 1 to 3 arguments")
         gen = self._gen
         if gen is None:
             raise StopAsyncIteration
-        self._started = True
+        self._running = True
         try:
-            return await gen.athrow(*args, **kwargs)
-        except StopAsyncIteration:
-            self._gen = None
-            raise
-        except BaseException:
-            self._gen = None
-            raise
+            result = await gen.athrow(*args, **kwargs)
+            self._started = True
+            return result
+        finally:
+            self._running = False
+            # This wrapper owns a native async generator. Invalid arguments
+            # leave its frame alive; retain ownership so retry/close still work.
+            if inspect.isasyncgen(gen) and gen.ag_frame is None:
+                self._gen = None
+                if not self._started:
+                    self._release()
 
     async def aclose(self) -> None:
+        self._require_idle()
         gen, self._gen = self._gen, None
         if gen is None:
             return
         if not self._started:
             self._release()
-        await gen.aclose()
+        self._running = True
+        try:
+            await gen.aclose()
+        finally:
+            self._running = False
 
     def __del__(self) -> None:
         try:
@@ -251,8 +277,8 @@ class _GuardedStream(AsyncGenerator[Any, None]):
 
 class VapiBudgetGuard:
     """Enforce a BudgetGuard ceiling on a Vapi custom-LLM endpoint: reserve
-    before the model turn, settle on the real OpenAI ``usage``, release on
-    error/abort, and meter the STT/TTS/telephony legs the proxy never sees.
+    before the model turn, enforce streaming deltas, settle real OpenAI ``usage``,
+    and meter the STT/TTS/telephony legs the proxy never sees.
 
     Args:
         guard: the BudgetGuard to enforce.
@@ -360,11 +386,13 @@ class VapiBudgetGuard:
         except BaseException:
             self._guard.release(reserved)
             raise
-        usage = read_usage(_completion_usage(result))
+        usage = read_usage(_field(result, "usage"))
         if usage is None:
             self._guard.release(reserved)
             raise VapiUsageMissingError(resolved)
-        self._guard.settle(resolved, usage[0], usage[1], reserved=reserved)
+        self._guard.settle(
+            resolved, usage[0], usage[1], reserved=reserved, cache_read_input_tokens=usage[2]
+        )
         return result
 
     def guard_stream(
@@ -373,85 +401,99 @@ class VapiBudgetGuard:
         *,
         model: str | None = None,
         estimated_cost: float | None = None,
+        prompt_tokens: int = 0,
+        count_tokens: Callable[[str], int] | None = None,
     ) -> _GuardedStream:
-        """Guard a **streaming** model turn: reserve, then wrap the SSE chunk
-        stream so it settles on the final chunk's ``usage``, releasing the hold
-        on error or early abort.
+        """Reserve eagerly, then enforce each generated delta with StreamGuard.
 
-        Reserving first raises
-        :class:`~floe_guard.errors.BudgetExceeded` BEFORE the stream is opened
-        when the turn would cross the ceiling (this method raises synchronously —
-        the handler learns immediately, before piping anything to Vapi). Chunks
-        pass through untouched; the returned async iterable is what you forward
-        to the SSE response.
+        A crossing chunk is billed but not forwarded; iteration raises
+        BudgetExceeded after settling partial spend. Final OpenAI usage is
+        reconciled before forwarding its terminal chunk. Set upstream
+        ``stream_options={"include_usage": True}``; missing usage raises
+        VapiUsageMissingError after settling estimates.
 
-        **Usage requirement:** OpenAI SSE only carries ``usage`` when the
-        upstream request set ``stream_options: { "include_usage": True }``. A
-        stream that ends with no usage anywhere fails loudly
-        (:class:`VapiUsageMissingError`) and releases the hold — it is not
-        metered at $0.
+        Supply ``estimated_cost`` for pre-call admission and ``prompt_tokens``
+        for partial input accounting (default zero). ``count_tokens`` overrides
+        the ~4 characters/token estimate of visible text/tool-call deltas.
 
-        **Aborting a stream early** (client disconnect, interrupt) releases
-        the hold from the generator's ``finally``, and nothing is metered for
-        an aborted turn. The unwinding is triggered by ``aclose()``: an
-        explicit ``await stream.aclose()``, a task cancellation raised into
-        the consuming generator (what HTTP/WS frameworks do on disconnect),
-        or garbage collection of the wrapper. A bare ``break`` in an ``async
-        for`` drops the reference and finalizes on a later loop iteration —
-        close it explicitly when the hold must clear immediately.
-
-        The returned iterable holds the reservation until it is consumed to
-        completion (settled), or closed/aborted (released). Closing it before
-        it is ever consumed also releases the hold — a generator's ``finally``
-        cannot run before its first pull, so the returned wrapper (not the raw
-        generator) owns that path — pipe it straight to the response.
+        Use ``await stream.aclose()`` or ``contextlib.aclosing`` on early exit:
+        a bare async-for break does not guarantee immediate cleanup. Cancellation
+        settles partial spend and closes the source if it exposes a close method.
+        Closing before the first pull releases the hold without charging usage.
+        Persistent guards are rejected; this requires an in-memory BudgetGuard.
         """
         resolved = self._resolve_model(model)
         # Eager reserve (outside the generator) so a block raises synchronously
         # here, not lazily on first pull — the handler refuses the turn before
         # streaming.
+        if not _finite_number(prompt_tokens):
+            raise ValueError("prompt_tokens must be a finite non-negative integer")
         reserved = self._guard.reserve(estimated_cost)
+        meter = StreamGuard(
+            self._guard,
+            resolved,
+            reserved=reserved,
+            prompt_tokens=prompt_tokens,
+            count_tokens=count_tokens,
+        )
         return _GuardedStream(
-            self._iterate_stream(run, resolved, reserved),
-            release=lambda: self._guard.release(reserved),
+            self._iterate_stream(run, resolved, meter),
+            release=meter._cancel_unstarted,
         )
 
     async def _iterate_stream(
         self,
         run: Callable[[], AsyncIterable[Any] | Awaitable[AsyncIterable[Any]]],
         model: str,
-        reserved: ReservationHandle,
+        meter: StreamGuard,
     ) -> AsyncGenerator[Any, None]:
-        usage: tuple[int, int] | None = None
-        settled = False
+        stream = iterator = None
         try:
-            stream = run()
-            if inspect.isawaitable(stream):
-                stream = await stream
-            async for chunk in stream:
-                # Last non-null usage wins — the final (empty-choices) chunk
-                # carries it.
-                current = read_usage(_completion_usage(chunk))
-                if current is not None:
-                    usage = current
-                yield chunk
-            # Clean end: settle on real usage, or fail loudly if none was seen.
-            if usage is None:
+            result = run()
+            stream = await result if inspect.isawaitable(result) else result
+            iterator = aiter(stream)
+            with meter:
+                async for chunk in iterator:
+                    usage = read_usage(_field(chunk, "usage"))
+                    if usage is not None:
+                        # Reconcile and capture the decision atomically; invoke
+                        # user callbacks only after releasing the guard's lock.
+                        with self._guard._lock:
+                            meter.finish(
+                                prompt_tokens=usage[0],
+                                completion_tokens=usage[1],
+                                cache_read_input_tokens=usage[2],
+                            )
+                            crossed = self._guard._stream_budget_exceeded()
+                            spent = self._guard.spent_usd
+                        if crossed:
+                            self._guard._raise_block(
+                                ("usd", "aggregate", spent, self._guard.limit_usd)
+                            )
+                        yield chunk
+                        return  # OpenAI's usage-bearing chunk is final.
+                    meter.feed_text(_chunk_text(chunk))
+                    yield chunk
                 raise VapiUsageMissingError(model)
-            # Mark settled BEFORE the call: guard.settle owns the reservation on
-            # every exit — it releases the hold on its own failure paths
-            # (unpriceable model, price_tokens error) before raising — so the
-            # finally must not release it a second time (a double release drives
-            # `reserved` negative and weakens the ceiling for other in-flight
-            # turns).
-            settled = True
-            self._guard.settle(model, usage[0], usage[1], reserved=reserved)
         finally:
-            # Any exit before settle — error mid-stream, missing usage, or an
-            # early consumer abort (async-for break → generator aclose()) —
-            # frees the hold.
-            if not settled:
-                self._guard.release(reserved)
+            failed = sys.exc_info()[0] is not None
+            if iterator is None:
+                meter._cancel_unstarted()
+            # Python async-for does not close its source on break or exceptions.
+            close = (
+                getattr(stream, "aclose", None)
+                or getattr(stream, "close", None)
+                or getattr(iterator, "aclose", None)
+            )
+            if close is not None:
+                try:
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception:
+                    if not failed:
+                        raise
+                    logger.debug("Vapi source cleanup failed during interruption", exc_info=True)
 
     def meter_stt(self, seconds: float) -> float | None:
         """Accrue STT spend for ``seconds`` of transcribed audio (per second).

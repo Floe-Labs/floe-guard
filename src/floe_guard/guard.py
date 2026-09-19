@@ -1449,6 +1449,12 @@ class BudgetGuard:
             others = self.spent_usd + max(0.0, self._reserved - own_reserved) + other_overage
             return others + cumulative_call_cost > self.limit_usd + _EPS
 
+    def _stream_budget_exceeded(self) -> bool:
+        """Check reconciled USD spend plus all remaining holds and stream accrual."""
+        with self._lock:
+            committed = self.spent_usd + self._reserved + self._stream_overage_locked()
+            return committed > self.limit_usd + _EPS
+
     def _blocking_cross_locked(
         self, estimate_usd: float, estimate_tokens: int
     ) -> tuple[str, str, float, float] | None:
