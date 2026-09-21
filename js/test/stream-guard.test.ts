@@ -8,6 +8,36 @@ const makeGuard = (limit = 0.01) => new BudgetGuard(limit, {
 });
 
 describe("StreamGuard", () => {
+  it("counts wrapper prompt cost once iteration starts, before the first async chunk", async () => {
+    const guard = makeGuard();
+    let resume!: () => void;
+    const pending = new Promise<void>(resolve => { resume = resolve; });
+    const stream = guardStream(guard, MODEL, (async function* () {
+      await pending;
+      yield "";
+    })(), { promptTokens: 3600 });
+    expect(guard.remainingUsd).toBe(0.01);
+    const first = stream.next();
+    try {
+      expect(guard.remainingUsd).toBeCloseTo(0.001, 12);
+      expect(() => guard.reserveTool(0.002)).toThrow(BudgetExceeded);
+    } finally { resume(); await first; await stream.return?.(); }
+    expect(guard.spentUsd).toBeCloseTo(0.009, 12);
+    expect(guard.spendLog).toHaveLength(1);
+  });
+
+  it.each([0, 0.002, 0.0095])("counts known prompt cost before feeding, with a $%s hold", held => {
+    const guard = makeGuard();
+    const stream = new StreamGuard(guard, MODEL, {
+      reserved: guard.reserve(held), promptTokens: 3600,
+    });
+    expect(guard.remainingUsd).toBeCloseTo(held === 0.0095 ? 0.0005 : 0.001, 12);
+    expect(() => guard.reserveTool(0.002)).toThrow(BudgetExceeded);
+    stream.finish({ promptTokens: 400 });
+    expect(guard.remainingUsd).toBeCloseTo(0.009, 12);
+    expect(guard.spendLog).toHaveLength(1);
+  });
+
   it.each(["finish", "close"] as const)("keeps a fail-open stream unmetered at %s after pricing is added", exit => {
     const overrides: Record<string, typeof price> = {};
     const guard = new BudgetGuard(1, { failClosed: false, priceOverrides: overrides });
@@ -349,7 +379,7 @@ describe("StreamGuard", () => {
   it("leaves a never-started iterator's reservation with the caller", () => {
     const guard = makeGuard(1);
     const reserved = guard.reserve(0.1);
-    const unused = guardStream(guard, MODEL, ["x"], { reserved });
+    const unused = guardStream(guard, MODEL, ["x"], { reserved, promptTokens: 100000 });
     unused.return?.();
     expect(guard.remainingUsd).toBeCloseTo(0.9);
     expect(guard.spendLog).toHaveLength(0);

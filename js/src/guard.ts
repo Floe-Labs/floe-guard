@@ -967,10 +967,10 @@ export class BudgetGuard {
   }
 
   /** @internal Register accrued-but-unsettled streaming spend. */
-  _registerStream(reserved: ReservationHandle): symbol {
+  _registerStream(reserved: ReservationHandle, accrued = 0): symbol {
     const held = this.reservedUsdOf(reserved);
     const key = Symbol();
-    this.streamCosts.set(key, { accrued: 0, held });
+    this.streamCosts.set(key, { accrued, held });
     return key;
   }
 
@@ -993,6 +993,11 @@ export class BudgetGuard {
   /** @internal Notify and throw after a stream has settled its partial spend. */
   _blockStream(): never {
     return this.raiseBlock(["usd", "aggregate", this.spentUsd, this.limitUsd]);
+  }
+
+  /** @internal Include outstanding holds and unsettled stream spend after reconciliation. */
+  _streamBudgetExceeded(): boolean {
+    return this.spentUsd + this.reserved + this.streamOverage() > this.limitUsd + EPS;
   }
 
   /** Notify + throw the right error for a [dimension, scope, spent, limit] block. */
