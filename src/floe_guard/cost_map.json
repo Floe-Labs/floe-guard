@@ -1,6 +1,6 @@
 {
   "__meta__": {
-    "generated_at": "2026-09-14",
+    "generated_at": "2026-09-21",
     "source": "LiteLLM public model prices (bundled snapshot); per-unit leg rates (stt/tts/telephony/sms/ocr/gpu/avatar) hand-curated from vendor list pages, leg rates last retrieved 2026-09-18"
   },
   "chat-latest": {
@@ -545,18 +545,18 @@
     "cache_read_input_token_cost": 3e-8
   },
   "gemini-flash-latest": {
+    "input_cost_per_token": 7.5e-7,
+    "output_cost_per_token": 0.00000375,
+    "litellm_provider": "gemini",
+    "mode": "chat",
+    "cache_read_input_token_cost": 7.5e-8
+  },
+  "gemini-flash-lite-latest": {
     "input_cost_per_token": 3e-7,
     "output_cost_per_token": 0.0000025,
     "litellm_provider": "gemini",
     "mode": "chat",
     "cache_read_input_token_cost": 3e-8
-  },
-  "gemini-flash-lite-latest": {
-    "input_cost_per_token": 1e-7,
-    "output_cost_per_token": 4e-7,
-    "litellm_provider": "gemini",
-    "mode": "chat",
-    "cache_read_input_token_cost": 1e-8
   },
   "gemini-gemma-2-27b-it": {
     "input_cost_per_token": 3.5e-7,
@@ -583,11 +583,11 @@
     "mode": "chat"
   },
   "gemini-pro-latest": {
-    "input_cost_per_token": 0.00000125,
-    "output_cost_per_token": 0.00001,
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.000012,
     "litellm_provider": "gemini",
     "mode": "chat",
-    "cache_read_input_token_cost": 1.25e-7
+    "cache_read_input_token_cost": 2e-7
   },
   "gemini-robotics-er-1.5-preview": {
     "input_cost_per_token": 3e-7,
@@ -602,11 +602,11 @@
     "mode": "chat"
   },
   "gemini-robotics-er-2-preview": {
-    "input_cost_per_token": 0.000002,
-    "output_cost_per_token": 0.00001,
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.000005,
     "litellm_provider": "gemini",
     "mode": "chat",
-    "cache_read_input_token_cost": 2e-7
+    "cache_read_input_token_cost": 1e-7
   },
   "gemini-robotics-er-2-streaming-preview": {
     "input_cost_per_token": 0.000002,
@@ -1002,6 +1002,13 @@
     "mode": "chat",
     "cache_read_input_token_cost": 5e-7
   },
+  "gpt-5.5-cyber": {
+    "input_cost_per_token": 0.0000125,
+    "output_cost_per_token": 0.000075,
+    "litellm_provider": "openai",
+    "mode": "chat",
+    "cache_read_input_token_cost": 0.00000125
+  },
   "gpt-5.6": {
     "input_cost_per_token": 0.000004,
     "output_cost_per_token": 0.00002,
@@ -1085,6 +1092,13 @@
     "output_cost_per_token": 0.0000024,
     "litellm_provider": "openai",
     "mode": "chat"
+  },
+  "gpt-rosalind-research": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000025,
+    "litellm_provider": "openai",
+    "mode": "chat",
+    "cache_read_input_token_cost": 5e-7
   },
   "llama-3.1-8b-instant": {
     "input_cost_per_token": 5e-8,
@@ -1426,10 +1440,34 @@
       "source_url": "https://cloud.google.com/vision/pricing",
       "retrieved_at": "2026-09-18"
     },
+    "gcp-vision-text-detection-high-volume": {
+      "mode": "ocr",
+      "unit": "usd_per_page",
+      "rate": 0.0006,
+      "provider": "gcp",
+      "source_url": "https://cloud.google.com/vision/pricing",
+      "retrieved_at": "2026-09-18"
+    },
+    "gcp-vision-document-text-detection-high-volume": {
+      "mode": "ocr",
+      "unit": "usd_per_page",
+      "rate": 0.0006,
+      "provider": "gcp",
+      "source_url": "https://cloud.google.com/vision/pricing",
+      "retrieved_at": "2026-09-18"
+    },
     "aws-textract-detect-document-text": {
       "mode": "ocr",
       "unit": "usd_per_page",
       "rate": 0.0015,
+      "provider": "aws",
+      "source_url": "https://aws.amazon.com/textract/pricing/",
+      "retrieved_at": "2026-09-18"
+    },
+    "aws-textract-detect-document-text-high-volume": {
+      "mode": "ocr",
+      "unit": "usd_per_page",
+      "rate": 0.0006,
       "provider": "aws",
       "source_url": "https://aws.amazon.com/textract/pricing/",
       "retrieved_at": "2026-09-18"
@@ -1456,30 +1494,6 @@
       "rate": 0.37,
       "provider": "tavus",
       "source_url": "https://www.tavus.io/pricing",
-      "retrieved_at": "2026-09-18"
-    },
-    "gcp-vision-text-detection-high-volume": {
-      "mode": "ocr",
-      "unit": "usd_per_page",
-      "rate": 0.0006,
-      "provider": "gcp",
-      "source_url": "https://cloud.google.com/vision/pricing",
-      "retrieved_at": "2026-09-18"
-    },
-    "gcp-vision-document-text-detection-high-volume": {
-      "mode": "ocr",
-      "unit": "usd_per_page",
-      "rate": 0.0006,
-      "provider": "gcp",
-      "source_url": "https://cloud.google.com/vision/pricing",
-      "retrieved_at": "2026-09-18"
-    },
-    "aws-textract-detect-document-text-high-volume": {
-      "mode": "ocr",
-      "unit": "usd_per_page",
-      "rate": 0.0006,
-      "provider": "aws",
-      "source_url": "https://aws.amazon.com/textract/pricing/",
       "retrieved_at": "2026-09-18"
     },
     "tavus-cvi-growth": {
