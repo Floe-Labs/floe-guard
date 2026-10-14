@@ -1,10 +1,13 @@
 """LangChain adapter (optional extra: ``pip install floe-guard[langchain]``).
 
 :func:`budget_guard_callback_handler` builds a LangChain callback handler you pass
-to any LLM or chat model. It checks the budget *before* the call
+to any LLM or chat model. It atomically reserves an estimate before the call
 (``on_llm_start`` / ``on_chat_model_start``) — raising
 :class:`~floe_guard.BudgetExceeded` aborts the call so it never runs — and records
 spend *after* the response (``on_llm_end``).
+
+Each run owns its own reservation, protecting the shared ceiling during parallel
+model calls.
 
     from langchain_openai import ChatOpenAI
     from floe_guard import BudgetGuard
@@ -20,9 +23,10 @@ the other adapters, so token usage is priced via the bundled cost map.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
-from ..guard import BudgetGuard
+from ..guard import BudgetGuard, ReservationHandle
 from ..stream import approx_tokens
 
 
@@ -112,17 +116,23 @@ def _usage_from_result(response: Any) -> tuple[int, int]:
     return prompt, completion
 
 
-def _record_result(guard: BudgetGuard, response: Any) -> None:
-    model = _model_from_result(response)
-    prompt_tokens, completion_tokens = _usage_from_result(response)
+def _record_result(guard: BudgetGuard, response: Any, *, reserved: ReservationHandle = 0.0) -> None:
+    try:
+        model = _model_from_result(response)
+        prompt_tokens, completion_tokens = _usage_from_result(response)
+    except BaseException:
+        # Parsing can fail before settle() takes ownership of the reservation.
+        guard.release(reserved)
+        raise
     if prompt_tokens <= 0 and completion_tokens <= 0:
-        # No tokens were spent — nothing to meter.
+        # No usage to meter: return this run's hold without touching other runs.
+        guard.release(reserved)
         return
-    # There IS spend to account for. Route it through record() even when the model
+    # There IS spend to account for. Route it through settle() even when the model
     # id is missing, so the guard's configured policy applies (fail-closed → warn +
     # raise; fail-open → warn + skip). Silently skipping here would let a real,
     # completed call go unmetered and skew the next check().
-    guard.record(model, prompt_tokens, completion_tokens)
+    guard.settle(model, prompt_tokens, completion_tokens, reserved=reserved)
 
 
 def budget_guard_callback_handler(guard: BudgetGuard) -> Any:
@@ -132,9 +142,10 @@ def budget_guard_callback_handler(guard: BudgetGuard) -> Any:
 
         llm = ChatOpenAI(model="gpt-4o", callbacks=[budget_guard_callback_handler(guard)])
 
-    ``on_llm_start``/``on_chat_model_start`` run ``guard.check()`` (raising
-    :class:`~floe_guard.BudgetExceeded` to abort), and ``on_llm_end`` records the
-    response's token cost.
+    ``on_llm_start``/``on_chat_model_start`` reserve an estimate atomically
+    (raising :class:`~floe_guard.BudgetExceeded` to abort), and ``on_llm_end``
+    settles the response's token cost against that run's reservation. Failed runs
+    settle reported partial usage or release their own reservation.
     """
     _require_langchain()
     from langchain_core.callbacks import BaseCallbackHandler
@@ -148,18 +159,49 @@ def budget_guard_callback_handler(guard: BudgetGuard) -> Any:
         def __init__(self) -> None:
             super().__init__()
             self.guard = guard
+            self._reservation_lock = threading.Lock()
+            self._reservations: dict[Any, ReservationHandle] = {}
+
+        def _reserve_run(self, serialized: Any, texts: list[str], kwargs: dict[str, Any]) -> None:
+            run_id = kwargs.get("run_id")
+            estimate = _estimate_start(self.guard, serialized, texts)
+            with self._reservation_lock:
+                if run_id in self._reservations:
+                    raise RuntimeError(
+                        f"LangChain run {run_id!r} already has an active reservation"
+                    )
+                self._reservations[run_id] = self.guard.reserve(estimate)
+
+        def _take_reservation(self, kwargs: dict[str, Any]) -> ReservationHandle | None:
+            run_id = kwargs.get("run_id")
+            with self._reservation_lock:
+                return self._reservations.pop(run_id, None)
 
         def on_llm_start(self, serialized: Any, prompts: Any, **kwargs: Any) -> None:
-            # Request-sized when derivable (see _estimate_start); check(None)
-            # falls back to the last-cost prediction.
+            # Request-sized when derivable; reserve() otherwise falls back to the
+            # last-cost prediction. The hold stays bound to this run until terminal.
             texts = [p for p in (prompts or []) if isinstance(p, str)]
-            self.guard.check(_estimate_start(self.guard, serialized, texts))
+            self._reserve_run(serialized, texts, kwargs)
 
         def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
-            self.guard.check(_estimate_start(self.guard, serialized, _chat_texts(messages)))
+            self._reserve_run(serialized, _chat_texts(messages), kwargs)
 
         def on_llm_end(self, response: Any, **kwargs: Any) -> None:
-            _record_result(self.guard, response)
+            reserved = self._take_reservation(kwargs)
+            if reserved is not None:
+                _record_result(self.guard, response, reserved=reserved)
+
+        def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+            reserved = self._take_reservation(kwargs)
+            if reserved is None:
+                return
+            # Some streaming implementations include a partial LLMResult on error.
+            # Preserve any reported usage; otherwise release only this run's hold.
+            response = kwargs.get("response")
+            if response is None:
+                self.guard.release(reserved)
+            else:
+                _record_result(self.guard, response, reserved=reserved)
 
     return BudgetGuardCallbackHandler()
 

@@ -8,6 +8,14 @@ packages — `floe-guard` on [PyPI](https://pypi.org/project/floe-guard/) and
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 both packages adhere to [Semantic Versioning](https://semver.org/).
 
+## Unreleased — py 0.25.3
+
+### Fixed (py)
+
+- LangChain callbacks now reserve estimated spend per run before model dispatch
+  and settle or release that run's reservation at its terminal callback. Parallel
+  calls can no longer reuse the same unreserved balance.
+
 ## Unreleased — py 0.23.9
 
 ### Fixed (py)
