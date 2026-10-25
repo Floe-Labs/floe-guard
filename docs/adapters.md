@@ -65,11 +65,13 @@ from floe_guard.integrations.langchain import budget_guard_callback_handler
 
 guard = BudgetGuard(limit_usd=1.00)
 llm = ChatOpenAI(model="gpt-4o", callbacks=[budget_guard_callback_handler(guard)])
-llm.invoke("hello")            # checks budget before the call, records spend after
+llm.invoke("hello")            # reserves before the call, settles usage after
 ```
 
-The handler checks the budget on LLM start (raising `BudgetExceeded` aborts the
-call before it runs) and records token usage on LLM end.
+The handler atomically reserves an estimate on LLM start (raising `BudgetExceeded`
+aborts the call before it runs) and settles reported token usage on LLM end. Each
+run owns its reservation, so concurrent calls cannot pass against the same
+unreserved balance.
 
 ## LangGraph
 
